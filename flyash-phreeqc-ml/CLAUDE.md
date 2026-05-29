@@ -31,19 +31,33 @@ Phase 3 (ML) is not started.
   and `reports/figures/*.png` are gitignored and re-creatable by running the scripts.
 - **Confidential raw research data:** do not commit raw research data unless the user confirms
   it is allowed. `data/raw/` is currently tracked, so be deliberate about anything added there.
+  The remote is confirmed **private**, and the existing `data/raw/` contents (UMass mix-design
+  workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
+  *new* raw dataset is added.
 - **Run `pytest` before committing** any code change, and keep code modular, simple, and tested.
+
+### Git layout (important)
+
+This project is a **subdirectory inside a larger git repo** rooted at the parent directory
+(`CursorCode1`), not its own repo. So `git status` run from here shows the parent repo, and
+commits/pushes target it — stage paths as `flyash-phreeqc-ml/...`. Do **not** `git init` here
+(it would create a confusing nested repo). When committing, prefer staging explicit files over a
+blanket `git add` so untracked stray files (e.g. someone's half-named template copy) don't slip in.
 
 ## Commands
 
 ```bash
 # setup (virtualenv lives at .venv/)
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # runtime: pandas/numpy/matplotlib/openpyxl
+pip install -r requirements.txt        # runtime: pandas/numpy/matplotlib/openpyxl/streamlit
 pip install -r requirements-dev.txt    # pytest
 
 # main pipelines
 python scripts/run_phase1.py            # Phase 1: parse -> processed CSVs -> master_dataset -> plots
 python scripts/05_compare_experimental.py  # Phase 2: measured vs PHREEQC (no-op until data exists)
+
+# GUI (optional): thin Streamlit wrapper over the scripts above
+streamlit run app.py
 
 # tests
 python -m pytest                        # full suite
@@ -87,6 +101,12 @@ modules together and own all file I/O paths.
 
 - **`viz/`** — `plots.py` (Phase 1 exploratory) and `compare_plots.py` (Phase 2), the latter
   only emitting figures when measured/PHREEQC pairs exist.
+
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts: project status, run
+  buttons (it `subprocess`-runs `run_phase1.py` / step 05 and shows stdout/stderr), a processed-CSV
+  previewer, an experimental-data entry form, and a figure viewer. It reuses package functions and
+  adds no chemistry/ML logic. The form appends rows to
+  `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten).
 
 ### Key conventions
 
