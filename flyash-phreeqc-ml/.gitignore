@@ -14,6 +14,11 @@ env/
 # Generated artifacts (re-creatable from raw data via the scripts)
 data/processed/
 reports/figures/
+outputs/figures/
+
+# Measured data entered via the Streamlit app — not committed automatically
+# (it is research data; commit deliberately if/when intended).
+data/raw/experimental_icp/experimental_release_manual_entry.csv
 
 # OS / editor cruft
 .DS_Store

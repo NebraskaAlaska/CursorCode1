@@ -69,6 +69,21 @@ so they run straight from Cursor without installing the package. If you prefer i
 `flyash_phreeqc_ml` from anywhere (notebooks, other tools), you can also
 `pip install -e .` — it's optional.
 
+## Streamlit app (GUI)
+
+A simple web UI wraps the existing scripts so you don't have to edit values in code:
+
+```bash
+pip install -r requirements.txt   # includes streamlit
+streamlit run app.py
+```
+
+It provides: project status, buttons to run Phase 1 / Phase 2 (with live stdout/stderr),
+a processed-CSV previewer, a form to enter measured experimental data (appended to
+`data/raw/experimental_icp/experimental_release_manual_entry.csv`, never overwritten —
+and gitignored), and a figure viewer. The app changes no chemistry and trains no model;
+see its *Safety and limitations* section.
+
 ## Run Phase 1
 
 ```bash
