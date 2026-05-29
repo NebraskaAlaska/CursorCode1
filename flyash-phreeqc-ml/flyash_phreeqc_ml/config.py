@@ -25,7 +25,12 @@ FIGURES_DIR: Path = REPORTS_DIR / "figures"
 # Raw sub-directories (names contain spaces, matching the delivered dataset).
 PHREEQC_INPUT_DIR: Path = RAW_DIR / "PHREEQC inputs"
 PHREEQC_OUTPUT_DIR: Path = RAW_DIR / "PHREEQC outputs"
-ICP_DIR: Path = RAW_DIR / "experimental icp"
+ICP_DIR: Path = RAW_DIR / "experimental icp"  # the CFA+MK mix-design workbook
+
+# Phase 2: measured experimental release data (filled from the lab/ICP results).
+# Note the underscore — this is a new directory, distinct from the space-named
+# "experimental icp" folder that holds the mix-design workbook.
+EXPERIMENTAL_ICP_DIR: Path = RAW_DIR / "experimental_icp"
 
 # --------------------------------------------------------------------------- #
 # Processed output file names (written to PROCESSED_DIR)
@@ -36,6 +41,16 @@ PHREEQC_RESULTS_CSV = "phreeqc_results.csv"
 PHREEQC_SI_CSV = "phreeqc_saturation_indices.csv"
 PHREEQC_ASSEMBLAGE_CSV = "phreeqc_phase_assemblage.csv"
 MASTER_DATASET_CSV = "master_dataset.csv"
+
+# Phase 2 artifacts.
+EXPERIMENTAL_TEMPLATE_CSV = "experimental_release_template.csv"  # blank header template
+SAMPLE_PHREEQC_MAP_CSV = "sample_phreeqc_map.csv"               # sample_id -> record_key
+EXPERIMENTAL_RELEASE_CSV = "experimental_release.csv"            # tidy, parsed measured data
+COMPARISON_CSV = "comparison_measured_vs_phreeqc.csv"            # joined + residuals
+
+# Files in EXPERIMENTAL_ICP_DIR that are NOT measured-release data and must be
+# skipped when loading the directory.
+EXPERIMENTAL_NON_DATA_FILES = {EXPERIMENTAL_TEMPLATE_CSV, SAMPLE_PHREEQC_MAP_CSV}
 
 # --------------------------------------------------------------------------- #
 # Domain constants
@@ -56,6 +71,69 @@ KEY_PHASES = [
     "AlOHam",       # amorphous Al(OH)3
     "Kln",          # kaolinite
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: experimental release template schema
+# --------------------------------------------------------------------------- #
+# Canonical column order for the measured-experimental-release template/file.
+# Editing this list is the single source of truth for the CSV schema, the parser,
+# and the tests.
+EXPERIMENTAL_RELEASE_COLUMNS = [
+    "sample_id",
+    "experiment_date",
+    "fly_ash_type",
+    "NaOH_M",
+    "time_min",
+    "temperature_C",
+    "liquid_solid_ratio",
+    "CO2_condition",
+    "initial_pH",
+    "final_pH",
+    "conductivity_mS_cm",
+    "Ca_mM",
+    "Si_mM",
+    "Al_mM",
+    "Fe_mM",
+    "Na_mM",
+    "K_mM",
+    "Sc_ppb",
+    "total_REE_ppb",
+    "filtration_notes",
+    "precipitate_observed",
+    "notes",
+]
+
+# Numeric columns within the template (everything else is text/categorical).
+EXPERIMENTAL_NUMERIC_COLUMNS = [
+    "NaOH_M",
+    "time_min",
+    "temperature_C",
+    "liquid_solid_ratio",
+    "initial_pH",
+    "final_pH",
+    "conductivity_mS_cm",
+    "Ca_mM",
+    "Si_mM",
+    "Al_mM",
+    "Fe_mM",
+    "Na_mM",
+    "K_mM",
+    "Sc_ppb",
+    "total_REE_ppb",
+]
+
+# --------------------------------------------------------------------------- #
+# Phase 2: measured <-> PHREEQC residual definitions
+# --------------------------------------------------------------------------- #
+# PHREEQC reports element totals as molality (mol/kgw). For dilute solutions
+# mol/kgw ~= mol/L, so multiplying by 1000 gives mM, matching the measured units.
+PHREEQC_MOLALITY_TO_MM = 1000.0
+
+# Each residual = measured - phreeqc, defined by (measured_col, phreeqc_source).
+# For elements, phreeqc_source is the molality column converted to mM; for pH it is
+# the PHREEQC pH directly.
+RESIDUAL_ELEMENTS = ["Ca", "Si", "Al", "Fe"]  # measured_<X>_mM vs phreeqc mol_<X>
 
 
 def ensure_output_dirs() -> None:

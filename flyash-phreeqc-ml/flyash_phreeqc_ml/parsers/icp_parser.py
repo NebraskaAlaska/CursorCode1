@@ -27,6 +27,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..config import (
+    EXPERIMENTAL_ICP_DIR,
+    EXPERIMENTAL_NON_DATA_FILES,
+    EXPERIMENTAL_NUMERIC_COLUMNS,
+    EXPERIMENTAL_RELEASE_COLUMNS,
+    EXPERIMENTAL_TEMPLATE_CSV,
+)
+
 # Oxide / component names we recognise as composition-table headers.
 _KNOWN_COMPONENTS = {
     "SiO2", "Al2O3", "Fe2O3", "MgO", "CaO", "SO3", "K2O", "Na2O",
@@ -146,3 +154,115 @@ def parse_icp_workbook(path: str | Path, out_dir: str | Path) -> dict[str, pd.Da
     """
     dump_sheets_raw(path, out_dir)
     return {"oxide_compositions": extract_oxide_tables(path)}
+
+
+# =========================================================================== #
+# Phase 2: measured experimental-release ingestion
+# =========================================================================== #
+class ExperimentalSchemaError(ValueError):
+    """Raised when a measured-experimental-release file does not match the schema."""
+
+
+def parse_experimental_release(
+    path: str | Path,
+    *,
+    strict: bool = True,
+) -> pd.DataFrame:
+    """Read a filled ``experimental_release`` CSV (the Monday lab data).
+
+    The expected columns are defined once in
+    :data:`flyash_phreeqc_ml.config.EXPERIMENTAL_RELEASE_COLUMNS`. Numeric columns
+    are coerced to numbers (blank/garbage -> NaN), ``experiment_date`` is parsed to
+    a datetime, and columns are returned in canonical order with a ``source_file``
+    provenance column prepended. Unknown extra columns are kept (appended at the
+    end) so the lab can add notes without breaking the parser.
+
+    Parameters
+    ----------
+    strict:
+        If True (default), a missing *required* column raises
+        :class:`ExperimentalSchemaError`. If False, missing columns are added as
+        all-NaN so partially-filled files still load.
+    """
+    path = Path(path)
+    df = pd.read_csv(path, dtype=str, keep_default_na=True, skipinitialspace=True)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    expected = list(EXPERIMENTAL_RELEASE_COLUMNS)
+    missing = [c for c in expected if c not in df.columns]
+    extra = [c for c in df.columns if c not in expected]
+
+    if missing:
+        if strict:
+            raise ExperimentalSchemaError(
+                f"{path.name}: missing required column(s): {missing}"
+            )
+        for c in missing:
+            df[c] = np.nan  # tolerate partially-filled files
+
+    # Coerce numeric columns; non-numeric entries become NaN.
+    for col in EXPERIMENTAL_NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Parse the experiment date (invalid -> NaT).
+    if "experiment_date" in df.columns:
+        df["experiment_date"] = pd.to_datetime(df["experiment_date"], errors="coerce")
+
+    # Canonical column order, keeping any extra columns at the end.
+    ordered = expected + extra
+    df = df[ordered]
+    df.insert(0, "source_file", path.name)
+    return df
+
+
+def load_experimental_release(
+    directory: str | Path | None = None,
+    *,
+    include_template: bool = False,
+    strict: bool = True,
+) -> pd.DataFrame:
+    """Load and concatenate every measured-release CSV in *directory*.
+
+    The blank template file is skipped by default (it has no data rows). Returns an
+    empty DataFrame (with the right columns) when no measured files are present —
+    this is the normal state until Monday's data arrives.
+    """
+    directory = Path(directory) if directory is not None else EXPERIMENTAL_ICP_DIR
+    if not directory.exists():
+        return pd.DataFrame(columns=["source_file"] + EXPERIMENTAL_RELEASE_COLUMNS)
+
+    # Files that are not measured-release data (mapping table; and the blank
+    # template unless explicitly included).
+    skip = set(EXPERIMENTAL_NON_DATA_FILES)
+    if include_template:
+        skip.discard(EXPERIMENTAL_TEMPLATE_CSV)
+
+    frames: list[pd.DataFrame] = []
+    for csv_path in sorted(directory.glob("*.csv")):
+        if csv_path.name in skip:
+            continue
+        frames.append(parse_experimental_release(csv_path, strict=strict))
+
+    if not frames:
+        return pd.DataFrame(columns=["source_file"] + EXPERIMENTAL_RELEASE_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
+
+
+def has_measured_data(df: pd.DataFrame) -> bool:
+    """True if *df* contains at least one row with an actual measured value.
+
+    "Measured" means any of the key analytes / pH is populated — a header-only
+    template (zero rows) or a file of pure metadata returns False, which the
+    pipeline uses to decide whether to run the comparison and plots.
+    """
+    if df is None or df.empty:
+        return False
+    signal_cols = [
+        c
+        for c in ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "final_pH"]
+        if c in df.columns
+    ]
+    if not signal_cols:
+        return False
+    return bool(df[signal_cols].notna().any().any())
