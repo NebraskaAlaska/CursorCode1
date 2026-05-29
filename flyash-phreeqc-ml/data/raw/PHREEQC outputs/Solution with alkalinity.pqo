@@ -1,0 +1,386 @@
+   Input file: C:\PHREEQC\my tests\Sol-alkalinity.pqi
+  Output file: C:\PHREEQC\my tests\Sol-alkalinity.pqo
+Database file: C:\Program Files (x86)\USGS\Phreeqc Interactive 3.8.6-17100\database\CEMDATA18-31-03-2022-phaseVol.dat
+
+------------------
+Reading data base.
+------------------
+
+	SOLUTION_MASTER_SPECIES 
+	SOLUTION_SPECIES 
+	PHASES 
+------------------------------------
+Reading input data for simulation 1.
+------------------------------------
+
+	DATABASE C:\Program Files (x86)\USGS\Phreeqc Interactive 3.8.6-17100\database\CEMDATA18-31-03-2022-phaseVol.dat
+	SOLUTION 1 L-S solution 1 with assumed alkalinity
+	    temp      25.00
+	    pH        13.10
+	    units     mol/l
+	    density   1.0
+	    Na        0.50000
+	    Si        0.00031
+	    Al        0.00073
+	    Ca        0.00233
+	    Alkalinity 0.33
+	EQUILIBRIUM_PHASES 1
+	    CO2(g)       -3.37   10
+	    Cal           0      0
+	    Arg           0      0
+	    Portlandite   0      0
+	USE solution 1
+	USE equilibrium_phases 1
+	SAVE solution 101
+	END
+-------------------------------------------
+Beginning of initial solution calculations.
+-------------------------------------------
+
+Initial solution 1.	L-S solution 1 with assumed alkalinity
+
+-----------------------------Solution composition------------------------------
+
+	Elements           Molality       Moles
+
+	Al                7.528e-04   7.528e-04
+	Alkalinity        3.403e-01   3.403e-01
+	Ca                2.403e-03   2.403e-03
+	Na                5.156e-01   5.156e-01
+	Si                3.197e-04   3.197e-04
+
+----------------------------Description of solution----------------------------
+
+                                       pH  =  13.100    
+                                       pe  =   4.000    
+                        Activity of water  =   0.988
+                 Ionic strength (mol/kgw)  =   3.720e-01
+                       Mass of water (kg)  =   1.000e+00
+                    Total carbon (mol/kg)  =   8.291e-02
+                       Total CO2 (mol/kg)  =   8.291e-02
+                         Temperature (oC)  =  25.00
+                  Electrical balance (eq)  =   1.794e-01
+ Percent error, 100*(Cat-|An|)/(Cat+|An|)  =  25.93
+                               Iterations  =   9
+                                  Total H  = 1.111908e+02
+                                  Total O  = 5.593350e+01
+
+----------------------------Distribution of species----------------------------
+
+                                               Log       Log       Log    mole V
+   Species          Molality    Activity  Molality  Activity     Gamma   cm3/mol
+
+   OH-             1.480e-01   1.244e-01    -0.830    -0.905    -0.075     (0)  
+   H+              9.709e-14   7.943e-14   -13.013   -13.100    -0.087      0.00
+   H2O             5.551e+01   9.882e-01     1.744    -0.005     0.000     18.07
+Al            7.528e-04
+   AlO2-           7.512e-04   5.332e-04    -3.124    -3.273    -0.149     (0)  
+   AlSiO5-3        1.619e-06   4.774e-08    -5.791    -7.321    -1.530     (0)  
+   AlO2H           1.185e-10   1.185e-10    -9.926    -9.926     0.000     (0)  
+   AlO+            9.247e-18   6.563e-18   -17.034   -17.183    -0.149     (0)  
+   Al(OH)+2        1.049e-24   2.259e-25   -23.979   -24.646    -0.667     (0)  
+   AlHSiO3+2       8.628e-30   1.858e-30   -29.064   -29.731    -0.667     (0)  
+   Al+3            2.218e-32   1.646e-33   -31.654   -32.784    -1.130     (0)  
+C(4)          8.291e-02
+   NaCO3-          5.584e-02   3.963e-02    -1.253    -1.402    -0.149     (0)  
+   CO3-2           2.561e-02   6.832e-03    -1.592    -2.165    -0.574     (0)  
+   CaCO3           1.436e-03   1.436e-03    -2.843    -2.843     0.000     (0)  
+   HCO3-           1.634e-05   1.158e-05    -4.787    -4.936    -0.149     (0)  
+   NaHCO3          2.028e-06   2.028e-06    -5.693    -5.693     0.000     (0)  
+   Ca(HCO3)+       2.607e-08   1.851e-08    -7.584    -7.733    -0.149     (0)  
+   CO2             2.093e-12   2.093e-12   -11.679   -11.679     0.000     (0)  
+Ca            2.403e-03
+   CaCO3           1.436e-03   1.436e-03    -2.843    -2.843     0.000     (0)  
+   Ca+2            4.707e-04   1.254e-04    -3.327    -3.902    -0.575     (0)  
+   Ca(OH)+         3.645e-04   2.587e-04    -3.438    -3.587    -0.149     (0)  
+   CaSiO3          1.319e-04   1.319e-04    -3.880    -3.880     0.000     (0)  
+   Ca(HSiO3)+      1.258e-07   8.929e-08    -6.900    -7.049    -0.149     (0)  
+   Ca(HCO3)+       2.607e-08   1.851e-08    -7.584    -7.733    -0.149     (0)  
+H(0)          9.885e-38
+   H2              4.943e-38   4.943e-38   -37.306   -37.306     0.000     (0)  
+Na            5.156e-01
+   Na+             4.342e-01   3.114e-01    -0.362    -0.507    -0.144     (0)  
+   NaCO3-          5.584e-02   3.963e-02    -1.253    -1.402    -0.149     (0)  
+   NaOH            2.559e-02   2.559e-02    -1.592    -1.592     0.000     (0)  
+   NaHCO3          2.028e-06   2.028e-06    -5.693    -5.693     0.000     (0)  
+O(0)          5.067e-18
+   O2              2.533e-18   2.533e-18   -17.596   -17.596     0.000     (0)  
+Si            3.197e-04
+   CaSiO3          1.319e-04   1.319e-04    -3.880    -3.880     0.000     (0)  
+   SiO3-2          1.227e-04   2.642e-05    -3.911    -4.578    -0.667     (0)  
+   HSiO3-          6.332e-05   4.494e-05    -4.198    -4.347    -0.149     (0)  
+   AlSiO5-3        1.619e-06   4.774e-08    -5.791    -7.321    -1.530     (0)  
+   Ca(HSiO3)+      1.258e-07   8.929e-08    -6.900    -7.049    -0.149     (0)  
+   SiO2            2.329e-08   2.329e-08    -7.633    -7.633     0.000     (0)  
+   Si4O10-4        1.984e-12   3.616e-15   -11.703   -14.442    -2.739     (0)  
+   AlHSiO3+2       8.628e-30   1.858e-30   -29.064   -29.731    -0.667     (0)  
+
+------------------------------Saturation indices-------------------------------
+
+  Phase               SI** log IAP   log K(298 K,   1 atm)
+
+  5CA               0.24     16.13   15.89  (CaO)1.25(SiO2)1(Al2O3)0.125(H2O)1.625
+  5CNA             -0.81     22.43   23.24  (CaO)1.25(SiO2)1(Al2O3)0.125(Na2O)0.25(H2O)1.375
+  AlOHam           -2.62    -16.38  -13.76  Al(OH)3
+  AlOHmic          -1.71    -16.38  -14.67  Al(OH)3
+  Amor-Sl          -4.92     -7.63   -2.71  SiO2
+  Arg               2.27     -6.07   -8.34  CaCO3
+  C12A7          -128.87     38.33  167.20  (CaO)12(Al2O3)7
+  C2AH65           -1.20     28.18   29.38  Ca2Al(OH)7(H2O)3
+  C2AH7.5          -2.40     11.81   14.21  Ca2Al2(OH)10(H2O)2.5
+  C2S              -1.51     36.95   38.47  (CaO)2SiO2
+  C3A             -36.54     34.14   70.68  (CaO)3Al2O3
+  C3AH6            -1.40     34.11   35.51  Ca3Al2O6(H2O)6
+  C3AS0.41H5.18     2.04     30.98   28.94  Ca3Al2O6(SiO2)0.41(H2O)5.18
+  C3AS0.84H4.32     1.92     27.70   25.79  AlCa3AlO6(SiO2)0.84(H2O)4.32
+  C3S             -14.02     59.25   73.26  (CaO)3SiO2
+  C4AH11           -4.12     56.37   60.49  Ca4Al2(OH)14(H2O)4
+  C4AH13           -2.40     56.36   58.76  Ca4Al2(OH)14(H2O)6
+  C4AH19           -2.23     56.33   58.56  Ca4Al2(OH)14(H2O)12
+  CA              -10.14    -10.45   -0.31  CaOAl2O3
+  CA2             -13.13    -43.19  -30.06  CaO(Al2O3)2
+  CAH10            -2.91    -10.50   -7.59  CaOAl2O3(H2O)10
+  Cal               2.41     -6.07   -8.48  CaCO3
+  CH4(g)         -124.11   -165.15  -41.04  CH4
+  chabazite       -15.21    -41.01  -25.80  Ca(Al2Si4)O12(H2O)6
+  CO2(g)          -10.22    -28.36  -18.14  CO2
+  CSH3T-T2C         0.52     25.79   25.27  ((CaO)0.75(SiO2)0.5(H2O)1.25)2
+  CSH3T-T5C         0.17     18.31   18.14  ((CaO)1(SiO2)1(H2O)2)1.25
+  CSH3T-TobH       -1.70     10.83   12.53  (CaO)1(SiO2)1.5(H2O)2.5
+  CSHQ-JenD        -0.39     28.34   28.73  (CaO)1.5(SiO2)0.6667(H2O)2.5
+  CSHQ-JenH        -0.10     22.08   22.18  (CaO)1.3333(SiO2)1(H2O)2.1667
+  CSHQ-TobD        -0.18     13.48   13.66  ((CaO)1.25(SiO2)1(H2O)2.75)0.6667
+  CSHQ-TobH        -1.07      7.22    8.29  (CaO)0.6667(SiO2)1(H2O)1.5
+  ECSH1-NaSH       -0.64      4.77    5.41  ((NaOH)2.5SiO2H2O)0.2
+  ECSH1-SH         -5.04     -7.64   -2.60  (SiO2H2O)1
+  ECSH1-TobCa      -0.09     10.93   11.02  ((Ca(OH)2)0.8333SiO2H2O)1
+  ECSH2-JenCa       0.10     17.71   17.60  ((Ca(OH)2)1.6667SiO2H2O)0.6
+  ECSH2-NaSH       -1.14      4.77    5.91  ((NaOH)2.5SiO2H2O)0.2
+  ECSH2-TobCa      -0.09     10.93   11.02  ((Ca(OH)2)0.8333SiO2H2O)1
+  Gbs              -1.26    -16.38  -15.12  Al(OH)3
+  Gr              -64.59    -96.75  -32.16  C
+  H2(g)           -34.20    -34.20   -0.00  H2
+  H2O(g)           -1.49     -0.01    1.49  H2O
+  hemicarbonat10.5  -0.41     42.20   42.61  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)10
+  hemicarbonate     1.31     42.19   40.88  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)11.5
+  hemicarbonate9   -3.40     42.20   45.61  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)8.5
+  INFCA            -0.85      8.10    8.96  (CaO)1(SiO2)1.1875(Al2O3)0.15625(H2O)1.65625
+  INFCN            -0.05     18.71   18.76  (CaO)1(SiO2)1.5(Na2O)0.3125(H2O)1.1875
+  INFCNA           -0.47     16.76   17.23  (CaO)1(SiO2)1.1875(Al2O3)0.15625(Na2O)0.34375(H2O)1.3125
+  Jennite           0.19     29.51   29.32  (SiO2)1(CaO)1.666667(H2O)2.1
+  Kln              -9.69    -48.02  -38.32  Al2Si2O5(OH)4
+  Lim             -10.30     22.29   32.59  CaO
+  monocarbonate     3.48     28.01   24.54  Ca4Al2CO9(H2O)11
+  monocarbonate05   1.74     14.01   12.27  Ca2AlC0.5O4.5(H2O)5.5
+  monocarbonate9   -0.51     28.02   28.54  Ca4Al2CO9(H2O)9
+  Na2O            -42.26     25.18   67.44  Na2O
+  NaSiOH           -0.88      4.77    5.65  ((NaOH)2.5SiO2H2O)0.2
+  natrolite        -0.27    -30.47  -30.20  Na2(Al2Si3)O10(H2O)2
+  O2(g)           -14.72     68.39   83.11  O2
+  Portlandite      -0.51     22.29   22.80  Ca(OH)2
+  Qtz              -3.89     -7.63   -3.75  SiO2
+  straetlingite     0.06      4.17    4.11  Ca2Al2SiO7(H2O)8
+  straetlingite5_5  -2.91      4.18    7.10  Ca2Al2SiO7(H2O)5.5
+  straetlingite7   -0.64      4.18    4.81  Ca2Al2SiO7(H2O)7
+  T2C-CNASHss       0.23     25.79   25.57  (CaO)1.5(SiO2)1(H2O)2.5
+  T5C-CNASHss      -0.13     18.31   18.45  (CaO)1.25(SiO2)1.25(H2O)2.5
+  Tob-I            -0.50     26.25   26.75  (SiO2)2.4(CaO)2(H2O)3.2
+  Tob-II           -0.21     10.94   11.15  (SiO2)1(CaO)0.833333(H2O)1.333333
+  TobH-CNASHss     -1.97     10.83   12.80  (CaO)1(SiO2)1.5(H2O)2.5
+  tricarboalu03     2.08      5.26    3.17  (CO3)Ca2Al0.6666667(OH)4(H2O)8.6666667
+  zeoliteP_Ca      -5.44    -25.74  -20.30  Ca(Al2Si2)O8(H2O)4.5
+  zeoliteX         -6.57    -26.67  -20.10  Na2(Al2Si2.5)O9(H2O)6.2
+  zeoliteY        -13.13    -38.13  -25.00  Na2(Al2Si4)O12(H2O)8
+
+**For a gas, SI = log10(fugacity). Fugacity = pressure * phi / 1 atm.
+  For ideal gases, phi = 1.
+
+-----------------------------------------
+Beginning of batch-reaction calculations.
+-----------------------------------------
+
+Reaction step 1.
+
+Using solution 1.	L-S solution 1 with assumed alkalinity
+Using pure phase assemblage 1.	
+
+-------------------------------Phase assemblage--------------------------------
+
+                                                      Moles in assemblage
+Phase               SI  log IAP  log K(T, P)   Initial       Final       Delta
+
+Arg              -0.14    -8.48     -8.34    0.000e+00           0   0.000e+00
+CO2(g)           -3.37   -21.51    -18.14    1.000e+01   9.881e+00  -1.189e-01
+Cal               0.00    -8.48     -8.48    0.000e+00   2.396e-03   2.396e-03
+Portlandite      -9.77    13.03     22.80    0.000e+00           0   0.000e+00
+
+-----------------------------Solution composition------------------------------
+
+	Elements           Molality       Moles
+
+	Al                7.521e-04   7.528e-04
+	C                 1.992e-01   1.994e-01
+	Ca                6.817e-06   6.824e-06
+	Na                5.151e-01   5.156e-01
+	Si                3.194e-04   3.197e-04
+
+----------------------------Description of solution----------------------------
+
+                                       pH  =   9.793      Charge balance
+                                       pe  =   8.167      Adjusted to redox equilibrium
+                        Activity of water  =   0.990
+                 Ionic strength (mol/kgw)  =   3.708e-01
+                       Mass of water (kg)  =   1.001e+00
+                 Total alkalinity (eq/kg)  =   3.352e-01
+                       Total CO2 (mol/kg)  =   1.992e-01
+                         Temperature (oC)  =  25.00
+                  Electrical balance (eq)  =   1.794e-01
+ Percent error, 100*(Cat-|An|)/(Cat+|An|)  =  27.41
+                               Iterations  =  13
+                                  Total H  = 1.111908e+02
+                                  Total O  = 5.616416e+01
+
+----------------------------Distribution of species----------------------------
+
+                                               Log       Log       Log    mole V
+   Species          Molality    Activity  Molality  Activity     Gamma   cm3/mol
+
+   OH-             7.310e-05   6.143e-05    -4.136    -4.212    -0.075     (0)  
+   H+              1.968e-10   1.610e-10    -9.706    -9.793    -0.087      0.00
+   H2O             5.551e+01   9.895e-01     1.744    -0.005     0.000     18.07
+Al            7.521e-04
+   AlO2-           7.518e-04   5.337e-04    -3.124    -3.273    -0.149     (0)  
+   AlO2H           2.404e-07   2.404e-07    -6.619    -6.619     0.000     (0)  
+   AlSiO5-3        2.303e-09   6.812e-11    -8.638   -10.167    -1.529     (0)  
+   AlO+            3.799e-11   2.697e-11   -10.420   -10.569    -0.149     (0)  
+   Al(OH)+2        8.728e-15   1.882e-15   -14.059   -14.725    -0.666     (0)  
+   AlHSiO3+2       4.200e-16   9.055e-17   -15.377   -16.043    -0.666     (0)  
+   Al+3            3.736e-19   2.776e-20   -18.428   -19.557    -1.129     (0)  
+C(-4)         0.000e+00
+   CH4             0.000e+00   0.000e+00  -127.010  -127.010     0.000     (0)  
+C(4)          1.992e-01
+   NaCO3-          9.183e-02   6.519e-02    -1.037    -1.186    -0.149     (0)  
+   HCO3-           5.676e-02   4.025e-02    -1.246    -1.395    -0.149     (0)  
+   CO3-2           4.387e-02   1.171e-02    -1.358    -1.931    -0.573     (0)  
+   NaHCO3          6.762e-03   6.762e-03    -2.170    -2.170     0.000     (0)  
+   CO2             1.473e-05   1.473e-05    -4.832    -4.832     0.000     (0)  
+   CaCO3           5.550e-06   5.550e-06    -5.256    -5.256     0.000     (0)  
+   Ca(HCO3)+       2.043e-07   1.451e-07    -6.690    -6.838    -0.149     (0)  
+Ca            6.817e-06
+   CaCO3           5.550e-06   5.550e-06    -5.256    -5.256     0.000     (0)  
+   Ca+2            1.061e-06   2.827e-07    -5.974    -6.549    -0.574     (0)  
+   Ca(HCO3)+       2.043e-07   1.451e-07    -6.690    -6.838    -0.149     (0)  
+   Ca(HSiO3)+      8.197e-10   5.819e-10    -9.086    -9.235    -0.149     (0)  
+   CaSiO3          4.239e-10   4.239e-10    -9.373    -9.373     0.000     (0)  
+   Ca(OH)+         4.059e-10   2.882e-10    -9.392    -9.540    -0.149     (0)  
+H(0)          1.879e-39
+   H2              9.396e-40   9.396e-40   -39.027   -39.027     0.000     (0)  
+Na            5.151e-01
+   Na+             4.165e-01   2.987e-01    -0.380    -0.525    -0.144     (0)  
+   NaCO3-          9.183e-02   6.519e-02    -1.037    -1.186    -0.149     (0)  
+   NaHCO3          6.762e-03   6.762e-03    -2.170    -2.170     0.000     (0)  
+   NaOH            1.213e-05   1.213e-05    -4.916    -4.916     0.000     (0)  
+O(0)          1.406e-14
+   O2              7.029e-15   7.029e-15   -14.153   -14.153     0.000     (0)  
+Si            3.194e-04
+   HSiO3-          1.829e-04   1.299e-04    -3.738    -3.887    -0.149     (0)  
+   SiO2            1.363e-04   1.363e-04    -3.866    -3.866     0.000     (0)  
+   SiO3-2          1.747e-07   3.766e-08    -6.758    -7.424    -0.666     (0)  
+   AlSiO5-3        2.303e-09   6.812e-11    -8.638   -10.167    -1.529     (0)  
+   Ca(HSiO3)+      8.197e-10   5.819e-10    -9.086    -9.235    -0.149     (0)  
+   CaSiO3          4.239e-10   4.239e-10    -9.373    -9.373     0.000     (0)  
+   Si4O10-4        1.372e-10   2.515e-13    -9.863   -12.599    -2.737     (0)  
+   AlHSiO3+2       4.200e-16   9.055e-17   -15.377   -16.043    -0.666     (0)  
+
+------------------------------Saturation indices-------------------------------
+
+  Phase               SI** log IAP   log K(298 K,   1 atm)
+
+  5CA              -6.74      9.15   15.89  (CaO)1.25(SiO2)1(Al2O3)0.125(H2O)1.625
+  5CNA             -9.46     13.79   23.24  (CaO)1.25(SiO2)1(Al2O3)0.125(Na2O)0.25(H2O)1.375
+  AlOHam            0.69    -13.07  -13.76  Al(OH)3
+  AlOHmic           1.60    -13.07  -14.67  Al(OH)3
+  Amor-Sl          -1.15     -3.87   -2.71  SiO2
+  Arg              -0.14     -8.48   -8.34  CaCO3
+  C12A7          -193.69    -26.49  167.20  (CaO)12(Al2O3)7
+  C2AH65          -16.41     12.97   29.38  Ca2Al(OH)7(H2O)3
+  C2AH7.5         -14.30     -0.10   14.21  Ca2Al2(OH)10(H2O)2.5
+  C2S             -16.27     22.20   38.47  (CaO)2SiO2
+  C3A             -57.71     12.97   70.68  (CaO)3Al2O3
+  C3AH6           -22.56     12.94   35.51  Ca3Al2O6(H2O)6
+  C3AS0.41H5.18   -17.57     11.36   28.94  Ca3Al2O6(SiO2)0.41(H2O)5.18
+  C3AS0.84H4.32   -16.08      9.70   25.79  AlCa3AlO6(SiO2)0.84(H2O)4.32
+  C3S             -38.03     35.23   73.26  (CaO)3SiO2
+  C4AH11          -34.54     25.95   60.49  Ca4Al2(OH)14(H2O)4
+  C4AH13          -32.82     25.95   58.76  Ca4Al2(OH)14(H2O)6
+  C4AH19          -32.64     25.92   58.56  Ca4Al2(OH)14(H2O)12
+  CA              -12.79    -13.09   -0.31  CaOAl2O3
+  CA2              -9.16    -39.22  -30.06  CaO(Al2O3)2
+  CAH10            -5.55    -13.14   -7.59  CaOAl2O3(H2O)10
+  Cal               0.00     -8.48   -8.48  CaCO3
+  CH4(g)         -124.14   -165.19  -41.04  CH4
+  chabazite        -2.78    -28.58  -25.80  Ca(Al2Si4)O12(H2O)6
+  CO2(g)           -3.37    -21.51  -18.14  CO2
+  CSH3T-T2C        -9.60     15.67   25.27  ((CaO)0.75(SiO2)0.5(H2O)1.25)2
+  CSH3T-T5C        -6.69     11.45   18.14  ((CaO)1(SiO2)1(H2O)2)1.25
+  CSH3T-TobH       -5.31      7.22   12.53  (CaO)1(SiO2)1.5(H2O)2.5
+  CSHQ-JenD       -11.77     16.96   28.73  (CaO)1.5(SiO2)0.6667(H2O)2.5
+  CSHQ-JenH        -8.68     13.50   22.18  (CaO)1.3333(SiO2)1(H2O)2.1667
+  CSHQ-TobD        -5.38      8.28   13.66  ((CaO)1.25(SiO2)1(H2O)2.75)0.6667
+  CSHQ-TobH        -3.47      4.82    8.29  (CaO)0.6667(SiO2)1(H2O)1.5
+  ECSH1-NaSH       -1.55      3.86    5.41  ((NaOH)2.5SiO2H2O)0.2
+  ECSH1-SH         -1.27     -3.87   -2.60  (SiO2H2O)1
+  ECSH1-TobCa      -4.03      6.99   11.02  ((Ca(OH)2)0.8333SiO2H2O)1
+  ECSH2-JenCa      -6.90     10.71   17.60  ((Ca(OH)2)1.6667SiO2H2O)0.6
+  ECSH2-NaSH       -2.05      3.86    5.91  ((NaOH)2.5SiO2H2O)0.2
+  ECSH2-TobCa      -4.03      6.99   11.02  ((Ca(OH)2)0.8333SiO2H2O)1
+  Gbs               2.05    -13.07  -15.12  Al(OH)3
+  Gr              -61.19    -93.35  -32.16  C
+  H2(g)           -35.92    -35.92   -0.00  H2
+  H2O(g)           -1.49     -0.00    1.49  H2O
+  hemicarbonat10.5 -27.41     15.20   42.61  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)10
+  hemicarbonate   -25.69     15.19   40.88  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)11.5
+  hemicarbonate9  -30.40     15.21   45.61  (CaO)3Al2O3(CaCO3)0.5(CaO2H2)0.5(H2O)8.5
+  INFCA            -4.60      4.35    8.96  (CaO)1(SiO2)1.1875(Al2O3)0.15625(H2O)1.65625
+  INFCN            -5.74     13.02   18.76  (CaO)1(SiO2)1.5(Na2O)0.3125(H2O)1.1875
+  INFCNA           -6.51     10.72   17.23  (CaO)1(SiO2)1.1875(Al2O3)0.15625(Na2O)0.34375(H2O)1.3125
+  Jennite         -11.47     17.85   29.32  (SiO2)1(CaO)1.666667(H2O)2.1
+  Kln               4.46    -33.87  -38.32  Al2Si2O5(OH)4
+  Lim             -19.56     13.03   32.59  CaO
+  monocarbonate   -20.10      4.44   24.54  Ca4Al2CO9(H2O)11
+  monocarbonate05 -10.05      2.22   12.27  Ca2AlC0.5O4.5(H2O)5.5
+  monocarbonate9  -24.09      4.45   28.54  Ca4Al2CO9(H2O)9
+  Na2O            -48.91     18.53   67.44  Na2O
+  NaSiOH           -1.79      3.86    5.65  ((NaOH)2.5SiO2H2O)0.2
+  natrolite        11.00    -19.20  -30.20  Na2(Al2Si3)O10(H2O)2
+  O2(g)           -11.27     71.83   83.11  O2
+  Portlandite      -9.77     13.03   22.80  Ca(OH)2
+  Qtz              -0.12     -3.87   -3.75  SiO2
+  straetlingite    -8.08     -3.96    4.11  Ca2Al2SiO7(H2O)8
+  straetlingite5_5 -11.05     -3.95    7.10  Ca2Al2SiO7(H2O)5.5
+  straetlingite7   -8.77     -3.96    4.81  Ca2Al2SiO7(H2O)7
+  T2C-CNASHss      -9.89     15.67   25.57  (CaO)1.5(SiO2)1(H2O)2.5
+  T5C-CNASHss      -7.00     11.45   18.45  (CaO)1.25(SiO2)1.25(H2O)2.5
+  Tob-I            -9.97     16.77   26.75  (SiO2)2.4(CaO)2(H2O)3.2
+  Tob-II           -4.16      6.99   11.15  (SiO2)1(CaO)0.833333(H2O)1.333333
+  TobH-CNASHss     -5.58      7.22   12.80  (CaO)1(SiO2)1.5(H2O)2.5
+  tricarboalu03    -7.38     -4.20    3.17  (CO3)Ca2Al0.6666667(OH)4(H2O)8.6666667
+  zeoliteP_Ca      -0.55    -20.85  -20.30  Ca(Al2Si2)O8(H2O)4.5
+  zeoliteX          2.81    -17.29  -20.10  Na2(Al2Si2.5)O9(H2O)6.2
+  zeoliteY          1.91    -23.09  -25.00  Na2(Al2Si4)O12(H2O)8
+
+**For a gas, SI = log10(fugacity). Fugacity = pressure * phi / 1 atm.
+  For ideal gases, phi = 1.
+
+------------------
+End of simulation.
+------------------
+
+------------------------------------
+Reading input data for simulation 2.
+------------------------------------
+
+-------------------------------
+End of Run after 0.111 Seconds.
+-------------------------------
+

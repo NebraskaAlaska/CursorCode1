@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated artifacts (re-creatable from raw data via the scripts)
+data/processed/
+reports/figures/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/

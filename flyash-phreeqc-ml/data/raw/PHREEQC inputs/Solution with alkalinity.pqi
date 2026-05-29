@@ -1,0 +1,22 @@
+DATABASE C:\Program Files (x86)\USGS\Phreeqc Interactive 3.8.6-17100\database\CEMDATA18-31-03-2022-phaseVol.dat
+SOLUTION 1 L-S solution 1 with assumed alkalinity
+    temp      25.00
+    pH        13.10
+    units     mol/l
+    density   1.0
+    Na        0.50000
+    Si        0.00031
+    Al        0.00073
+    Ca        0.00233
+    Alkalinity 0.33
+
+EQUILIBRIUM_PHASES 1
+    CO2(g)       -3.37   10
+    Cal           0      0
+    Arg           0      0
+    Portlandite   0      0
+
+USE solution 1
+USE equilibrium_phases 1
+SAVE solution 101
+END

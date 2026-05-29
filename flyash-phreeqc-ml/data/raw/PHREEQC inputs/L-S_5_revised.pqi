@@ -1,0 +1,91 @@
+DATABASE C:\Program Files (x86)\USGS\Phreeqc Interactive 3.8.6-17100\database\CEMDATA18-31-03-2022-phaseVol.dat
+# Revised L-S_5.pqi
+# Purpose: charge-balance QA and atmospheric CO2 equilibration for three L-S solutions.
+# Important: Replace Cl with the actual measured/known counter-ion if available.
+# If running outside PHREEQC Interactive, you may need to select/pass the database separately.
+
+
+TITLE L-S solutions: atmospheric CO2 equilibration with charge-balance and selected-output diagnostics
+
+SELECTED_OUTPUT 1
+    -file L-S_5_selected.out
+    -reset false
+    -simulation true
+    -state true
+    -solution true
+    -pH true
+    -pe true
+    -alkalinity true
+    -ionic_strength true
+    -totals Na Si Al Ca C Cl
+    -si CO2(g)
+    -equilibrium_phases CO2(g)
+
+SOLUTION 1 L-S solution 1
+    temp      25.00
+    pH        13.10
+    units     mol/l
+    density   1.0      # Replace with measured density if available.
+    Na        0.50000
+    Si        0.00031
+    Al        0.00073
+    Ca        0.00233
+    Cl        0 charge # Diagnostic charge balance; replace with actual anion if known.
+
+SOLUTION 2 L-S solution 2
+    temp      25.00
+    pH        13.05
+    units     mol/l
+    density   1.0      # Replace with measured density if available.
+    Na        0.50000
+    Si        0.00183
+    Al        0.00486
+    Ca        0.00020
+    Cl        0 charge # Diagnostic charge balance; replace with actual anion if known.
+
+SOLUTION 3 L-S solution 3
+    temp      25.00
+    pH        13.29
+    units     mol/l
+    density   1.0      # Replace with measured density if available.
+    Na        0.50000
+    Si        0.00270
+    Al        0.01275
+    Ca        0.00044
+    Cl        0 charge # Diagnostic charge balance; replace with actual anion if known.
+
+EQUILIBRIUM_PHASES 1
+    CO2(g)    -3.37   10
+    
+    Cal     0      0
+    Arg     0      0
+    Portlandite  0      0
+
+EQUILIBRIUM_PHASES 2
+    CO2(g)    -3.37   10
+    Cal     0      0
+    Arg     0      0
+    Portlandite  0      0
+   
+
+EQUILIBRIUM_PHASES 3
+    CO2(g)    -3.37   10
+    Cal     0      0
+    Arg     0      0
+    Portlandite  0      0
+    
+
+USE solution 1
+USE equilibrium_phases 1
+SAVE solution 101
+END
+
+USE solution 2
+USE equilibrium_phases 2
+SAVE solution 102
+END
+
+USE solution 3
+USE equilibrium_phases 3
+SAVE solution 103
+END
