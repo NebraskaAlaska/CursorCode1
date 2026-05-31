@@ -101,8 +101,8 @@ All share `temperature_C=25`, `liquid_solid_ratio=5`, `fly_ash_type=CFA`.
 1. Copy the blank template
    `data/raw/experimental_icp/experimental_release_template.csv` to a dated file in
    the **same folder**, e.g. `data/raw/experimental_icp/2026-06-01_release.csv`.
-   (You can also start from the filled run sheet, but rename `flash_type` →
-   `fly_ash_type` to match the release schema.)
+   (You can also start from the filled run sheet — its columns already match the
+   release schema, so no renaming is needed.)
 2. One row per measured sample. Use the **exact `sample_id`** from the run sheet.
 3. Units: `*_mM` for Ca/Si/Al/Fe/Na/K, `*_ppb` for Sc and total REE.
 4. Leave any unmeasured numeric cell **blank** (becomes `NaN`) — do **not** write

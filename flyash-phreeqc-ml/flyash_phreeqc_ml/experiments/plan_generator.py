@@ -20,20 +20,21 @@ import pandas as pd
 
 from .. import config
 
-# Fixed flash type for the planned matrix. Kept as a constant (not a magic string)
-# so it is easy to change for a future material.
-DEFAULT_FLASH_TYPE = "CFA"
+# Fixed fly-ash type for the planned matrix. Kept as a constant (not a magic
+# string) so it is easy to change for a future material.
+DEFAULT_FLY_ASH_TYPE = "CFA"
 
 # The planning columns that come *before* the standard release columns. The full
 # plan = these + the measurement columns (left blank, to be filled at the bench).
 PLAN_LEADING_COLUMNS = ["sample_id", "experiment_set", "replicate"]
 
 # Measurement / metadata columns reused verbatim from the release schema, minus
-# the ones we already place up front. ``fly_ash_type`` is renamed to ``flash_type``
-# in the plan per the run-sheet spec; we map it back when needed downstream.
+# the ones we already place up front. Column names match the canonical release
+# schema exactly (``fly_ash_type``), so the plan can be filled in and re-read by
+# the Phase-2 parser without renaming.
 _RELEASE_TAIL = [
     "experiment_date",
-    "flash_type",
+    "fly_ash_type",
     "NaOH_M",
     "time_min",
     "temperature_C",
@@ -150,7 +151,7 @@ def _expand_set(set_name: str, spec: dict, experiment_date: str | None) -> list[
                 "experiment_set": set_name,
                 "replicate": values["replicate"],
                 "experiment_date": experiment_date or "",
-                "flash_type": DEFAULT_FLASH_TYPE,
+                "fly_ash_type": DEFAULT_FLY_ASH_TYPE,
                 "NaOH_M": values["NaOH_M"],
                 "time_min": values["time_min"],
                 "temperature_C": values["temperature_C"],
@@ -162,6 +163,14 @@ def _expand_set(set_name: str, spec: dict, experiment_date: str | None) -> list[
     return rows
 
 
+def _all_planned_rows(experiment_date: str | None = None) -> list[dict]:
+    """Every planned row across all sets, *before* de-duplication (definition order)."""
+    rows: list[dict] = []
+    for set_name, spec in EXPERIMENT_SETS.items():
+        rows.extend(_expand_set(set_name, spec, experiment_date))
+    return rows
+
+
 def build_experiment_plan(experiment_date: str | None = None) -> pd.DataFrame:
     """Build the full Monday experiment plan as a DataFrame.
 
@@ -170,33 +179,48 @@ def build_experiment_plan(experiment_date: str | None = None) -> pd.DataFrame:
     that appears in more than one set is scheduled once (and attributed to the
     first set that introduced it), while distinct replicates are preserved.
     """
-    rows: list[dict] = []
-    for set_name, spec in EXPERIMENT_SETS.items():
-        rows.extend(_expand_set(set_name, spec, experiment_date))
+    raw = pd.DataFrame(_all_planned_rows(experiment_date), columns=PLAN_COLUMNS)
+    return raw.drop_duplicates(subset="sample_id", keep="first").reset_index(drop=True)
 
-    df = pd.DataFrame(rows, columns=PLAN_COLUMNS)
-    df = df.drop_duplicates(subset="sample_id", keep="first").reset_index(drop=True)
-    return df
+
+def plan_dedup_stats(experiment_date: str | None = None) -> dict:
+    """Build the plan and report what de-duplication did.
+
+    Returns a dict with ``n_raw`` (rows before dedup), ``n_unique`` (after),
+    ``n_removed``, the per-set raw counts (``raw_per_set``), and the final
+    ``plan`` DataFrame. The summary distinguishes how many conditions each set
+    *requested* from how many survive once cross-set duplicates are dropped.
+    """
+    raw = pd.DataFrame(_all_planned_rows(experiment_date), columns=PLAN_COLUMNS)
+    plan = raw.drop_duplicates(subset="sample_id", keep="first").reset_index(drop=True)
+    return {
+        "n_raw": len(raw),
+        "n_unique": len(plan),
+        "n_removed": len(raw) - len(plan),
+        "raw_per_set": raw.groupby("experiment_set").size().sort_index(),
+        "plan": plan,
+    }
 
 
 def write_experiment_plan(
     path: str | Path | None = None,
     experiment_date: str | None = None,
-) -> tuple[Path, pd.DataFrame]:
-    """Generate the plan and write it to *path* (defaults to the standard location).
+) -> tuple[Path, dict]:
+    """Generate the plan, write it to *path* (default location), and report stats.
 
-    Returns ``(path, dataframe)``.
+    Returns ``(path, stats)`` where ``stats`` is the :func:`plan_dedup_stats` dict
+    (its ``plan`` key holds the written DataFrame).
     """
     if path is None:
         path = config.EXPERIMENTAL_ICP_DIR / config.MONDAY_EXPERIMENT_PLAN_CSV
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    df = build_experiment_plan(experiment_date=experiment_date)
-    df.to_csv(path, index=False)
-    return path, df
+    stats = plan_dedup_stats(experiment_date=experiment_date)
+    stats["plan"].to_csv(path, index=False)
+    return path, stats
 
 
 def summarize_plan(df: pd.DataFrame) -> pd.Series:
-    """Count of samples per experiment set (for the script's summary print-out)."""
+    """Count of *unique* samples per experiment set (post-dedup)."""
     return df.groupby("experiment_set").size().sort_index()

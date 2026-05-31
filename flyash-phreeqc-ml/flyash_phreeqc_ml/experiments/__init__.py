@@ -9,6 +9,7 @@ chemistry; they exist to make the measured data clean and well-described.
 from .plan_generator import (
     build_experiment_plan,
     make_sample_id,
+    plan_dedup_stats,
     write_experiment_plan,
 )
 from .validate_experimental_data import (
@@ -25,6 +26,7 @@ __all__ = [
     # plan generator
     "make_sample_id",
     "build_experiment_plan",
+    "plan_dedup_stats",
     "write_experiment_plan",
     # validator
     "validate_experimental_df",
