@@ -53,7 +53,11 @@ def test_plan_keeps_distinct_replicates():
 def test_plan_columns_match_spec():
     df = build_experiment_plan()
     assert list(df.columns)[:3] == ["sample_id", "experiment_set", "replicate"]
-    assert "flash_type" in df.columns
+    # Plan reuses the canonical release column name and no legacy aliases: every
+    # plan column must be a leading column or a real release-schema column.
+    allowed = {"sample_id", "experiment_set", "replicate", *config.EXPERIMENTAL_RELEASE_COLUMNS}
+    assert set(df.columns) <= allowed
+    assert "fly_ash_type" in df.columns
 
 
 # --------------------------------------------------------------------------- #

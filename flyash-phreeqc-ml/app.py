@@ -45,7 +45,8 @@ PREFERRED_PROCESSED = [
 ]
 
 # Free-text columns get plain text inputs; a couple get friendly dropdowns.
-_CO2_OPTIONS = ["", "none", "atmospheric", "elevated", "sealed"]
+# CO2 labels come straight from config so the form, validator, and plan agree.
+_CO2_OPTIONS = [""] + list(config.CO2_CONDITION_ALLOWED)
 _YESNO_OPTIONS = ["", "yes", "no"]
 
 

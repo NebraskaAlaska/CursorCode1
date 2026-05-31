@@ -42,6 +42,26 @@ def _load_mapping() -> pd.DataFrame | None:
     return None
 
 
+def _warn_if_fe_unpredicted(comparison: pd.DataFrame) -> None:
+    """Warn when Fe is measured but PHREEQC has no Fe prediction to compare against.
+
+    The CEMDATA18 runs may not include Fe, so ``phreeqc_Fe_mM`` (and therefore
+    ``residual_Fe``) can be entirely NaN. That is not a bug, but it means Fe
+    residuals are unavailable — flag it loudly so it is not mistaken for "PHREEQC
+    predicts zero Fe".
+    """
+    measured_fe = pd.to_numeric(comparison.get("Fe_mM"), errors="coerce")
+    phreeqc_fe = pd.to_numeric(comparison.get("phreeqc_Fe_mM"), errors="coerce")
+    n_measured = int(measured_fe.notna().sum()) if measured_fe is not None else 0
+    has_pred = bool(phreeqc_fe.notna().any()) if phreeqc_fe is not None else False
+
+    if n_measured > 0 and not has_pred:
+        print(
+            "Warning: Fe was measured experimentally, but current PHREEQC outputs "
+            "do not include Fe predictions, so residual_Fe is unavailable."
+        )
+
+
 def main() -> None:
     config.ensure_output_dirs()
 
@@ -72,6 +92,8 @@ def main() -> None:
     out = config.PROCESSED_DIR / config.COMPARISON_CSV
     comparison.to_csv(out, index=False)
     print(f"  wrote {out}  ({comparison.shape[0]} rows x {comparison.shape[1]} cols)")
+
+    _warn_if_fe_unpredicted(comparison)
 
     figures = make_comparison_plots(comparison, config.FIGURES_DIR)
     for p in figures:

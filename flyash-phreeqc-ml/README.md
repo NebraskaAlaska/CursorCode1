@@ -163,7 +163,7 @@ are allowed and preserved):
 | `time_min` | reaction/leaching time (minutes) |
 | `temperature_C` | temperature (°C) |
 | `liquid_solid_ratio` | L/S ratio |
-| `CO2_condition` | e.g. `none` / `atmospheric` / `elevated` |
+| `CO2_condition` | one of `open` / `sealed` / `low_CO2` / `atm_CO2` / `unknown` |
 | `initial_pH`, `final_pH` | measured pH before/after |
 | `conductivity_mS_cm` | conductivity (mS/cm) |
 | `Ca_mM`, `Si_mM`, `Al_mM`, `Fe_mM`, `Na_mM`, `K_mM` | measured concentrations (**mM**) |

@@ -19,6 +19,9 @@ experiment — **not** a blind replacement for the chemistry.
 - **Phase 2 — PHREEQC vs experiment.** A measured-experimental-release template + parser, and
   a residual comparison (`measured − PHREEQC` for Ca/Si/Al/Fe/pH) with measured-vs-PHREEQC plots.
   The machinery is in place and tested but **dormant until measured data exists**.
+- **Experiment-planning + QA/QC tooling** (pre-data, no ML). `experiments/` + scripts 06–08:
+  generate the run sheet, validate a filled release CSV (error/warning report), and compute
+  sustainability *proxy* indicators. These run before measured data exists and feed Phase 2.
 
 Phase 3 (ML) is not started.
 
@@ -36,6 +39,12 @@ Phase 3 (ML) is not started.
   The remote is confirmed **private**, and the existing `data/raw/` contents (UMass mix-design
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
+- **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
+  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, and the generated plan in
+  `data/raw/experimental_icp/`, with a `!`-re-include keeping **only** the blank
+  `experimental_release_template.csv` tracked. So Monday's real lab data stays out of git unless
+  deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes
+  part of the pattern.)
 - **Run `pytest` before committing** any code change, and keep code modular, simple, and tested.
 
 ### Git layout (important)
@@ -113,8 +122,8 @@ modules together and own all file I/O paths.
   their schema from `config`:
   - `plan_generator.py` expands four experiment sets (time / NaOH / CO₂ / replicate) into a run
     sheet, de-duplicating on the canonical `sample_id`
-    (`CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}`). The plan's `flash_type` column is the
-    run-sheet name for the release schema's `fly_ash_type`.
+    (`CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}`). Plan columns match the release schema
+    exactly (`fly_ash_type`), so the filled run sheet re-reads with the Phase-2 parser.
   - `validate_experimental_data.py` — `validate_experimental_df` returns a tidy issue report
     (severity `error`/`warning`/`ok`); `validate_experimental_dir` loops the measured CSVs.
   - `sustainability_score.py` — `compute_sustainability_scores` returns per-row **proxy**
@@ -136,3 +145,14 @@ modules together and own all file I/O paths.
   experiment measures).
 - Phase 2 is built to be a no-op until data lands: `run_phase1.py` is untouched by Phase 2, and
   step 05 detects a blank template and exits cleanly. Keep this separation when extending.
+- `config.CO2_CONDITION_ALLOWED` (`open`/`sealed`/`low_CO2`/`atm_CO2`/`unknown`) is the accepted
+  CO₂ vocabulary; the validator errors on anything else, so the plan generator, the Streamlit
+  dropdown (which derives its options from this list), and any sample entry must use these exact
+  labels. There is no separate "none/atmospheric/elevated" set — those older labels were removed.
+- **Fe is often unpredicted.** The CEMDATA18 runs may omit `mol_Fe`, so `phreeqc_Fe_mM` and
+  `residual_Fe` can be entirely NaN. Step 05 prints an explicit WARNING when Fe is *measured* but
+  PHREEQC has no Fe prediction — this is "unavailable", not "PHREEQC predicts zero Fe".
+- The `sample_id` format `CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}` (built by
+  `plan_generator.make_sample_id`) is the human-facing link from run sheet → filled release CSV →
+  `sample_phreeqc_map.csv` → comparison. It's the dedup key in the plan (replicates kept distinct),
+  so keep it stable.
