@@ -237,8 +237,45 @@ else:
     for png in pngs:
         st.image(str(png), caption=str(png.relative_to(_PROJECT_ROOT)), use_container_width=True)
 
-# ---- 6. Safety and limitations -------------------------------------------- #
-st.header("6. Safety and limitations")
+# ---- 6. Experiment planning ----------------------------------------------- #
+st.header("6. Experiment planning")
+st.write(
+    "Pre-data helpers for Monday: generate the run sheet, QA/QC a filled CSV, and "
+    "compute sustainability proxies. These call the existing scripts unchanged "
+    "(`scripts/06_…`, `07_…`, `08_…`) and train no model."
+)
+ep1, ep2, ep3 = st.columns(3)
+with ep1:
+    if st.button("Generate Monday experiment plan", use_container_width=True):
+        with st.spinner("Generating experiment plan…"):
+            proc = _run_script("scripts/06_generate_experiment_plan.py")
+        _show_process_result("Experiment plan", proc)
+with ep2:
+    if st.button("Validate experimental CSVs", use_container_width=True):
+        with st.spinner("Validating experimental data…"):
+            proc = _run_script("scripts/07_validate_experimental_data.py")
+        _show_process_result("Validation", proc)
+with ep3:
+    if st.button("Run sustainability score", use_container_width=True):
+        with st.spinner("Scoring sustainability proxies…"):
+            proc = _run_script("scripts/08_sustainability_score.py")
+        _show_process_result("Sustainability score", proc)
+
+# Surface the generated tables if they exist.
+for _label, _name in [
+    ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
+    ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
+]:
+    _path = config.TABLES_DIR / _name
+    if _path.exists():
+        with st.expander(f"{_label} — {_name}"):
+            st.dataframe(
+                _read_csv(str(_path), _path.stat().st_mtime),
+                use_container_width=True,
+            )
+
+# ---- 7. Safety and limitations -------------------------------------------- #
+st.header("7. Safety and limitations")
 st.warning(
     "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
     "thermodynamic predictions, not direct measurements, and assume the modelled "

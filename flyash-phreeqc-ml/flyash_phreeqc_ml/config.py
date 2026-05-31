@@ -22,6 +22,12 @@ PROCESSED_DIR: Path = DATA_DIR / "processed"
 REPORTS_DIR: Path = PROJECT_ROOT / "reports"
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
 
+# Generated, re-creatable tabular outputs (validation reports, scores, plans).
+# Kept separate from data/processed/ so it is obvious these are analysis tables,
+# not pipeline datasets. Gitignored like the other generated artifacts.
+OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
+TABLES_DIR: Path = OUTPUTS_DIR / "tables"
+
 # Raw sub-directories (names contain spaces, matching the delivered dataset).
 PHREEQC_INPUT_DIR: Path = RAW_DIR / "PHREEQC inputs"
 PHREEQC_OUTPUT_DIR: Path = RAW_DIR / "PHREEQC outputs"
@@ -48,9 +54,22 @@ SAMPLE_PHREEQC_MAP_CSV = "sample_phreeqc_map.csv"               # sample_id -> r
 EXPERIMENTAL_RELEASE_CSV = "experimental_release.csv"            # tidy, parsed measured data
 COMPARISON_CSV = "comparison_measured_vs_phreeqc.csv"            # joined + residuals
 
+# Experiment-planning / QA-QC artifacts.
+MONDAY_EXPERIMENT_PLAN_CSV = "monday_experiment_plan.csv"        # generated run sheet
+EXPERIMENTAL_VALIDATION_REPORT_CSV = "experimental_validation_report.csv"
+SUSTAINABILITY_SCORE_CSV = "sustainability_score.csv"
+
 # Files in EXPERIMENTAL_ICP_DIR that are NOT measured-release data and must be
-# skipped when loading the directory.
-EXPERIMENTAL_NON_DATA_FILES = {EXPERIMENTAL_TEMPLATE_CSV, SAMPLE_PHREEQC_MAP_CSV}
+# skipped when loading the directory. The generated experiment plan is a blank
+# run sheet (different schema), so it is skipped too.
+EXPERIMENTAL_NON_DATA_FILES = {
+    EXPERIMENTAL_TEMPLATE_CSV,
+    SAMPLE_PHREEQC_MAP_CSV,
+    MONDAY_EXPERIMENT_PLAN_CSV,
+}
+
+# Accepted CO2 atmosphere labels for a measured/planned experiment.
+CO2_CONDITION_ALLOWED = ["open", "sealed", "low_CO2", "atm_CO2", "unknown"]
 
 # --------------------------------------------------------------------------- #
 # Domain constants
@@ -140,3 +159,8 @@ def ensure_output_dirs() -> None:
     """Create the generated-artifact directories if they do not yet exist."""
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_tables_dir() -> None:
+    """Create the generated-tables directory (outputs/tables) if needed."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)

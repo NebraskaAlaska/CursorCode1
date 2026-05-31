@@ -27,8 +27,10 @@ Phase 3 (ML) is not started.
 - **No ML training yet.** Do not build/train models unless measured experimental release data
   actually exists in `data/raw/experimental_icp/` (a filled CSV, not just the blank template).
   Until then, Phase 2 comparison is the ceiling.
-- **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`
-  and `reports/figures/*.png` are gitignored and re-creatable by running the scripts.
+- **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
+  `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
+  `data/raw/experimental_icp/monday_experiment_plan.csv` are gitignored and re-creatable by
+  running the scripts.
 - **Confidential raw research data:** do not commit raw research data unless the user confirms
   it is allowed. `data/raw/` is currently tracked, so be deliberate about anything added there.
   The remote is confirmed **private**, and the existing `data/raw/` contents (UMass mix-design
@@ -55,6 +57,11 @@ pip install -r requirements-dev.txt    # pytest
 # main pipelines
 python scripts/run_phase1.py            # Phase 1: parse -> processed CSVs -> master_dataset -> plots
 python scripts/05_compare_experimental.py  # Phase 2: measured vs PHREEQC (no-op until data exists)
+
+# experiment planning + QA/QC (pre-data; no ML)
+python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/monday_experiment_plan.csv
+python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
+python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
 
 # GUI (optional): thin Streamlit wrapper over the scripts above
 streamlit run app.py
@@ -102,11 +109,24 @@ modules together and own all file I/O paths.
 - **`viz/`** — `plots.py` (Phase 1 exploratory) and `compare_plots.py` (Phase 2), the latter
   only emitting figures when measured/PHREEQC pairs exist.
 
+- **`experiments/`** (pre-data planning + QA/QC; no ML) — three independent helpers, all deriving
+  their schema from `config`:
+  - `plan_generator.py` expands four experiment sets (time / NaOH / CO₂ / replicate) into a run
+    sheet, de-duplicating on the canonical `sample_id`
+    (`CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}`). The plan's `flash_type` column is the
+    run-sheet name for the release schema's `fly_ash_type`.
+  - `validate_experimental_data.py` — `validate_experimental_df` returns a tidy issue report
+    (severity `error`/`warning`/`ok`); `validate_experimental_dir` loops the measured CSVs.
+  - `sustainability_score.py` — `compute_sustainability_scores` returns per-row **proxy**
+    indicators (not real costs), NaN-safe on missing inputs.
+  Outputs land in `outputs/tables/` (gitignored). The generated plan is added to
+  `EXPERIMENTAL_NON_DATA_FILES` so the Phase-2 loader skips it.
+
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts: project status, run
-  buttons (it `subprocess`-runs `run_phase1.py` / step 05 and shows stdout/stderr), a processed-CSV
-  previewer, an experimental-data entry form, and a figure viewer. It reuses package functions and
-  adds no chemistry/ML logic. The form appends rows to
-  `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten).
+  buttons (it `subprocess`-runs `run_phase1.py` / step 05 / steps 06–08 and shows stdout/stderr), a
+  processed-CSV previewer, an experimental-data entry form, an experiment-planning section, and a
+  figure viewer. It reuses package functions and adds no chemistry/ML logic. The form appends rows
+  to `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten).
 
 ### Key conventions
 
