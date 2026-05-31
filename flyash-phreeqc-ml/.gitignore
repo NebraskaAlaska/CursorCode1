@@ -23,9 +23,10 @@ outputs/tables/
 # (Comments must be on their own line — an inline '#' is part of the pattern.)
 data/raw/experimental_icp/monday_experiment_plan.csv
 data/raw/experimental_icp/experimental_release_manual_entry.csv
-# any measured release CSV (e.g. *_release.csv); dated lab files like 2026-06-01_release.csv
+# any measured release/measured CSV; dated lab files like 2026-06-01_release_run2.csv
 data/raw/experimental_icp/*release*.csv
-data/raw/experimental_icp/20*_release.csv
+data/raw/experimental_icp/20*_release*.csv
+data/raw/experimental_icp/*measured*.csv
 # Keep the blank template tracked (it matches *release*.csv above, so re-include it).
 !data/raw/experimental_icp/experimental_release_template.csv
 

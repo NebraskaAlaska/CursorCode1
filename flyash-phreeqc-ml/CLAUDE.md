@@ -40,7 +40,7 @@ Phase 3 (ML) is not started.
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
-  `20*_release.csv`, the manual-entry file, and the generated plan in
+  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, and the generated plan in
   `data/raw/experimental_icp/`, with a `!`-re-include keeping **only** the blank
   `experimental_release_template.csv` tracked. So Monday's real lab data stays out of git unless
   deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes

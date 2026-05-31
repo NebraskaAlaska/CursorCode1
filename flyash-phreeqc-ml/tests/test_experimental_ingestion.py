@@ -29,7 +29,7 @@ _ROW_1 = {
     "time_min": "60",
     "temperature_C": "25",
     "liquid_solid_ratio": "10",
-    "CO2_condition": "atmospheric",
+    "CO2_condition": "atm_CO2",
     "initial_pH": "13.1",
     "final_pH": "9.6",
     "conductivity_mS_cm": "45.2",

@@ -57,11 +57,8 @@ def _warn_if_fe_unpredicted(comparison: pd.DataFrame) -> None:
 
     if n_measured > 0 and not has_pred:
         print(
-            "  WARNING: Fe is measured in "
-            f"{n_measured} sample(s) but PHREEQC has no Fe prediction "
-            "(mol_Fe absent from the runs) -> phreeqc_Fe_mM and residual_Fe are NaN.\n"
-            "           Add Fe to the PHREEQC model, or treat Fe residuals as "
-            "unavailable for now."
+            "Warning: Fe was measured experimentally, but current PHREEQC outputs "
+            "do not include Fe predictions, so residual_Fe is unavailable."
         )
 
 

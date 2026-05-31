@@ -58,17 +58,6 @@ _RELEASE_TAIL = [
 
 PLAN_COLUMNS = PLAN_LEADING_COLUMNS + _RELEASE_TAIL
 
-# Columns the planner actively fills; everything else stays blank for the bench.
-_PLANNED_FIELDS = {
-    "experiment_date",
-    "flash_type",
-    "NaOH_M",
-    "time_min",
-    "temperature_C",
-    "liquid_solid_ratio",
-    "CO2_condition",
-}
-
 # --------------------------------------------------------------------------- #
 # Experiment-set definitions
 # --------------------------------------------------------------------------- #
