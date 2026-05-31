@@ -15,6 +15,10 @@ env/
 data/processed/
 reports/figures/
 outputs/figures/
+outputs/tables/
+
+# Generated experiment run sheet (re-creatable via scripts/06_generate_experiment_plan.py)
+data/raw/experimental_icp/monday_experiment_plan.csv
 
 # Measured data entered via the Streamlit app — not committed automatically
 # (it is research data; commit deliberately if/when intended).
