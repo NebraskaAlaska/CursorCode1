@@ -162,6 +162,81 @@ def test_demo_rows_are_tagged_synthetic(runs_root):
 
 
 # --------------------------------------------------------------------------- #
+# Row deletion + blank cleaning
+# --------------------------------------------------------------------------- #
+def test_delete_data_rows_removes_only_selected(runs_root):
+    run_manager.create_run("d1", "lab_experiment", created_at="t")
+    for sid in ("S1", "S2", "S3"):
+        run_manager.append_lab_row("d1", {"sample_id": sid})
+    # delete the middle row (position 1).
+    n = run_manager.delete_data_rows("d1", [1])
+    assert n == 1
+    df = pd.read_csv(run_manager.lab_release_path("d1"))
+    assert df["sample_id"].tolist() == ["S1", "S3"]
+    # the file itself still exists (only rows removed).
+    assert run_manager.lab_release_path("d1").exists()
+
+
+def test_delete_data_rows_ignores_bad_indices(runs_root):
+    run_manager.create_run("d2", "lab_experiment", created_at="t")
+    run_manager.append_lab_row("d2", {"sample_id": "S1"})
+    # out-of-range + duplicate indices -> nothing deleted, no crash.
+    assert run_manager.delete_data_rows("d2", [5, 5, -1]) == 0
+    assert run_manager.delete_data_rows("d2", []) == 0
+    assert len(pd.read_csv(run_manager.lab_release_path("d2"))) == 1
+
+
+def test_delete_only_affects_target_run(runs_root):
+    run_manager.create_run("keep", "lab_experiment", created_at="t")
+    run_manager.create_run("edit", "lab_experiment", created_at="t")
+    run_manager.append_lab_row("keep", {"sample_id": "K1"})
+    run_manager.append_lab_row("edit", {"sample_id": "E1"})
+    run_manager.delete_data_rows("edit", [0])
+    # the other run is untouched.
+    assert pd.read_csv(run_manager.lab_release_path("keep"))["sample_id"].tolist() == ["K1"]
+    assert len(pd.read_csv(run_manager.lab_release_path("edit"))) == 0
+
+
+def test_remove_blank_rows_lab(runs_root):
+    run_manager.create_run("b1", "lab_experiment", created_at="t")
+    run_manager.append_lab_row("b1", {"sample_id": "S1", "final_pH": "12"})
+    run_manager.append_lab_row("b1", {"sample_id": "", "final_pH": ""})   # blank id + empty
+    run_manager.append_lab_row("b1", {c: "" for c in config.EXPERIMENTAL_RELEASE_COLUMNS})  # all empty
+    n = run_manager.remove_blank_data_rows("b1")
+    assert n == 2
+    df = pd.read_csv(run_manager.lab_release_path("b1"))
+    assert df["sample_id"].tolist() == ["S1"]
+
+
+def test_remove_blank_rows_literature_uses_source_id(runs_root):
+    run_manager.create_run("b2", "literature_benchmark", created_at="t")
+    run_manager.append_literature_row("b2", {"source_id": "ref1"})
+    run_manager.append_literature_row("b2", {"source_id": ""})  # blank source_id
+    n = run_manager.remove_blank_data_rows("b2")
+    assert n == 1
+    df = pd.read_csv(run_manager.literature_path("b2"))
+    assert df["source_id"].tolist() == ["ref1"]
+
+
+def test_delete_and_clean_work_for_demo(runs_root):
+    run_manager.create_run("b3", "synthetic_demo", created_at="t")
+    run_manager.append_demo_row("b3", {"sample_id": "D1"})
+    run_manager.append_demo_row("b3", {"sample_id": "D2"})
+    assert run_manager.delete_data_rows("b3", [0]) == 1
+    df = pd.read_csv(run_manager.demo_path("b3"))
+    assert df["sample_id"].tolist() == ["D2"]
+    # source_type tag preserved on remaining row.
+    assert (df["source_type"] == run_manager.SYNTHETIC_SOURCE_TAG).all()
+
+
+def test_remove_blank_rows_noop_when_none(runs_root):
+    run_manager.create_run("b4", "lab_experiment", created_at="t")
+    run_manager.append_lab_row("b4", {"sample_id": "S1"})
+    assert run_manager.remove_blank_data_rows("b4") == 0
+    assert len(pd.read_csv(run_manager.lab_release_path("b4"))) == 1
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline bridge
 # --------------------------------------------------------------------------- #
 def test_export_lab_run_to_pipeline(runs_root, tmp_path, monkeypatch):

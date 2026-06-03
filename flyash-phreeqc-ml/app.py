@@ -486,10 +486,60 @@ else:
     elif _rt == "synthetic_demo":
         _demo_entry(SELECTED_RUN)
 
-    # Preview this run's data file.
+    # Preview this run's data file. The left-hand index is the row number used by
+    # the "Delete rows" controls below.
     _data = run_manager.read_data_file(SELECTED_RUN)
     st.markdown(f"**This run's data** ({len(_data)} row(s)):")
     st.dataframe(_data, use_container_width=True, height=260)
+
+    # --- Delete / clean rows ---------------------------------------------- #
+    # Only affects THIS run's CSV (experiments/<run>/data/…). Never touches other
+    # runs or data/raw/experimental_icp (that needs the explicit export button).
+    if not _data.empty:
+        with st.expander("🗑️ Delete rows", expanded=False):
+            _id_col = run_manager.id_column_for(SELECTED_RUN)
+
+            def _row_label(i: int) -> str:
+                if _id_col in _data.columns:
+                    val = _data.iloc[i][_id_col]
+                    shown = "" if pd.isna(val) else str(val).strip()
+                    return f"Row {i} — {_id_col}={shown or '(blank)'}"
+                return f"Row {i}"
+
+            to_delete = st.multiselect(
+                "Select row numbers to delete",
+                options=list(range(len(_data))),
+                format_func=_row_label,
+                key=f"del_rows_{SELECTED_RUN}",
+            )
+            confirm = st.checkbox(
+                "I understand this will delete the selected rows from this run's CSV.",
+                key=f"del_confirm_{SELECTED_RUN}",
+            )
+            if st.button("Delete selected rows", key=f"del_btn_{SELECTED_RUN}"):
+                if not to_delete:
+                    st.warning("No rows selected — nothing was deleted.")
+                elif not confirm:
+                    st.warning("Tick the confirmation checkbox before deleting.")
+                else:
+                    n = run_manager.delete_data_rows(SELECTED_RUN, to_delete)
+                    st.success(f"Deleted {n} row(s) from this run's CSV.")
+                    _read_csv.clear()
+                    st.rerun()
+
+            st.divider()
+            st.caption(
+                "Remove rows with a blank "
+                f"`{_id_col}` or where every value is empty."
+            )
+            if st.button("Remove blank rows", key=f"del_blank_{SELECTED_RUN}"):
+                n = run_manager.remove_blank_data_rows(SELECTED_RUN)
+                if n:
+                    st.success(f"Removed {n} blank row(s).")
+                    _read_csv.clear()
+                    st.rerun()
+                else:
+                    st.info("No blank rows found.")
 
     # Export this run's CSV.
     ec1, ec2 = st.columns(2)

@@ -106,6 +106,7 @@ class RunTypeSpec:
     data_filename: str
     columns: list[str]
     warning: str
+    id_column: str  # the row's human-facing identifier (used for blank detection)
 
 
 # Per-run-type behaviour, in one place so the app and the module agree.
@@ -115,6 +116,7 @@ RUN_TYPE_SPECS: dict[str, RunTypeSpec] = {
         data_filename="experimental_release.csv",
         columns=list(config.EXPERIMENTAL_RELEASE_COLUMNS),
         warning="This run contains real measured lab data.",
+        id_column="sample_id",
     ),
     "literature_benchmark": RunTypeSpec(
         data_source="literature",
@@ -124,6 +126,7 @@ RUN_TYPE_SPECS: dict[str, RunTypeSpec] = {
             "This run contains literature data only. "
             "Do not treat this as our measured experiment."
         ),
+        id_column="source_id",
     ),
     "synthetic_demo": RunTypeSpec(
         data_source="synthetic",
@@ -133,6 +136,7 @@ RUN_TYPE_SPECS: dict[str, RunTypeSpec] = {
             "This run contains synthetic/demo data only. "
             "It is for testing code, not scientific conclusions."
         ),
+        id_column="sample_id",
     ),
     "plastic_composite": RunTypeSpec(
         data_source="experimental",
@@ -142,6 +146,7 @@ RUN_TYPE_SPECS: dict[str, RunTypeSpec] = {
             "This run is a plastic / fly-ash composite side project. "
             "Keep its data separate from the main fly-ash experiment."
         ),
+        id_column="sample_id",
     ),
 }
 
@@ -444,6 +449,86 @@ def save_literature_dataframe(run_name: str, df: pd.DataFrame) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
     return path
+
+
+def id_column_for(run_name: str) -> str:
+    """The run's identifier column (``sample_id`` or ``source_id``)."""
+    cfg = load_run_config(run_name)
+    return RUN_TYPE_SPECS[cfg["run_type"]].id_column
+
+
+def save_data_file(run_name: str, df: pd.DataFrame) -> Path:
+    """Write a DataFrame back to the run's own data CSV (run-type-aware path).
+
+    Touches only this run's file under ``experiments/<run>/data/`` — never another
+    run and never ``data/raw/experimental_icp``.
+    """
+    path = data_file_path(run_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path
+
+
+def _is_blank(value) -> bool:
+    """A cell counts as blank if it is NaN/None or empty after stripping."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):  # pragma: no cover - non-scalar guard
+        pass
+    return str(value).strip() == ""
+
+
+def delete_data_rows(run_name: str, row_indices) -> int:
+    """Delete rows by 0-based position from the run's data CSV.
+
+    Only the rows at the given positions are removed; the file itself is kept (an
+    empty file with headers remains if all rows are removed). Out-of-range and
+    duplicate indices are ignored. Returns the number of rows actually deleted.
+    Works for any run type (lab / literature / synthetic / plastic).
+    """
+    path = data_file_path(run_name)
+    if not path.exists():
+        return 0
+    df = read_data_file(run_name)
+    n = len(df)
+    valid = sorted({int(i) for i in row_indices if 0 <= int(i) < n})
+    if not valid:
+        return 0
+    kept = df.drop(df.index[valid]).reset_index(drop=True)
+    save_data_file(run_name, kept)
+    return len(valid)
+
+
+def remove_blank_data_rows(run_name: str) -> int:
+    """Remove rows whose id column is blank, or where every cell is blank.
+
+    Returns the number of blank rows removed. Works for any run type. The file is
+    preserved (kept rows are written back); if there are no blank rows the file is
+    left untouched.
+    """
+    path = data_file_path(run_name)
+    if not path.exists():
+        return 0
+    df = read_data_file(run_name)
+    if df.empty:
+        return 0
+
+    all_blank = df.apply(lambda row: all(_is_blank(v) for v in row), axis=1)
+    id_col = id_column_for(run_name)
+    if id_col in df.columns:
+        blank_id = df[id_col].apply(_is_blank)
+        mask = all_blank | blank_id
+    else:
+        mask = all_blank
+
+    n_blank = int(mask.sum())
+    if n_blank:
+        kept = df[~mask].reset_index(drop=True)
+        save_data_file(run_name, kept)
+    return n_blank
 
 
 # --------------------------------------------------------------------------- #
