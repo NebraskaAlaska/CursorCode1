@@ -26,6 +26,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from flyash_phreeqc_ml import config  # noqa: E402
+from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
     load_experimental_release,
@@ -96,6 +97,192 @@ def _figure_dirs() -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
+# Experiment-run sidebar + workspace (the "save files" layer)
+# --------------------------------------------------------------------------- #
+def _run_type_warning(run_type: str) -> None:
+    """Render the run-type warning with severity matching its meaning."""
+    msg = run_manager.warning_for(run_type)
+    if run_type == "lab_experiment":
+        st.info(f"🧪 {msg}")
+    elif run_type == "literature_benchmark":
+        st.warning(f"📚 {msg}")
+    elif run_type == "synthetic_demo":
+        st.error(f"🧩 {msg}")
+    else:  # plastic_composite
+        st.warning(f"♻️ {msg}")
+
+
+def _render_run_sidebar() -> str | None:
+    """Sidebar 'Experiment runs' section: select or create a run.
+
+    Returns the selected run's safe-name (or None). The selection persists across
+    reruns via st.session_state['selected_run'].
+    """
+    st.sidebar.header("Experiment runs")
+    runs = run_manager.list_runs()
+
+    # --- select existing -------------------------------------------------- #
+    current = st.session_state.get("selected_run")
+    options = ["— none —"] + runs
+    index = options.index(current) if current in runs else 0
+    chosen = st.sidebar.selectbox("Open a run", options, index=index)
+    st.session_state["selected_run"] = None if chosen == "— none —" else chosen
+
+    # --- create new ------------------------------------------------------- #
+    with st.sidebar.expander("➕ Create new run", expanded=not runs):
+        new_name = st.text_input("Run name", key="new_run_name",
+                                 placeholder="2026-06-03 pH-only lab data")
+        new_type = st.selectbox("Run type", run_manager.RUN_TYPES, key="new_run_type")
+        st.caption(run_manager.warning_for(new_type))
+        new_desc = st.text_area("Description", key="new_run_desc", height=70)
+        new_notes = st.text_input("Notes (optional)", key="new_run_notes")
+        if st.button("Create run", use_container_width=True):
+            raw = (new_name or "").strip()
+            if not raw:
+                st.error("Run name is required.")
+            else:
+                try:
+                    safe = run_manager.safe_run_name(raw)
+                    if run_manager.run_exists(safe):
+                        st.error(f"A run named '{safe}' already exists — open it instead.")
+                    else:
+                        run_manager.create_run(
+                            raw, new_type, description=new_desc, notes=new_notes
+                        )
+                        st.session_state["selected_run"] = safe
+                        st.success(f"Created run '{safe}'.")
+                        st.rerun()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+
+    # --- show current ----------------------------------------------------- #
+    selected = st.session_state.get("selected_run")
+    st.sidebar.divider()
+    if not selected:
+        st.sidebar.caption("No run selected. Create or open one above.")
+        return None
+
+    cfg = run_manager.load_run_config(selected)
+    st.sidebar.markdown(f"**Current run:** `{selected}`")
+    st.sidebar.markdown(f"**Type:** `{cfg.get('run_type')}`")
+    st.sidebar.markdown(f"**Source:** `{cfg.get('data_source')}`")
+    st.sidebar.caption(f"📁 {run_manager.run_dir(selected).relative_to(_PROJECT_ROOT)}")
+    if cfg.get("description"):
+        st.sidebar.caption(f"📝 {cfg['description']}")
+    return selected
+
+
+def _lab_entry_form(run_name: str) -> None:
+    """Measured-release entry form for a lab-type run (pH-only or full ICP)."""
+    st.write(
+        "Enter a measured-release row. **Leave any chemistry field blank if not "
+        "measured** — pH-only rows are fine; add ICP numbers later."
+    )
+    with st.form(f"lab_entry_{run_name}", clear_on_submit=True):
+        inputs: dict[str, str] = {}
+        cols = st.columns(3)
+        for i, column in enumerate(config.EXPERIMENTAL_RELEASE_COLUMNS):
+            widget_col = cols[i % 3]
+            numeric = column in config.EXPERIMENTAL_NUMERIC_COLUMNS
+            label = f"{column} (number)" if numeric else column
+            if column == "CO2_condition":
+                inputs[column] = widget_col.selectbox(column, _CO2_OPTIONS, key=f"{run_name}_{column}")
+            elif column == "precipitate_observed":
+                inputs[column] = widget_col.selectbox(column, _YESNO_OPTIONS, key=f"{run_name}_{column}")
+            else:
+                inputs[column] = widget_col.text_input(label, value="", key=f"{run_name}_{column}")
+        submitted = st.form_submit_button("Save row to this run")
+
+    if submitted:
+        errors: list[str] = []
+        for column in config.EXPERIMENTAL_NUMERIC_COLUMNS:
+            raw = (inputs.get(column) or "").strip()
+            if raw and _is_not_number(raw):
+                errors.append(f"'{column}' must be a number (got '{raw}').")
+        if not (inputs.get("sample_id") or "").strip():
+            errors.append("'sample_id' is required.")
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            row = {c: (inputs.get(c) or "").strip() for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
+            path = run_manager.append_lab_row(run_name, row)
+            st.success(f"Saved sample '{row['sample_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+
+
+def _literature_entry(run_name: str) -> None:
+    """Manual row entry + CSV upload for a literature-benchmark run."""
+    st.write(
+        "**Literature benchmark data** — values reported by other papers, for "
+        "comparison only. This is kept separate from our measured experiment and is "
+        "never written to a lab run's `experimental_release.csv`."
+    )
+    up = st.file_uploader("Upload a literature CSV", type=["csv"], key=f"lit_up_{run_name}")
+    if up is not None:
+        try:
+            df = pd.read_csv(up)
+            path = run_manager.save_literature_dataframe(run_name, df)
+            st.success(f"Saved {len(df)} row(s) to {path.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+        except Exception as exc:  # pragma: no cover - UI guard
+            st.error(f"Could not read CSV: {exc}")
+
+    with st.form(f"lit_entry_{run_name}", clear_on_submit=True):
+        inputs: dict[str, str] = {}
+        cols = st.columns(3)
+        for i, column in enumerate(run_manager.LITERATURE_BENCHMARK_COLUMNS):
+            widget_col = cols[i % 3]
+            if column == "CO2_condition":
+                inputs[column] = widget_col.selectbox(column, _CO2_OPTIONS, key=f"lit_{run_name}_{column}")
+            else:
+                inputs[column] = widget_col.text_input(column, value="", key=f"lit_{run_name}_{column}")
+        submitted = st.form_submit_button("Add literature row")
+    if submitted:
+        if not (inputs.get("source_id") or "").strip():
+            st.error("'source_id' is required for a literature row.")
+        else:
+            row = {c: (inputs.get(c) or "").strip() for c in run_manager.LITERATURE_BENCHMARK_COLUMNS}
+            path = run_manager.append_literature_row(run_name, row)
+            st.success(f"Added literature row '{row['source_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+
+
+def _demo_entry(run_name: str) -> None:
+    """Add synthetic demo rows (every row tagged source_type=synthetic_demo)."""
+    st.error(
+        "🧩 This is **synthetic / demo data only** — for testing the code, not for "
+        "scientific conclusions. Every row is tagged `source_type=synthetic_demo`."
+    )
+    with st.form(f"demo_entry_{run_name}", clear_on_submit=True):
+        inputs: dict[str, str] = {}
+        cols = st.columns(3)
+        for i, column in enumerate(config.EXPERIMENTAL_RELEASE_COLUMNS):
+            widget_col = cols[i % 3]
+            if column == "CO2_condition":
+                inputs[column] = widget_col.selectbox(column, _CO2_OPTIONS, key=f"demo_{run_name}_{column}")
+            else:
+                inputs[column] = widget_col.text_input(column, value="", key=f"demo_{run_name}_{column}")
+        submitted = st.form_submit_button("Add demo row")
+    if submitted:
+        if not (inputs.get("sample_id") or "").strip():
+            st.error("'sample_id' is required.")
+        else:
+            row = {c: (inputs.get(c) or "").strip() for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
+            path = run_manager.append_demo_row(run_name, row)
+            st.success(f"Added demo row '{row['sample_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+
+
+def _is_not_number(raw: str) -> bool:
+    try:
+        float(raw)
+        return False
+    except ValueError:
+        return True
+
+
+# --------------------------------------------------------------------------- #
 # Page
 # --------------------------------------------------------------------------- #
 st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
@@ -104,6 +291,9 @@ st.caption(
     "A GUI over the existing Phase 1 / Phase 2 scripts. It does not change the "
     "chemistry or train any model."
 )
+
+# Sidebar "save files" — selecting a run here drives the workspace section below.
+SELECTED_RUN = _render_run_sidebar()
 
 # ---- 1. Project status ---------------------------------------------------- #
 st.header("1. Project status")
@@ -275,8 +465,59 @@ for _label, _name in [
                 use_container_width=True,
             )
 
-# ---- 7. Safety and limitations -------------------------------------------- #
-st.header("7. Safety and limitations")
+# ---- 7. Experiment run workspace ------------------------------------------ #
+st.header("7. Experiment run workspace")
+if not SELECTED_RUN:
+    st.info(
+        "Select or create an experiment run in the **Experiment runs** sidebar "
+        "(left) to enter data into its own save file. This is separate from the "
+        "global manual-entry file in section 4."
+    )
+else:
+    _cfg = run_manager.load_run_config(SELECTED_RUN)
+    _rt = _cfg.get("run_type")
+    st.subheader(f"Run `{SELECTED_RUN}` — {_rt}")
+    _run_type_warning(_rt)
+
+    if _rt in run_manager.LAB_LIKE_RUN_TYPES:
+        _lab_entry_form(SELECTED_RUN)
+    elif _rt == "literature_benchmark":
+        _literature_entry(SELECTED_RUN)
+    elif _rt == "synthetic_demo":
+        _demo_entry(SELECTED_RUN)
+
+    # Preview this run's data file.
+    _data = run_manager.read_data_file(SELECTED_RUN)
+    st.markdown(f"**This run's data** ({len(_data)} row(s)):")
+    st.dataframe(_data, use_container_width=True, height=260)
+
+    # Export this run's CSV.
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        if not _data.empty:
+            st.download_button(
+                "⬇️ Export this run's CSV",
+                data=_data.to_csv(index=False).encode("utf-8"),
+                file_name=f"{SELECTED_RUN}_{run_manager.spec_for(_rt).data_filename}",
+                mime="text/csv",
+                use_container_width=True,
+            )
+    with ec2:
+        # Lab-type runs can be pushed into the existing pipeline's manual-entry file.
+        if _rt in run_manager.LAB_LIKE_RUN_TYPES:
+            if st.button("➡️ Export to pipeline (manual-entry CSV)", use_container_width=True):
+                try:
+                    dest = run_manager.export_lab_run_to_pipeline(SELECTED_RUN)
+                    st.success(
+                        f"Copied to {dest.relative_to(_PROJECT_ROOT)} — the existing "
+                        "scripts (05/07) will pick it up."
+                    )
+                    _read_csv.clear()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+
+# ---- 8. Safety and limitations -------------------------------------------- #
+st.header("8. Safety and limitations")
 st.warning(
     "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
     "thermodynamic predictions, not direct measurements, and assume the modelled "

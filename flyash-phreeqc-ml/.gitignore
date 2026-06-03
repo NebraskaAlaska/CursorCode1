@@ -30,6 +30,13 @@ data/raw/experimental_icp/*measured*.csv
 # Keep the blank template tracked (it matches *release*.csv above, so re-include it).
 !data/raw/experimental_icp/experimental_release_template.csv
 
+# Experiment-run "save files" — run data and outputs are research data or
+# generated artifacts; do NOT commit by default. Only experiments/README.md is
+# tracked. (Comments must be on their own line — an inline '#' is part of the pattern.)
+experiments/*/data/*.csv
+experiments/*/outputs/
+experiments/*/run_config.yaml
+
 # OS / editor cruft
 .DS_Store
 .idea/

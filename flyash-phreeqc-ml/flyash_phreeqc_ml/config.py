@@ -28,6 +28,12 @@ FIGURES_DIR: Path = REPORTS_DIR / "figures"
 OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
 TABLES_DIR: Path = OUTPUTS_DIR / "tables"
 
+# Experiment-run "save files" (app-level run manager). Each run is a subfolder
+# under here holding its own run_config.yaml, data/, and outputs/. This is an
+# app-level save/open layer; it does NOT replace the data/raw/experimental_icp
+# pipeline workflow. Run data is gitignored by default (see .gitignore).
+EXPERIMENT_RUNS_DIR: Path = PROJECT_ROOT / "experiments"
+
 # Raw sub-directories (names contain spaces, matching the delivered dataset).
 PHREEQC_INPUT_DIR: Path = RAW_DIR / "PHREEQC inputs"
 PHREEQC_OUTPUT_DIR: Path = RAW_DIR / "PHREEQC outputs"

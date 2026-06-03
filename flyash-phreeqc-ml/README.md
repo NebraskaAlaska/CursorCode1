@@ -109,8 +109,52 @@ streamlit run app.py
 It provides: project status, buttons to run Phase 1 / Phase 2 (with live stdout/stderr),
 a processed-CSV previewer, a form to enter measured experimental data (appended to
 `data/raw/experimental_icp/experimental_release_manual_entry.csv`, never overwritten —
-and gitignored), and a figure viewer. The app changes no chemistry and trains no model;
-see its *Safety and limitations* section.
+and gitignored), a figure viewer, and an **Experiment runs** sidebar (see below). The app
+changes no chemistry and trains no model; see its *Safety and limitations* section.
+
+## Experiment runs / save files
+
+The app can keep several independent experiments side by side, like **save files** — a
+pH-only lab run, a literature-benchmark demo, future ICP data, a plastic/fly-ash side
+project — each in its own folder so their data never get mixed up. This is an app-level
+save/open layer; it does **not** replace the `data/raw/experimental_icp/` pipeline.
+
+Each run lives under `experiments/<safe_run_name>/` with a `run_config.yaml`, a `data/`
+folder, and an `outputs/` folder. See [`experiments/README.md`](experiments/README.md) for
+the full description.
+
+**Creating a run.** In the app's left sidebar (**Experiment runs → ➕ Create new run**),
+enter a name, pick a *run type*, and add a short description. The run folder and config are
+created for you.
+
+**Run types** decide which data file the run uses and how its data is treated:
+
+| run_type               | data file                       | meaning                                              |
+|------------------------|---------------------------------|------------------------------------------------------|
+| `lab_experiment`       | `data/experimental_release.csv` | **real measured lab data** from our experiments      |
+| `literature_benchmark` | `data/literature_benchmark.csv` | values **reported by other papers** (comparison only)|
+| `synthetic_demo`       | `data/demo_data.csv`            | fake/demo data for testing code (tagged synthetic)   |
+| `plastic_composite`    | `data/experimental_release.csv` | plastic / fly-ash composite side project             |
+
+**Entering pH-only data, then ICP later.** For a `lab_experiment` run, submit a row with
+just `sample_id` and the pH fields filled — every chemistry column (`Ca/Si/Al/Fe/Na/K/Sc/REE`)
+may be left blank. When ICP results arrive, add the `*_mM` / `*_ppb` numbers as new rows. The
+schema is the standard release schema, so nothing special is needed.
+
+**Why literature data must stay separate.** Literature values are other people's reported
+results under other people's conditions. Mixing them into our `experimental_release.csv`
+would corrupt any "measured vs PHREEQC" comparison and any future ML correction layer. The
+run manager **enforces** this: a literature run can only write `literature_benchmark.csv`,
+never a lab run's `experimental_release.csv`.
+
+**Feeding a lab run into the pipeline.** A lab run's **Export to pipeline** button copies its
+`experimental_release.csv` to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
+— the file the existing scripts already read — so steps 05/07 run unchanged.
+
+Run data and outputs are **gitignored by default** (`experiments/*/data/*.csv`,
+`experiments/*/outputs/`, `experiments/*/run_config.yaml`); only `experiments/README.md` is
+tracked. Do not commit real lab data, literature datasets copied from papers, or generated
+outputs unless explicitly approved.
 
 ## Run Phase 1
 

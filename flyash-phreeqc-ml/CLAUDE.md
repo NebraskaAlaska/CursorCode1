@@ -19,11 +19,21 @@ experiment — **not** a blind replacement for the chemistry.
 - **Phase 2 — PHREEQC vs experiment.** A measured-experimental-release template + parser, and
   a residual comparison (`measured − PHREEQC` for Ca/Si/Al/Fe/pH) with measured-vs-PHREEQC plots.
   The machinery is in place and tested but **dormant until measured data exists**.
-- **Experiment-planning + QA/QC tooling** (pre-data, no ML). `experiments/` + scripts 06–08:
-  generate the run sheet, validate a filled release CSV (error/warning report), and compute
-  sustainability *proxy* indicators. These run before measured data exists and feed Phase 2.
+- **Experiment-planning + QA/QC tooling** (pre-data, no ML). `flyash_phreeqc_ml/experiments/`
+  (the *package*) + scripts 06–08: generate the run sheet, validate a filled release CSV
+  (error/warning report), and compute sustainability *proxy* indicators. These run before
+  measured data exists and feed Phase 2.
+- **Experiment Run Manager** (app-level "save files", no ML). `flyash_phreeqc_ml/run_manager.py`
+  + the top-level `experiments/` *data folder*. Lets one app hold several independent runs
+  (lab / literature / synthetic / plastic-composite), each in `experiments/<safe_name>/` with a
+  `run_config.yaml`, `data/`, and `outputs/`. It is a save/open layer over the existing workflow,
+  not a replacement, and it keeps literature data out of the measured-release file.
 
 Phase 3 (ML) is not started.
+
+> **Two different `experiments/`.** `flyash_phreeqc_ml/experiments/` is the *Python package*
+> (planning + QA/QC). The repo-root `experiments/` is the *data folder* of run save-files
+> (gitignored except its `README.md`). Don't confuse them.
 
 ## Working rules (project-specific)
 
@@ -45,6 +55,10 @@ Phase 3 (ML) is not started.
   `experimental_release_template.csv` tracked. So Monday's real lab data stays out of git unless
   deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes
   part of the pattern.)
+- **Experiment-run save-files are gitignored by default.** `.gitignore` ignores
+  `experiments/*/data/*.csv`, `experiments/*/outputs/`, and `experiments/*/run_config.yaml`;
+  **only** `experiments/README.md` is tracked. Run data (lab, literature, synthetic) and
+  generated outputs stay out of git unless explicitly approved.
 - **Run `pytest` before committing** any code change, and keep code modular, simple, and tested.
 
 ### Git layout (important)
@@ -131,11 +145,26 @@ modules together and own all file I/O paths.
   Outputs land in `outputs/tables/` (gitignored). The generated plan is added to
   `EXPERIMENTAL_NON_DATA_FILES` so the Phase-2 loader skips it.
 
+- **`run_manager.py`** — the Experiment Run Manager (app-level "save files"). Pure file/IO,
+  no chemistry. `RUN_TYPE_SPECS` maps each `run_type` (`lab_experiment`, `literature_benchmark`,
+  `synthetic_demo`, `plastic_composite`) to its `data_source`, data filename, column schema, and
+  warning. Typed path helpers (`lab_release_path` / `literature_path` / `demo_path`) call
+  `require_run_type`, which **raises `RunTypeError`** on a mismatch — that guardrail is what keeps
+  literature/synthetic data out of a lab run's `experimental_release.csv`. `create_run` writes a
+  `run_config.yaml` (flat scalar mapping, serialized via a tiny built-in JSON-quoted-scalar YAML
+  helper, so **no PyYAML dependency**). `export_lab_run_to_pipeline` copies a lab run's CSV into
+  `data/raw/experimental_icp/experimental_release_manual_entry.csv` so the existing scripts run
+  unchanged. Paths derive from `config.EXPERIMENT_RUNS_DIR`. Synthetic rows are force-tagged
+  `source_type=synthetic_demo`.
+
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts: project status, run
   buttons (it `subprocess`-runs `run_phase1.py` / step 05 / steps 06–08 and shows stdout/stderr), a
-  processed-CSV previewer, an experimental-data entry form, an experiment-planning section, and a
-  figure viewer. It reuses package functions and adds no chemistry/ML logic. The form appends rows
-  to `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten).
+  processed-CSV previewer, an experimental-data entry form, an experiment-planning section, a
+  figure viewer, and an **Experiment runs** sidebar + workspace (create/open a run, type-specific
+  entry forms, per-run preview, export). It reuses package functions and adds no chemistry/ML logic.
+  The section-4 form appends rows to
+  `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten);
+  the run workspace writes into the selected run's own `experiments/<name>/data/` file instead.
 
 ### Key conventions
 
