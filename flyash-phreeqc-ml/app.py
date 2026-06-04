@@ -555,6 +555,40 @@ def _render_results_summary() -> None:
         st.dataframe(preview, use_container_width=True, height=200)
 
 
+# Literature-summary columns (only those present are shown). Both reported_final_pH
+# (the literature schema name) and final_pH are listed so whichever exists is used.
+_LIT_SUMMARY_COLS = [
+    "source_id", "paper_title", "year", "fly_ash_class",
+    "reported_final_pH", "final_pH",
+    "reported_Ca_mM", "reported_Al_mM", "reported_Fe_mM",
+    "comparability_to_our_experiment",
+]
+
+
+def _render_literature_summary(run_name: str) -> None:
+    """Literature-benchmark read-out — never the lab measured-vs-PHREEQC residual."""
+    st.info(
+        "This is a literature benchmark run. Literature data are stored separately "
+        "and are not treated as measured lab data."
+    )
+    lit = run_manager.read_data_file(run_name)
+    st.metric("Literature rows", len(lit))
+
+    present = [c for c in _LIT_SUMMARY_COLS if c in lit.columns]
+    if lit.empty:
+        st.info("No literature rows entered yet for this run.")
+    elif present:
+        st.markdown("**Literature benchmark summary** (existing columns only):")
+        st.dataframe(lit[present], use_container_width=True, height=200)
+
+    # The lab comparison belongs to a *different* run — keep it collapsed and labelled.
+    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
+    if comp_path.exists():
+        with st.expander("Latest lab comparison from previous run", expanded=False):
+            st.warning("This does not belong to the selected literature benchmark run.")
+            _render_results_summary()
+
+
 # Comparison figures get specific captions; everything else is a PHREEQC-only plot.
 _FIGURE_CAPTIONS = {
     "measured_vs_phreeqc.png": (
@@ -696,26 +730,47 @@ else:
 
 # ---- 3. Results summary --------------------------------------------------- #
 st.header("3. Results summary")
-st.write(
-    "An honest read-out of the latest comparison run — row counts, what residuals "
-    "were actually calculated, and the comparison table. Reads "
-    "`data/processed/comparison_measured_vs_phreeqc.csv` plus the validation and "
-    "sustainability tables in `outputs/tables/`."
-)
-_render_results_summary()
 
-# Surface the QA/QC tables alongside the summary when they exist.
-for _rlabel, _rname in [
-    ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
-    ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
-]:
-    _rpath = config.TABLES_DIR / _rname
-    if _rpath.exists():
-        with st.expander(f"{_rlabel} — {_rname}"):
-            st.dataframe(
-                _read_csv(str(_rpath), _rpath.stat().st_mtime),
-                use_container_width=True,
-            )
+# What's shown depends on the selected run type, so a literature/synthetic run never
+# displays the lab measured-vs-PHREEQC residual as if it were its own result.
+_summary_rt = (
+    run_manager.load_run_config(SELECTED_RUN).get("run_type") if SELECTED_RUN else None
+)
+
+if _summary_rt == "literature_benchmark":
+    _render_literature_summary(SELECTED_RUN)
+elif _summary_rt == "synthetic_demo":
+    st.warning(
+        "This is a synthetic/demo run. Synthetic demo data are for testing the code "
+        "only — not scientific output. The lab-experiment comparison is not shown here."
+    )
+else:
+    # lab_experiment / plastic_composite, or no run selected.
+    if _summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
+        st.markdown("**Latest lab-experiment PHREEQC comparison.**")
+    else:
+        st.write(
+            "Latest PHREEQC comparison from the lab pipeline. Select a run in the "
+            "sidebar for run-specific context."
+        )
+    st.caption(
+        "Reads `data/processed/comparison_measured_vs_phreeqc.csv` plus the validation "
+        "and sustainability tables in `outputs/tables/`."
+    )
+    _render_results_summary()
+
+    # Lab-data QA/QC tables — only alongside the lab summary, never under lit/demo.
+    for _rlabel, _rname in [
+        ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
+        ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
+    ]:
+        _rpath = config.TABLES_DIR / _rname
+        if _rpath.exists():
+            with st.expander(f"{_rlabel} — {_rname}"):
+                st.dataframe(
+                    _read_csv(str(_rpath), _rpath.stat().st_mtime),
+                    use_container_width=True,
+                )
 
 # ---- 4. Run pipeline ------------------------------------------------------ #
 st.header("4. Run pipeline")
