@@ -605,6 +605,38 @@ def read_mapping(run_name: str) -> pd.DataFrame:
     return pd.DataFrame(columns=MAPPING_COLUMNS)
 
 
+def summarize_mapping(mapping: pd.DataFrame) -> dict:
+    """Summarise a sample->PHREEQC mapping for quality checks (pure, no I/O).
+
+    Returns a dict with:
+    * ``n_samples`` — number of non-blank mapped samples,
+    * ``n_unique_rows`` — number of distinct PHREEQC ``record_key`` values used,
+    * ``samples_per_row`` — ``{record_key: count}``, descending by count,
+    * ``duplicated_rows`` — record_keys mapped by more than one sample,
+    * ``has_collisions`` — True if any PHREEQC row is shared by 2+ samples.
+
+    A collision means several samples point at the *same* model prediction, which
+    is what makes a scatter plot collapse to a vertical line.
+    """
+    if mapping is None or mapping.empty or "phreeqc_record_key" not in mapping.columns:
+        return {
+            "n_samples": 0, "n_unique_rows": 0,
+            "samples_per_row": {}, "duplicated_rows": [], "has_collisions": False,
+        }
+    keys = mapping["phreeqc_record_key"].astype(str).str.strip()
+    keys = keys[(keys != "") & (keys.str.lower() != "nan")]
+    counts = keys.value_counts()
+    samples_per_row = {k: int(v) for k, v in counts.items()}
+    duplicated = [k for k, v in samples_per_row.items() if v > 1]
+    return {
+        "n_samples": int(keys.shape[0]),
+        "n_unique_rows": int(counts.shape[0]),
+        "samples_per_row": samples_per_row,
+        "duplicated_rows": duplicated,
+        "has_collisions": bool(duplicated),
+    }
+
+
 def add_mapping(run_name: str, sample_id: str, phreeqc_record_key: str) -> pd.DataFrame:
     """Upsert one ``sample_id -> phreeqc_record_key`` link and save it.
 

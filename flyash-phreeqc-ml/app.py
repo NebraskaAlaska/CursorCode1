@@ -414,6 +414,38 @@ def _run_lab_workflow(run_name: str) -> None:
     _read_csv.clear()  # processed CSVs changed; refresh the viewers below
 
 
+def _render_mapping_quality(mapping: pd.DataFrame) -> None:
+    """Small mapping-quality summary + collision warning for the Mapping tab."""
+    summary = run_manager.summarize_mapping(mapping)
+    if summary["n_samples"] == 0:
+        return
+
+    st.markdown("**Mapping quality**")
+    m1, m2 = st.columns(2)
+    m1.metric("Mapped samples", summary["n_samples"])
+    m2.metric("Unique PHREEQC rows used", summary["n_unique_rows"])
+
+    if summary["samples_per_row"]:
+        per_row = pd.DataFrame(
+            [{"phreeqc_record_key": k, "samples_mapped": v}
+             for k, v in summary["samples_per_row"].items()]
+        )
+        st.caption("Samples per PHREEQC row:")
+        st.dataframe(per_row, use_container_width=True, height=170)
+
+    if summary["has_collisions"]:
+        st.warning(
+            "Multiple samples are mapped to the same PHREEQC row. Scatter plots may "
+            "appear as vertical lines because the model prediction is identical for "
+            "those samples."
+        )
+    if summary["n_samples"] > summary["n_unique_rows"]:
+        st.warning(
+            "There are more samples than distinct PHREEQC rows, so the comparison may "
+            "not represent distinct model conditions."
+        )
+
+
 def _render_mapping_section(run_name: str) -> None:
     """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
 
@@ -493,6 +525,8 @@ def _render_mapping_section(run_name: str) -> None:
     mapping = run_manager.read_mapping(run_name)
     st.markdown(f"**Existing mappings** ({len(mapping)}):")
     st.dataframe(mapping, use_container_width=True, height=170)
+
+    _render_mapping_quality(mapping)
 
     if not mapping.empty:
         with st.expander("🗑️ Delete mappings"):
@@ -1027,6 +1061,11 @@ def _render_results_tab(selected_run: str | None) -> None:
     )
     _render_results_summary()
     _render_comparison_figures()
+    st.info(
+        "📈 **Interpreting the plots:** if measured values vary while PHREEQC "
+        "predictions stay constant, this usually means the mapping is too coarse or "
+        "more PHREEQC simulations are needed."
+    )
 
     for label, name in [
         ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
