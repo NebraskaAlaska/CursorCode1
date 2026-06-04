@@ -1,7 +1,7 @@
 # Monday Experiment Protocol — CFA alkali activation + leaching
 
 This is the bench protocol and data-entry guide for Monday's experiments. It pairs
-with the generated run sheet (`data/raw/experimental_icp/monday_experiment_plan.csv`)
+with the generated run sheet (`data/raw/experimental_icp/experiment_plan.csv`)
 and the Phase 2 release schema, so the measured data drops straight into the
 pipeline.
 

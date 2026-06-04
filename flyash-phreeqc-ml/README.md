@@ -21,16 +21,17 @@ The project is built in phases.
 
 > **Phase 2 status:** the ingestion + comparison machinery is in place and tested, but
 > **no real ML is trained yet**. The comparison runs as soon as measured experimental
-> data is dropped in (see *Entering Monday's experimental data* below).
+> data is dropped in (see *Entering measured experimental data* below).
 
 ## Experiment planning & QA/QC (pre-data tools)
 
-Helpers to design Monday's experiments and keep the measured data clean. They train
-no model and change no chemistry. See `docs/monday_experiment_protocol.md` for the
-full bench protocol and data-entry guide.
+Reusable helpers to design an experiment run and keep the measured data clean — for
+any run (lab session, future ICP data, literature benchmark, plastic/fly-ash work).
+They train no model and change no chemistry. See `docs/monday_experiment_protocol.md`
+for an example bench protocol and data-entry guide.
 
 ```bash
-python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/monday_experiment_plan.csv
+python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/experiment_plan.csv
 python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
 python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
 ```
@@ -72,14 +73,14 @@ flyash-phreeqc-ml/
 │   ├── 03_build_master_dataset.py
 │   ├── 04_make_plots.py
 │   ├── 05_compare_experimental.py   # Phase 2 (no-op until measured data exists)
-│   ├── 06_generate_experiment_plan.py  # build Monday's run sheet
+│   ├── 06_generate_experiment_plan.py  # build an experiment run sheet
 │   ├── 07_validate_experimental_data.py # QA/QC a filled release CSV
 │   ├── 08_sustainability_score.py   # proxy sustainability/cost indicators
 │   └── run_phase1.py            # runs steps 01–04 in order
 ├── tests/                       # pytest suite (Phase 2 ingestion + residuals)
 ├── data/
 │   ├── raw/                     # original inputs (committed, read-only)
-│   │   └── experimental_icp/    # measured-release template + Monday's lab CSVs
+│   │   └── experimental_icp/    # measured-release template + filled lab CSVs
 │   └── processed/               # generated CSVs  (created by the scripts)
 └── reports/figures/             # generated plots  (created by the scripts)
 ```
@@ -106,11 +107,89 @@ pip install -r requirements.txt   # includes streamlit
 streamlit run app.py
 ```
 
+**Running the workflow.** After entering data into a run, click the
+**"Run selected experiment workflow"** button inside the app (section 2). For a lab
+run it exports the run's CSV to the pipeline and runs Phase 1, validation, the
+measured-vs-PHREEQC comparison, and the sustainability score in order — showing each
+command's output and stopping at the first failure. The individual step buttons remain
+available.
+
 It provides: project status, buttons to run Phase 1 / Phase 2 (with live stdout/stderr),
 a processed-CSV previewer, a form to enter measured experimental data (appended to
 `data/raw/experimental_icp/experimental_release_manual_entry.csv`, never overwritten —
-and gitignored), and a figure viewer. The app changes no chemistry and trains no model;
-see its *Safety and limitations* section.
+and gitignored), a figure viewer, and an **Experiment runs** sidebar (see below). The app
+changes no chemistry and trains no model; see its *Safety and limitations* section.
+
+## Experiment runs / save files
+
+The app can keep several independent experiments side by side, like **save files** — a
+pH-only lab run, a literature-benchmark demo, future ICP data, a plastic/fly-ash side
+project — each in its own folder so their data never get mixed up. This is an app-level
+save/open layer; it does **not** replace the `data/raw/experimental_icp/` pipeline.
+
+Each run lives under `experiments/<safe_run_name>/` with a `run_config.yaml`, a `data/`
+folder, and an `outputs/` folder. See [`experiments/README.md`](experiments/README.md) for
+the full description.
+
+**Creating a run.** In the app's left sidebar (**Experiment runs → ➕ Create new run**),
+enter a name, pick a *run type*, and add a short description. The run folder and config are
+created for you.
+
+**Run types** decide which data file the run uses and how its data is treated:
+
+| run_type               | data file                       | meaning                                              |
+|------------------------|---------------------------------|------------------------------------------------------|
+| `lab_experiment`       | `data/experimental_release.csv` | **real measured lab data** from our experiments      |
+| `literature_benchmark` | `data/literature_benchmark.csv` | values **reported by other papers** (comparison only)|
+| `synthetic_demo`       | `data/demo_data.csv`            | fake/demo data for testing code (tagged synthetic)   |
+| `plastic_composite`    | `data/experimental_release.csv` | plastic / fly-ash composite side project             |
+
+**Entering pH-only data, then ICP later.** For a `lab_experiment` run, submit a row with
+just `sample_id` and the pH fields filled — every chemistry column (`Ca/Si/Al/Fe/Na/K/Sc/REE`)
+may be left blank. When ICP results arrive, add the `*_mM` / `*_ppb` numbers as new rows. The
+schema is the standard release schema, so nothing special is needed.
+
+**Why literature data must stay separate.** Literature values are other people's reported
+results under other people's conditions. Mixing them into our `experimental_release.csv`
+would corrupt any "measured vs PHREEQC" comparison and any future ML correction layer. The
+run manager **enforces** this: a literature run can only write `literature_benchmark.csv`,
+never a lab run's `experimental_release.csv`.
+
+**Feeding a lab run into the pipeline.** A lab run's **Export to pipeline** button copies its
+`experimental_release.csv` to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
+— the file the existing scripts already read — so steps 05/07 run unchanged.
+
+### Sample → PHREEQC mapping (needed for residuals)
+
+**What it is.** A small table linking each measured `sample_id` to the PHREEQC result row
+(`record_key`) that represents the *same* chemistry. PHREEQC `.pqo` outputs and lab samples
+have no shared key, so the link is made by hand — there is no reliable automatic join.
+
+**Why it's needed.** The comparison step (`scripts/05_compare_experimental.py`) computes
+`residual = measured − PHREEQC` per sample. Without the mapping it has nothing to join on, so
+it prints *"no measured/PHREEQC pairs to plot (mapping not set yet)"* and leaves residuals NaN —
+a deliberate "not linked yet" state, not a wrong join.
+
+**How to map pH-only lab data.** In the app's **Experiment run workspace → Sample → PHREEQC
+mapping**: pick a `sample_id`, pick the matching PHREEQC `batch` row (shown with `record_key`,
+`pH`, `mol_Ca/Si/Al/Na`, …), and click **Save mapping**. Run Phase 1 first so
+`data/processed/phreeqc_results.csv` exists. The mapping is saved to the run's own
+`experiments/<run_name>/data/sample_phreeqc_map.csv`; **Export mapping to pipeline** copies it to
+`data/raw/experimental_icp/sample_phreeqc_map.csv`, where step 05 reads it automatically. With a
+mapping in place and `final_pH` filled, step 05 computes `residual_pH = final_pH − phreeqc_pH`.
+
+**Later: ICP residuals.** The same mapping drives Ca/Si/Al/Fe residuals once those `*_mM`
+measurements are entered — no re-mapping needed. (Fe may stay NaN if the PHREEQC runs don't
+model Fe; that is "unavailable", not "predicted zero".)
+
+The **"Run selected experiment workflow"** button uses the mapping automatically: if the
+selected lab run has one, it is exported to the pipeline before the comparison runs; if not, the
+workflow still runs but warns that residuals won't be calculated.
+
+Run data and outputs are **gitignored by default** (`experiments/*/data/*.csv`,
+`experiments/*/outputs/`, `experiments/*/run_config.yaml`); only `experiments/README.md` is
+tracked. Do not commit real lab data, literature datasets copied from papers, or generated
+outputs unless explicitly approved.
 
 ## Run Phase 1
 
@@ -136,7 +215,7 @@ python scripts/04_make_plots.py           # -> reports/figures/*.png
 - `data/processed/master_dataset.csv` — the joined modeling table (PHREEQC side for now)
 - `reports/figures/*.png` — exploratory plots
 
-## Entering Monday's experimental data (Phase 2)
+## Entering measured experimental data (Phase 2)
 
 The lab/ICP results are entered against a fixed template so the parser, comparison,
 and tests all agree on the schema.

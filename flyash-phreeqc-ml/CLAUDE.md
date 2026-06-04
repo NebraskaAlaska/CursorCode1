@@ -19,11 +19,21 @@ experiment — **not** a blind replacement for the chemistry.
 - **Phase 2 — PHREEQC vs experiment.** A measured-experimental-release template + parser, and
   a residual comparison (`measured − PHREEQC` for Ca/Si/Al/Fe/pH) with measured-vs-PHREEQC plots.
   The machinery is in place and tested but **dormant until measured data exists**.
-- **Experiment-planning + QA/QC tooling** (pre-data, no ML). `experiments/` + scripts 06–08:
-  generate the run sheet, validate a filled release CSV (error/warning report), and compute
-  sustainability *proxy* indicators. These run before measured data exists and feed Phase 2.
+- **Experiment-planning + QA/QC tooling** (pre-data, no ML). `flyash_phreeqc_ml/experiments/`
+  (the *package*) + scripts 06–08: generate the run sheet, validate a filled release CSV
+  (error/warning report), and compute sustainability *proxy* indicators. These run before
+  measured data exists and feed Phase 2.
+- **Experiment Run Manager** (app-level "save files", no ML). `flyash_phreeqc_ml/run_manager.py`
+  + the top-level `experiments/` *data folder*. Lets one app hold several independent runs
+  (lab / literature / synthetic / plastic-composite), each in `experiments/<safe_name>/` with a
+  `run_config.yaml`, `data/`, and `outputs/`. It is a save/open layer over the existing workflow,
+  not a replacement, and it keeps literature data out of the measured-release file.
 
 Phase 3 (ML) is not started.
+
+> **Two different `experiments/`.** `flyash_phreeqc_ml/experiments/` is the *Python package*
+> (planning + QA/QC). The repo-root `experiments/` is the *data folder* of run save-files
+> (gitignored except its `README.md`). Don't confuse them.
 
 ## Working rules (project-specific)
 
@@ -32,7 +42,7 @@ Phase 3 (ML) is not started.
   Until then, Phase 2 comparison is the ceiling.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
-  `data/raw/experimental_icp/monday_experiment_plan.csv` are gitignored and re-creatable by
+  `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by
   running the scripts.
 - **Confidential raw research data:** do not commit raw research data unless the user confirms
   it is allowed. `data/raw/` is currently tracked, so be deliberate about anything added there.
@@ -40,11 +50,16 @@ Phase 3 (ML) is not started.
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
-  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, and the generated plan in
+  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, the generated plan
+  (`experiment_plan.csv`), and the generated `sample_phreeqc_map.csv` in
   `data/raw/experimental_icp/`, with a `!`-re-include keeping **only** the blank
-  `experimental_release_template.csv` tracked. So Monday's real lab data stays out of git unless
+  `experimental_release_template.csv` tracked. So real lab data stays out of git unless
   deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes
   part of the pattern.)
+- **Experiment-run save-files are gitignored by default.** `.gitignore` ignores
+  `experiments/*/data/*.csv`, `experiments/*/outputs/`, and `experiments/*/run_config.yaml`;
+  **only** `experiments/README.md` is tracked. Run data (lab, literature, synthetic) and
+  generated outputs stay out of git unless explicitly approved.
 - **Run `pytest` before committing** any code change, and keep code modular, simple, and tested.
 
 ### Git layout (important)
@@ -68,7 +83,7 @@ python scripts/run_phase1.py            # Phase 1: parse -> processed CSVs -> ma
 python scripts/05_compare_experimental.py  # Phase 2: measured vs PHREEQC (no-op until data exists)
 
 # experiment planning + QA/QC (pre-data; no ML)
-python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/monday_experiment_plan.csv
+python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/experiment_plan.csv
 python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
 python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
 
@@ -131,11 +146,38 @@ modules together and own all file I/O paths.
   Outputs land in `outputs/tables/` (gitignored). The generated plan is added to
   `EXPERIMENTAL_NON_DATA_FILES` so the Phase-2 loader skips it.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts: project status, run
-  buttons (it `subprocess`-runs `run_phase1.py` / step 05 / steps 06–08 and shows stdout/stderr), a
-  processed-CSV previewer, an experimental-data entry form, an experiment-planning section, and a
-  figure viewer. It reuses package functions and adds no chemistry/ML logic. The form appends rows
-  to `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten).
+- **`run_manager.py`** — the Experiment Run Manager (app-level "save files"). Pure file/IO,
+  no chemistry. `RUN_TYPE_SPECS` maps each `run_type` (`lab_experiment`, `literature_benchmark`,
+  `synthetic_demo`, `plastic_composite`) to its `data_source`, data filename, column schema, and
+  warning. Typed path helpers (`lab_release_path` / `literature_path` / `demo_path`) call
+  `require_run_type`, which **raises `RunTypeError`** on a mismatch — that guardrail is what keeps
+  literature/synthetic data out of a lab run's `experimental_release.csv`. `create_run` writes a
+  `run_config.yaml` (flat scalar mapping, serialized via a tiny built-in JSON-quoted-scalar YAML
+  helper, so **no PyYAML dependency**). `export_lab_run_to_pipeline` copies a lab run's CSV into
+  `data/raw/experimental_icp/experimental_release_manual_entry.csv` so the existing scripts run
+  unchanged. Paths derive from `config.EXPERIMENT_RUNS_DIR`. Synthetic rows are force-tagged
+  `source_type=synthetic_demo`. **Row editing:** `delete_data_rows` (by 0-based position) and
+  `remove_blank_data_rows` clean a run's own CSV in place (file kept, only rows removed), for any
+  run type. **Sample→PHREEQC mapping** (lab-like runs only): `add_mapping` upserts one
+  `sample_id → phreeqc_record_key` link (columns `MAPPING_COLUMNS`, matching what `scripts/05` +
+  `compare/residuals.py` expect), `read_mapping` / `delete_mapping_rows` / `has_mapping` manage it
+  in `experiments/<run>/data/sample_phreeqc_map.csv`, and `export_mapping_to_pipeline` copies it to
+  `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05.
+
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized in numbered
+  sections (1–10): project status; **Run / Execute selected experiment** (one button that, for a
+  lab run, exports the run CSV + mapping to the pipeline then runs Phase 1 → 07 → 05 → 08 in order,
+  stopping at the first failure; warns if no mapping); **Results summary** (run-type-aware — lab
+  shows the measured-vs-PHREEQC comparison/residual cards, literature shows its own benchmark
+  summary with any lab comparison only in a collapsed/warned expander, synthetic shows a
+  testing-only warning); run-pipeline buttons; processed-CSV previewer; the **legacy** global
+  entry form (now inside a "Legacy/manual global data entry" expander — the run workspace is the
+  recommended path); a figure viewer (captioned measured-vs-PHREEQC plots + a filtered
+  PHREEQC-only viewer); a general **experiment-planning** section; and the **Experiment runs**
+  sidebar + workspace (create/open a run, type-specific entry, per-run preview, row deletion,
+  sample→PHREEQC mapping, export). It reuses package functions and adds no chemistry/ML logic. The
+  legacy form appends to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
+  (gitignored); the run workspace writes into the selected run's own `experiments/<name>/data/`.
 
 ### Key conventions
 

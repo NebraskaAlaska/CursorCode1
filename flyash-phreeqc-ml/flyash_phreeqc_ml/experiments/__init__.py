@@ -1,4 +1,4 @@
-"""Experiment-planning and QA/QC tools for Monday's lab work.
+"""Experiment-planning and QA/QC tools for an experiment run's lab work.
 
 These modules are *pre-data* helpers — they design the experiment matrix, validate
 a filled experimental-release CSV before it enters Phase 2, and compute simple

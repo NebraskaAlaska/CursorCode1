@@ -1,4 +1,4 @@
-"""Feature 1 — generate a clean Monday experiment plan (a run sheet).
+"""Generate a clean experiment plan (a run sheet) for an experiment run.
 
 The plan is built from four small experiment *sets* (a time series, a NaOH
 concentration series, a CO2-control pair, and a replicate check). Each set is a
@@ -7,7 +7,7 @@ deterministic ``sample_id``. Rows are de-duplicated on ``sample_id`` so the same
 physical condition is not scheduled twice — unless the replicate number differs.
 
 The output CSV carries the planning columns plus all blank measurement columns, so
-the same file can be printed as a bench sheet and filled in directly on Monday.
+the same file can be printed as a bench sheet and filled in directly at the bench.
 This module computes the table only; the script ``scripts/06_generate_experiment_plan.py``
 owns the file path.
 """
@@ -161,7 +161,7 @@ def _all_planned_rows(experiment_date: str | None = None) -> list[dict]:
 
 
 def build_experiment_plan(experiment_date: str | None = None) -> pd.DataFrame:
-    """Build the full Monday experiment plan as a DataFrame.
+    """Build the full experiment plan as a DataFrame.
 
     Rows from all four sets are concatenated in definition order, then
     de-duplicated on ``sample_id`` keeping the first occurrence — so a condition
@@ -201,7 +201,7 @@ def write_experiment_plan(
     (its ``plan`` key holds the written DataFrame).
     """
     if path is None:
-        path = config.EXPERIMENTAL_ICP_DIR / config.MONDAY_EXPERIMENT_PLAN_CSV
+        path = config.EXPERIMENTAL_ICP_DIR / config.EXPERIMENT_PLAN_CSV
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
