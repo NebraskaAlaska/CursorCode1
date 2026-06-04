@@ -368,7 +368,7 @@ def _render_mapping_section(run_name: str) -> None:
     if not results_path.exists():
         st.info(
             "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(Section 3 or the workflow button) to generate PHREEQC results."
+            "(Section 4 or the workflow button) to generate PHREEQC results."
         )
         return
     phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
@@ -454,6 +454,171 @@ def _render_mapping_section(run_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Results summary + comparison preview (presentation-friendly, honest)
+# --------------------------------------------------------------------------- #
+# (measured_col, display_name) — measured columns are unprefixed in the
+# comparison CSV; renamed here so the preview reads "measured_ vs phreeqc_".
+_COMPARISON_PREVIEW_SPEC = [
+    ("sample_id", "sample_id"),
+    ("phreeqc_record_key", "phreeqc_record_key"),
+    ("final_pH", "measured_final_pH"),
+    ("phreeqc_pH", "phreeqc_pH"),
+    ("residual_pH", "residual_pH"),
+    ("Ca_mM", "measured_Ca_mM"), ("phreeqc_Ca_mM", "phreeqc_Ca_mM"), ("residual_Ca", "residual_Ca"),
+    ("Si_mM", "measured_Si_mM"), ("phreeqc_Si_mM", "phreeqc_Si_mM"), ("residual_Si", "residual_Si"),
+    ("Al_mM", "measured_Al_mM"), ("phreeqc_Al_mM", "phreeqc_Al_mM"), ("residual_Al", "residual_Al"),
+    ("Fe_mM", "measured_Fe_mM"), ("phreeqc_Fe_mM", "phreeqc_Fe_mM"), ("residual_Fe", "residual_Fe"),
+]
+
+_ICP_MEASURED_COLS = ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM", "Sc_ppb", "total_REE_ppb"]
+
+
+def _has_numeric(df: pd.DataFrame, col: str) -> bool:
+    """True if the column exists and has at least one numeric (non-NaN) value."""
+    return col in df.columns and bool(pd.to_numeric(df[col], errors="coerce").notna().any())
+
+
+def _looks_like_test(comp: pd.DataFrame) -> bool:
+    if "sample_id" not in comp.columns:
+        return False
+    sids = comp["sample_id"].astype(str)
+    return bool(sids.str.upper().str.contains("TEST").any())
+
+
+def _render_results_summary() -> None:
+    """Honest, presentation-friendly summary of the latest comparison run."""
+    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
+    if not comp_path.exists():
+        st.info(
+            "No comparison results yet. Run the workflow (Section 2) for a lab run "
+            "that has a sample→PHREEQC mapping to generate "
+            "`data/processed/comparison_measured_vs_phreeqc.csv`."
+        )
+        return
+
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    n_rows = len(comp)
+    if "phreeqc_record_key" in comp.columns:
+        mapped = int(comp["phreeqc_record_key"].apply(
+            lambda v: not (pd.isna(v) or str(v).strip() == "")).sum())
+    else:
+        mapped = 0
+    ph_ok = _has_numeric(comp, "residual_pH")
+    icp_resid_ok = any(_has_numeric(comp, f"residual_{el}") for el in ["Ca", "Si", "Al", "Fe"])
+    icp_missing = not any(_has_numeric(comp, c) for c in _ICP_MEASURED_COLS)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Experimental rows", n_rows)
+    m2.metric("Mapped samples", mapped)
+    m3.metric("pH residuals", "yes" if ph_ok else "no")
+    m4.metric("Ca/Si/Al/Fe residuals", "yes" if icp_resid_ok else "no")
+
+    st.markdown(
+        f"- **ICP chemistry:** {'missing (pH-only)' if icp_missing else 'present'}\n"
+        f"- **Comparison CSV:** `{comp_path.relative_to(_PROJECT_ROOT)}`"
+    )
+
+    # Test/demo guard.
+    if _looks_like_test(comp):
+        st.error(
+            "This appears to be a test/demo row (sample_id contains \"TEST\"). "
+            "Do not interpret it as scientific evidence."
+        )
+
+    # pH-only mode.
+    if ph_ok and not icp_resid_ok:
+        st.warning(
+            "Only pH residuals are available because ICP chemistry values are blank. "
+            "Ca/Si/Al/Fe/REE validation requires ICP-OES/ICP-MS data."
+        )
+
+    # Single-sample honesty + pH residual cards.
+    if mapped == 1 and ph_ok:
+        st.warning(
+            "This is a single-sample comparison, not a trend. It only checks one "
+            "mapped condition."
+        )
+        row = comp[pd.to_numeric(comp["residual_pH"], errors="coerce").notna()].iloc[0]
+        meas = pd.to_numeric(pd.Series([row.get("final_pH")]), errors="coerce").iloc[0]
+        pred = pd.to_numeric(pd.Series([row.get("phreeqc_pH")]), errors="coerce").iloc[0]
+        resid = pd.to_numeric(pd.Series([row.get("residual_pH")]), errors="coerce").iloc[0]
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Measured pH", f"{meas:.2f}" if pd.notna(meas) else "—")
+        p2.metric("PHREEQC pH", f"{pred:.2f}" if pd.notna(pred) else "—")
+        p3.metric("Residual pH (measured − PHREEQC)", f"{resid:+.2f}" if pd.notna(resid) else "—")
+
+    # Comparison table preview — only columns that exist.
+    present = [(src, disp) for src, disp in _COMPARISON_PREVIEW_SPEC if src in comp.columns]
+    if present:
+        preview = comp[[src for src, _ in present]].rename(columns=dict(present))
+        st.markdown("**Comparison table** (measured vs PHREEQC, existing columns only):")
+        st.dataframe(preview, use_container_width=True, height=200)
+
+
+# Comparison figures get specific captions; everything else is a PHREEQC-only plot.
+_FIGURE_CAPTIONS = {
+    "measured_vs_phreeqc.png": (
+        "This plot compares measured values against PHREEQC predictions. Points on "
+        "the dashed 1:1 line would indicate perfect agreement. Points far from the "
+        "line indicate model/experiment mismatch or incorrect mapping."
+    ),
+    "residuals_by_sample.png": (
+        "This plot shows measured − PHREEQC. Positive values mean the measured value "
+        "is higher than the PHREEQC prediction."
+    ),
+}
+_COMPARISON_FIGURES = set(_FIGURE_CAPTIONS)
+
+
+def _single_sample_comparison() -> bool:
+    """True if the comparison has exactly one mapped sample (plots aren't a trend)."""
+    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
+    if not comp_path.exists():
+        return False
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    if "phreeqc_record_key" not in comp.columns:
+        return False
+    mapped = comp["phreeqc_record_key"].apply(
+        lambda v: not (pd.isna(v) or str(v).strip() == "")).sum()
+    return int(mapped) == 1
+
+
+def _render_figures() -> None:
+    """Figure viewer: captioned comparison plots + a filtered PHREEQC-only viewer."""
+    pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
+    if not pngs:
+        st.warning("No figures yet — run Phase 1 (and the workflow once measured data exists).")
+        return
+
+    comparison = [p for p in pngs if p.name in _COMPARISON_FIGURES]
+    phreeqc_only = [p for p in pngs if p.name not in _COMPARISON_FIGURES]
+
+    if comparison:
+        st.subheader("Measured vs PHREEQC")
+        if _single_sample_comparison():
+            st.warning(
+                "This is a single-sample comparison, not a trend. It only checks one "
+                "mapped condition."
+            )
+        for png in comparison:
+            st.image(str(png), use_container_width=True)
+            st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
+
+    if phreeqc_only:
+        st.subheader("PHREEQC model outputs")
+        st.info(
+            "These are **PHREEQC model outputs, not measured experimental data.** "
+            "Crowded axis labels come from the many PHREEQC solution states plotted "
+            "together — use the selector to view one figure at a time."
+        )
+        names = [p.name for p in phreeqc_only]
+        choice = st.selectbox("Choose a PHREEQC figure", names, key="phreeqc_fig_choice")
+        chosen = next(p for p in phreeqc_only if p.name == choice)
+        st.image(str(chosen), use_container_width=True)
+        st.caption(f"{choice} — PHREEQC model output, not a measurement.")
+
+
+# --------------------------------------------------------------------------- #
 # Page
 # --------------------------------------------------------------------------- #
 st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
@@ -529,8 +694,31 @@ else:
                 "the pipeline."
             )
 
-# ---- 3. Run pipeline ------------------------------------------------------ #
-st.header("3. Run pipeline")
+# ---- 3. Results summary --------------------------------------------------- #
+st.header("3. Results summary")
+st.write(
+    "An honest read-out of the latest comparison run — row counts, what residuals "
+    "were actually calculated, and the comparison table. Reads "
+    "`data/processed/comparison_measured_vs_phreeqc.csv` plus the validation and "
+    "sustainability tables in `outputs/tables/`."
+)
+_render_results_summary()
+
+# Surface the QA/QC tables alongside the summary when they exist.
+for _rlabel, _rname in [
+    ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
+    ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
+]:
+    _rpath = config.TABLES_DIR / _rname
+    if _rpath.exists():
+        with st.expander(f"{_rlabel} — {_rname}"):
+            st.dataframe(
+                _read_csv(str(_rpath), _rpath.stat().st_mtime),
+                use_container_width=True,
+            )
+
+# ---- 4. Run pipeline ------------------------------------------------------ #
+st.header("4. Run pipeline")
 st.write(
     "These buttons call the existing scripts unchanged "
     "(`scripts/run_phase1.py`, `scripts/05_compare_experimental.py`)."
@@ -549,8 +737,8 @@ with rc2:
         _show_process_result("Phase 2", proc)
         _read_csv.clear()
 
-# ---- 4. View processed data ----------------------------------------------- #
-st.header("4. View processed data")
+# ---- 5. View processed data ----------------------------------------------- #
+st.header("5. View processed data")
 if not config.PROCESSED_DIR.exists():
     st.warning("`data/processed/` does not exist yet — run Phase 1 first.")
 else:
@@ -568,77 +756,78 @@ else:
         st.write(f"{df.shape[0]} rows × {df.shape[1]} columns")
         st.dataframe(df, use_container_width=True, height=380)
 
-# ---- 5. Enter experimental data ------------------------------------------- #
-st.header("5. Enter experimental data")
-st.write(
-    f"Submitting appends one row to `{MANUAL_ENTRY_PATH.relative_to(_PROJECT_ROOT)}` "
-    "(existing rows are never overwritten). Leave a field blank if not measured."
+# ---- 6. Enter experimental data (legacy) ---------------------------------- #
+st.header("6. Enter experimental data")
+st.caption(
+    "**Recommended workflow: use the Experiment Run Workspace (Section 9) instead.** "
+    "This global form writes straight to one shared manual-entry file and predates the "
+    "per-run save files; it is kept for backward compatibility."
 )
+with st.expander("Legacy/manual global data entry", expanded=False):
+    st.write(
+        f"Submitting appends one row to `{MANUAL_ENTRY_PATH.relative_to(_PROJECT_ROOT)}` "
+        "(existing rows are never overwritten). Leave a field blank if not measured."
+    )
 
-with st.form("experimental_entry", clear_on_submit=True):
-    inputs: dict[str, str] = {}
-    cols = st.columns(3)
-    for i, column in enumerate(config.EXPERIMENTAL_RELEASE_COLUMNS):
-        widget_col = cols[i % 3]
-        numeric = column in config.EXPERIMENTAL_NUMERIC_COLUMNS
-        label = f"{column} (number)" if numeric else column
-        if column == "CO2_condition":
-            inputs[column] = widget_col.selectbox(column, _CO2_OPTIONS)
-        elif column == "precipitate_observed":
-            inputs[column] = widget_col.selectbox(column, _YESNO_OPTIONS)
+    with st.form("experimental_entry", clear_on_submit=True):
+        inputs: dict[str, str] = {}
+        cols = st.columns(3)
+        for i, column in enumerate(config.EXPERIMENTAL_RELEASE_COLUMNS):
+            widget_col = cols[i % 3]
+            numeric = column in config.EXPERIMENTAL_NUMERIC_COLUMNS
+            label = f"{column} (number)" if numeric else column
+            if column == "CO2_condition":
+                inputs[column] = widget_col.selectbox(column, _CO2_OPTIONS)
+            elif column == "precipitate_observed":
+                inputs[column] = widget_col.selectbox(column, _YESNO_OPTIONS)
+            else:
+                inputs[column] = widget_col.text_input(label, value="")
+        submitted = st.form_submit_button("Save row")
+
+    if submitted:
+        # Validate numeric columns; blanks are allowed (treated as not-measured).
+        errors: list[str] = []
+        for column in config.EXPERIMENTAL_NUMERIC_COLUMNS:
+            raw = (inputs.get(column) or "").strip()
+            if raw == "":
+                continue
+            try:
+                float(raw)
+            except ValueError:
+                errors.append(f"'{column}' must be a number (got '{raw}').")
+
+        if not inputs.get("sample_id", "").strip():
+            errors.append("'sample_id' is required.")
+
+        if errors:
+            for e in errors:
+                st.error(e)
         else:
-            inputs[column] = widget_col.text_input(label, value="")
-    submitted = st.form_submit_button("Save row")
+            row = {col: (inputs.get(col) or "").strip() for col in config.EXPERIMENTAL_RELEASE_COLUMNS}
+            new_df = pd.DataFrame([row], columns=config.EXPERIMENTAL_RELEASE_COLUMNS)
+            MANUAL_ENTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not MANUAL_ENTRY_PATH.exists()
+            new_df.to_csv(MANUAL_ENTRY_PATH, mode="a", header=write_header, index=False)
 
-if submitted:
-    # Validate numeric columns; blanks are allowed (treated as not-measured).
-    errors: list[str] = []
-    for column in config.EXPERIMENTAL_NUMERIC_COLUMNS:
-        raw = (inputs.get(column) or "").strip()
-        if raw == "":
-            continue
-        try:
-            float(raw)
-        except ValueError:
-            errors.append(f"'{column}' must be a number (got '{raw}').")
+            total = len(pd.read_csv(MANUAL_ENTRY_PATH))
+            st.success(
+                f"Saved sample '{row['sample_id']}'. "
+                f"{MANUAL_ENTRY_PATH.name} now has {total} row(s)."
+            )
+            st.dataframe(new_df, use_container_width=True)
+            _read_csv.clear()
 
-    if not inputs.get("sample_id", "").strip():
-        errors.append("'sample_id' is required.")
-
-    if errors:
-        for e in errors:
-            st.error(e)
-    else:
-        row = {col: (inputs.get(col) or "").strip() for col in config.EXPERIMENTAL_RELEASE_COLUMNS}
-        new_df = pd.DataFrame([row], columns=config.EXPERIMENTAL_RELEASE_COLUMNS)
-        MANUAL_ENTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        write_header = not MANUAL_ENTRY_PATH.exists()
-        new_df.to_csv(MANUAL_ENTRY_PATH, mode="a", header=write_header, index=False)
-
-        total = len(pd.read_csv(MANUAL_ENTRY_PATH))
-        st.success(
-            f"Saved sample '{row['sample_id']}'. "
-            f"{MANUAL_ENTRY_PATH.name} now has {total} row(s)."
-        )
-        st.dataframe(new_df, use_container_width=True)
-        _read_csv.clear()
-
-if MANUAL_ENTRY_PATH.exists():
-    with st.expander("Current manual-entry file"):
+    if MANUAL_ENTRY_PATH.exists():
         existing = pd.read_csv(MANUAL_ENTRY_PATH)
+        st.markdown("**Current manual-entry file:**")
         st.dataframe(existing, use_container_width=True)
 
-# ---- 6. View figures ------------------------------------------------------ #
-st.header("6. View figures")
-pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
-if not pngs:
-    st.warning("No figures yet — run Phase 1 (and Phase 2 once measured data exists).")
-else:
-    for png in pngs:
-        st.image(str(png), caption=str(png.relative_to(_PROJECT_ROOT)), use_container_width=True)
+# ---- 7. View figures ------------------------------------------------------ #
+st.header("7. View figures")
+_render_figures()
 
-# ---- 7. Experiment planning ----------------------------------------------- #
-st.header("7. Experiment planning")
+# ---- 8. Experiment planning ----------------------------------------------- #
+st.header("8. Experiment planning")
 st.write(
     "Experiment planning tools: generate an experiment run sheet, validate filled "
     "CSVs, and compute sustainability/selectivity proxies. These call the existing "
@@ -661,26 +850,18 @@ with ep3:
             proc = _run_script("scripts/08_sustainability_score.py")
         _show_process_result("Sustainability score", proc)
 
-# Surface the generated tables if they exist.
-for _label, _name in [
-    ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
-    ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
-]:
-    _path = config.TABLES_DIR / _name
-    if _path.exists():
-        with st.expander(f"{_label} — {_name}"):
-            st.dataframe(
-                _read_csv(str(_path), _path.stat().st_mtime),
-                use_container_width=True,
-            )
+st.caption(
+    "The validation report and sustainability score tables are shown in the "
+    "**Results summary** (Section 3) once generated."
+)
 
-# ---- 8. Experiment run workspace ------------------------------------------ #
-st.header("8. Experiment run workspace")
+# ---- 9. Experiment run workspace ------------------------------------------ #
+st.header("9. Experiment run workspace")
 if not SELECTED_RUN:
     st.info(
         "Select or create an experiment run in the **Experiment runs** sidebar "
         "(left) to enter data into its own save file. This is separate from the "
-        "global manual-entry file in section 5."
+        "global manual-entry file in section 6."
     )
 else:
     _cfg = run_manager.load_run_config(SELECTED_RUN)
@@ -779,8 +960,8 @@ else:
     if _rt in run_manager.LAB_LIKE_RUN_TYPES:
         _render_mapping_section(SELECTED_RUN)
 
-# ---- 9. Safety and limitations -------------------------------------------- #
-st.header("9. Safety and limitations")
+# ---- 10. Safety and limitations ------------------------------------------- #
+st.header("10. Safety and limitations")
 st.warning(
     "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
     "thermodynamic predictions, not direct measurements, and assume the modelled "
