@@ -39,7 +39,9 @@ python scripts/08_sustainability_score.py        # -> outputs/tables/sustainabil
 - **Plan generator** (`flyash_phreeqc_ml/experiments/plan_generator.py`) expands four
   experiment sets (time series, NaOH series, CO₂ control, replicate check) into a
   de-duplicated run sheet with canonical sample ids
-  (`CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}`).
+  (`CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}`). This is a **command-line helper only** —
+  the Streamlit app focuses on ingest → verify → map → run → interpret and no longer
+  generates plans.
 - **Validator** (`validate_experimental_data.py`) flags impossible/negative values,
   empty/duplicate sample ids, and unknown CO₂ labels as **errors**, plus soft
   **warnings** (temperature range, missing `final_pH`, no dilution factor recorded).
@@ -65,6 +67,7 @@ flyash-phreeqc-ml/
 │   ├── compare/                 # Phase 2: measured vs PHREEQC
 │   │   └── residuals.py         # residual_<X> = measured − PHREEQC
 │   ├── calculations.py          # formula registry + residual audit (app transparency, no chemistry)
+│   ├── scenarios.py             # PHREEQC scenario manifest + rule-based mapping assistant (no ML)
 │   └── viz/
 │       ├── plots.py             # Phase 1 exploratory plots
 │       └── compare_plots.py     # Phase 2 measured-vs-PHREEQC plots
@@ -113,20 +116,28 @@ streamlit run app.py
 **Developer explanation mode** toggle). The tabs are:
 
 - **Overview** — project + selected-run status, what's missing, a recommended next step.
-- **Data Entry** — run-type-specific entry (lab measured-release form, literature CSV
-  upload + manual rows, or synthetic/demo form), plus this run's table, row deletion, and
-  CSV/pipeline export.
-- **Mapping** — link each measured `sample_id` to a PHREEQC `record_key` (lab-like runs).
+- **Data Entry** — run-type-specific entry (lab measured-release form **plus an "Upload
+  experimental CSV"** uploader with required-column validation, replace/append, and
+  synthetic-data warnings; literature CSV upload + manual rows; or synthetic/demo form), plus
+  this run's table, row deletion, and CSV/pipeline export.
+- **Mapping** — guided sample → PHREEQC mapping (lab-like runs): a **PHREEQC Scenario
+  Explorer** (filterable table of PHREEQC rows described in plain terms), a **Mapping
+  Assistant** (pick a sample → top-3 rule-scored suggestions with confidence and a "Use this
+  mapping" button, plus a no-good-match warning), a mapping-quality summary that warns when
+  several samples share one PHREEQC row, a "samples needing new PHREEQC simulations" table,
+  and the original manual dropdown kept under an **"Advanced manual mapping"** expander.
 - **Run Workflow** — the **"Run selected experiment workflow"** button (below) + an
   "Advanced individual script controls" expander.
 - **Results** — run-type-aware: the measured-vs-PHREEQC summary, comparison/residual
-  figures, pH residual cards, and validation + sustainability tables for a lab run; the
-  benchmark summary for a literature run.
+  figures, an interpretation note on coarse mapping, pH residual cards, and validation +
+  sustainability tables for a lab run; the benchmark summary for a literature run.
 - **PHREEQC Outputs** — processed-CSV previewer + a PHREEQC-**only** model-output figure
   viewer (the measured-vs-PHREEQC comparison plots live in **Results**).
 - **Literature Benchmark** — the literature table + comparability summary (literature runs).
-- **Tools** — the experiment-planning scripts (06/07/08) and their output tables; the
-  legacy global manual-entry form is tucked in a "not recommended" expander.
+- **Tools** — **"Data Checks and Derived Metrics"**: the validate (07) and sustainability
+  (08) scripts and their output tables. The app no longer generates experiment plans (the 06
+  button was removed); the legacy global manual-entry form is tucked in a "not recommended"
+  expander.
 - **Calculation Verification** — formula registry, per-row residual audit, and calculators
   (see *Calculation verification* below).
 - **Help / Safety** — workflow, run types, mapping, residuals, and limitations.
@@ -215,10 +226,15 @@ have no shared key, so the link is made by hand — there is no reliable automat
 it prints *"no measured/PHREEQC pairs to plot (mapping not set yet)"* and leaves residuals NaN —
 a deliberate "not linked yet" state, not a wrong join.
 
-**How to map pH-only lab data.** In the app's **Experiment run workspace → Sample → PHREEQC
-mapping**: pick a `sample_id`, pick the matching PHREEQC `batch` row (shown with `record_key`,
-`pH`, `mol_Ca/Si/Al/Na`, …), and click **Save mapping**. Run Phase 1 first so
-`data/processed/phreeqc_results.csv` exists. The mapping is saved to the run's own
+**How to map pH-only lab data.** Run Phase 1 first so `data/processed/phreeqc_results.csv`
+exists, then use the **Mapping** tab. The easiest path is the **Mapping Assistant**: pick a
+`sample_id` and it scores the PHREEQC scenarios with simple, transparent rules (favouring
+`batch` state and matching L/S and CO₂, penalising `initial` state and conflicts) and offers the
+top-3 with a **"Use this mapping"** button — so you don't have to know which `record_key` means
+what. The **PHREEQC Scenario Explorer** above it lists every scenario in plain terms with
+filters, and if no scenario scores well the assistant warns that a new PHREEQC simulation may be
+needed. Prefer manual control? The original dropdown lives under **"Advanced manual mapping"**.
+Either way the mapping is saved to the run's own
 `experiments/<run_name>/data/sample_phreeqc_map.csv`; **Export mapping to pipeline** copies it to
 `data/raw/experimental_icp/sample_phreeqc_map.csv`, where step 05 reads it automatically. With a
 mapping in place and `final_pH` filled, step 05 computes `residual_pH = final_pH − phreeqc_pH`.
@@ -345,7 +361,10 @@ pytest
 
 The suite covers Phase-2 ingestion (`tests/test_experimental_ingestion.py`) — template
 schema, dtype coercion, missing/extra columns, measured-data detection, directory
-loading — and the residual math (`tests/test_comparison.py`).
+loading — the residual math (`tests/test_comparison.py`), the experiment-planning/QA-QC
+helpers (`tests/test_experiments.py`), the run manager incl. lab CSV upload and mapping-quality
+checks (`tests/test_run_manager.py`), the calculation/audit registry (`tests/test_calculations.py`),
+and the scenario manifest + rule-based mapping assistant (`tests/test_scenarios.py`).
 
 ## Notes on the data
 
