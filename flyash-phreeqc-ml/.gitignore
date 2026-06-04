@@ -21,8 +21,10 @@ outputs/tables/
 # These are research data (confidential) or re-creatable run sheets. The ONLY
 # file kept tracked in this folder is the blank template (re-included below).
 # (Comments must be on their own line — an inline '#' is part of the pattern.)
-data/raw/experimental_icp/monday_experiment_plan.csv
+data/raw/experimental_icp/experiment_plan.csv
 data/raw/experimental_icp/experimental_release_manual_entry.csv
+# generated sample_id -> PHREEQC record_key mapping (links measured data; keep out of git)
+data/raw/experimental_icp/sample_phreeqc_map.csv
 # any measured release/measured CSV; dated lab files like 2026-06-01_release_run2.csv
 data/raw/experimental_icp/*release*.csv
 data/raw/experimental_icp/20*_release*.csv

@@ -42,7 +42,7 @@ Phase 3 (ML) is not started.
   Until then, Phase 2 comparison is the ceiling.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
-  `data/raw/experimental_icp/monday_experiment_plan.csv` are gitignored and re-creatable by
+  `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by
   running the scripts.
 - **Confidential raw research data:** do not commit raw research data unless the user confirms
   it is allowed. `data/raw/` is currently tracked, so be deliberate about anything added there.
@@ -52,7 +52,7 @@ Phase 3 (ML) is not started.
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
   `20*_release*.csv`, `*measured*.csv`, the manual-entry file, and the generated plan in
   `data/raw/experimental_icp/`, with a `!`-re-include keeping **only** the blank
-  `experimental_release_template.csv` tracked. So Monday's real lab data stays out of git unless
+  `experimental_release_template.csv` tracked. So real lab data stays out of git unless
   deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes
   part of the pattern.)
 - **Experiment-run save-files are gitignored by default.** `.gitignore` ignores
@@ -82,7 +82,7 @@ python scripts/run_phase1.py            # Phase 1: parse -> processed CSVs -> ma
 python scripts/05_compare_experimental.py  # Phase 2: measured vs PHREEQC (no-op until data exists)
 
 # experiment planning + QA/QC (pre-data; no ML)
-python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/monday_experiment_plan.csv
+python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/experiment_plan.csv
 python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
 python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
 

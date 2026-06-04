@@ -1,6 +1,6 @@
-"""Step 6 — generate Monday's experiment plan (a run sheet).
+"""Step 6 — generate an experiment plan (a run sheet).
 
-Writes ``data/raw/experimental_icp/monday_experiment_plan.csv`` with one row per
+Writes ``data/raw/experimental_icp/experiment_plan.csv`` with one row per
 planned condition (de-duplicated by sample_id) and prints a per-set summary.
 
 Run:  python scripts/06_generate_experiment_plan.py

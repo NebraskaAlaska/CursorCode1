@@ -21,16 +21,17 @@ The project is built in phases.
 
 > **Phase 2 status:** the ingestion + comparison machinery is in place and tested, but
 > **no real ML is trained yet**. The comparison runs as soon as measured experimental
-> data is dropped in (see *Entering Monday's experimental data* below).
+> data is dropped in (see *Entering measured experimental data* below).
 
 ## Experiment planning & QA/QC (pre-data tools)
 
-Helpers to design Monday's experiments and keep the measured data clean. They train
-no model and change no chemistry. See `docs/monday_experiment_protocol.md` for the
-full bench protocol and data-entry guide.
+Reusable helpers to design an experiment run and keep the measured data clean — for
+any run (lab session, future ICP data, literature benchmark, plastic/fly-ash work).
+They train no model and change no chemistry. See `docs/monday_experiment_protocol.md`
+for an example bench protocol and data-entry guide.
 
 ```bash
-python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/monday_experiment_plan.csv
+python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/experiment_plan.csv
 python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
 python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
 ```
@@ -72,14 +73,14 @@ flyash-phreeqc-ml/
 │   ├── 03_build_master_dataset.py
 │   ├── 04_make_plots.py
 │   ├── 05_compare_experimental.py   # Phase 2 (no-op until measured data exists)
-│   ├── 06_generate_experiment_plan.py  # build Monday's run sheet
+│   ├── 06_generate_experiment_plan.py  # build an experiment run sheet
 │   ├── 07_validate_experimental_data.py # QA/QC a filled release CSV
 │   ├── 08_sustainability_score.py   # proxy sustainability/cost indicators
 │   └── run_phase1.py            # runs steps 01–04 in order
 ├── tests/                       # pytest suite (Phase 2 ingestion + residuals)
 ├── data/
 │   ├── raw/                     # original inputs (committed, read-only)
-│   │   └── experimental_icp/    # measured-release template + Monday's lab CSVs
+│   │   └── experimental_icp/    # measured-release template + filled lab CSVs
 │   └── processed/               # generated CSVs  (created by the scripts)
 └── reports/figures/             # generated plots  (created by the scripts)
 ```
@@ -214,7 +215,7 @@ python scripts/04_make_plots.py           # -> reports/figures/*.png
 - `data/processed/master_dataset.csv` — the joined modeling table (PHREEQC side for now)
 - `reports/figures/*.png` — exploratory plots
 
-## Entering Monday's experimental data (Phase 2)
+## Entering measured experimental data (Phase 2)
 
 The lab/ICP results are entered against a fixed template so the parser, comparison,
 and tests all agree on the schema.

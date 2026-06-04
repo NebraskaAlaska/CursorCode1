@@ -61,7 +61,8 @@ EXPERIMENTAL_RELEASE_CSV = "experimental_release.csv"            # tidy, parsed 
 COMPARISON_CSV = "comparison_measured_vs_phreeqc.csv"            # joined + residuals
 
 # Experiment-planning / QA-QC artifacts.
-MONDAY_EXPERIMENT_PLAN_CSV = "monday_experiment_plan.csv"        # generated run sheet
+# The generated run sheet is reusable for any experiment run (not one session).
+EXPERIMENT_PLAN_CSV = "experiment_plan.csv"                      # generated run sheet
 EXPERIMENTAL_VALIDATION_REPORT_CSV = "experimental_validation_report.csv"
 SUSTAINABILITY_SCORE_CSV = "sustainability_score.csv"
 
@@ -71,7 +72,7 @@ SUSTAINABILITY_SCORE_CSV = "sustainability_score.csv"
 EXPERIMENTAL_NON_DATA_FILES = {
     EXPERIMENTAL_TEMPLATE_CSV,
     SAMPLE_PHREEQC_MAP_CSV,
-    MONDAY_EXPERIMENT_PLAN_CSV,
+    EXPERIMENT_PLAN_CSV,
 }
 
 # Accepted CO2 atmosphere labels for a measured/planned experiment.

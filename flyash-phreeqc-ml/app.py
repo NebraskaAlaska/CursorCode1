@@ -640,13 +640,13 @@ else:
 # ---- 7. Experiment planning ----------------------------------------------- #
 st.header("7. Experiment planning")
 st.write(
-    "Pre-data helpers for Monday: generate the run sheet, QA/QC a filled CSV, and "
-    "compute sustainability proxies. These call the existing scripts unchanged "
-    "(`scripts/06_…`, `07_…`, `08_…`) and train no model."
+    "Experiment planning tools: generate an experiment run sheet, validate filled "
+    "CSVs, and compute sustainability/selectivity proxies. These call the existing "
+    "scripts unchanged (`scripts/06_…`, `07_…`, `08_…`) and train no model."
 )
 ep1, ep2, ep3 = st.columns(3)
 with ep1:
-    if st.button("Generate Monday experiment plan", use_container_width=True):
+    if st.button("Generate experiment plan", use_container_width=True):
         with st.spinner("Generating experiment plan…"):
             proc = _run_script("scripts/06_generate_experiment_plan.py")
         _show_process_result("Experiment plan", proc)
