@@ -28,6 +28,11 @@ experiment — **not** a blind replacement for the chemistry.
   (lab / literature / synthetic / plastic-composite), each in `experiments/<safe_name>/` with a
   `run_config.yaml`, `data/`, and `outputs/`. It is a save/open layer over the existing workflow,
   not a replacement, and it keeps literature data out of the measured-release file.
+- **Calculation verification / formula audit** (transparency, no ML). `flyash_phreeqc_ml/calculations.py`
+  + the app's **Calculation Verification** tab document every downstream formula (residuals, ICP
+  mg/L→mM, dilution, L/S ratio, mass released, recovery) and **re-derive** the stored residuals to
+  confirm they match (`pass`/`warning`/`fail`/`not available`). PHREEQC's SI and pH are explained,
+  not recomputed.
 
 Phase 3 (ML) is not started.
 
@@ -164,20 +169,41 @@ modules together and own all file I/O paths.
   in `experiments/<run>/data/sample_phreeqc_map.csv`, and `export_mapping_to_pipeline` copies it to
   `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized in numbered
-  sections (1–10): project status; **Run / Execute selected experiment** (one button that, for a
-  lab run, exports the run CSV + mapping to the pipeline then runs Phase 1 → 07 → 05 → 08 in order,
-  stopping at the first failure; warns if no mapping); **Results summary** (run-type-aware — lab
-  shows the measured-vs-PHREEQC comparison/residual cards, literature shows its own benchmark
-  summary with any lab comparison only in a collapsed/warned expander, synthetic shows a
-  testing-only warning); run-pipeline buttons; processed-CSV previewer; the **legacy** global
-  entry form (now inside a "Legacy/manual global data entry" expander — the run workspace is the
-  recommended path); a figure viewer (captioned measured-vs-PHREEQC plots + a filtered
-  PHREEQC-only viewer); a general **experiment-planning** section; and the **Experiment runs**
-  sidebar + workspace (create/open a run, type-specific entry, per-run preview, row deletion,
-  sample→PHREEQC mapping, export). It reuses package functions and adds no chemistry/ML logic. The
-  legacy form appends to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
-  (gitignored); the run workspace writes into the selected run's own `experiments/<name>/data/`.
+- **`calculations.py`** — calculation transparency + audit (no chemistry, no ML). Pure arithmetic
+  that documents and **re-derives the downstream math** the app applies on top of PHREEQC output:
+  `mgl_to_mM` (uses `ATOMIC_MASSES`), `apply_dilution`, `liquid_solid_ratio`, `mass_released_mg`,
+  `recovery_percent`, and `residual`. A `FORMULAS` registry of `Formula` dataclasses (equation,
+  LaTeX, inputs, output, units, explanation, provenance `app-calculated` vs `parsed from PHREEQC`,
+  plus a dev-mode `detail`) drives the Calculation Verification tab. The **audit engine**
+  (`classify` / `audit_residual` / `audit_comparison`) recomputes each `measured − PHREEQC`
+  residual from `comparison_measured_vs_phreeqc.csv` and labels it `pass` / `warning` / `fail` /
+  `not available` against tolerances (`PASS_TOL=1e-6`, `WARN_TOL=1e-4`). It **explains** PHREEQC's
+  saturation index and pH but never recomputes them — PHREEQC stays authoritative. Covered by
+  `tests/test_calculations.py`.
+
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, reorganized as a
+  wide-layout **tabbed dashboard** driven by a run-management **sidebar** (run selector + create-run
+  expander; current run name/type/folder/source; a run-type warning; a "go to Run Workflow tab"
+  reminder; and a **Developer explanation mode** toggle). The ten tabs are: **Overview** (project +
+  selected-run status cards, what's missing, a recommended next step); **Data Entry** (run-type
+  specific — lab measured-release form, literature CSV upload + manual rows, or synthetic/demo
+  form — plus this run's table, row deletion, and CSV/pipeline export); **Mapping** (lab-like runs
+  only: sample_id → PHREEQC record_key upsert/preview/delete/export); **Run Workflow** (one
+  primary button that, for a lab run, exports the run CSV + mapping then runs Phase 1 → 07 → 05 →
+  08, stopping at the first failure, warning if no mapping; plus an "Advanced individual script
+  controls" expander); **Results** (run-type-aware — lab shows the measured-vs-PHREEQC summary,
+  comparison/residual figures, pH residual cards, validation + sustainability tables; literature
+  shows its own benchmark summary; synthetic shows a testing-only warning); **PHREEQC Outputs**
+  (processed-CSV previewer + a filtered PHREEQC-**only** model-output figure viewer — the
+  measured-vs-PHREEQC comparison plots live in Results, not here); **Literature Benchmark**
+  (literature table + key-columns/comparability summary, shown only for literature runs);
+  **Tools** (the experiment-planning scripts 06/07/08 + their output tables, with the **legacy**
+  global manual-entry form tucked in a "not recommended" expander); **Calculation Verification**
+  (the formula registry, per-row residual audit, mg/L→mM and L/S calculators, and extra
+  developer-mode explanations); and **Help / Safety** (workflow, run types, mapping, residuals, and
+  limitations). It reuses package functions and adds no chemistry/ML logic. The legacy form appends
+  to `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored); the run
+  workspace writes into the selected run's own `experiments/<name>/data/`.
 
 ### Key conventions
 

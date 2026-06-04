@@ -1,13 +1,15 @@
 """Streamlit interface for the flyash-phreeqc-ml project.
 
 A thin GUI on top of the existing Phase 1 / Phase 2 code — it does **not**
-reimplement any pipeline logic. It lets you:
+reimplement any pipeline logic. A run-management sidebar drives a tabbed
+dashboard (Overview, Data Entry, Mapping, Run Workflow, Results, PHREEQC
+Outputs, Literature Benchmark, Tools, Help / Safety). Each tab reuses the
+package functions; this file adds no chemistry or ML. It lets you:
 
-* see project status at a glance,
-* run the existing scripts (Phase 1 pipeline, Phase 2 comparison) and view their output,
-* preview processed CSVs,
-* enter measured experimental data into a form (appended to a CSV, never overwritten),
-* view generated figures.
+* see project + run status at a glance,
+* enter measured / literature / demo data into per-run save files,
+* map measured samples to PHREEQC rows and run the existing scripts,
+* read an honest measured-vs-PHREEQC summary, and browse PHREEQC outputs.
 
 Run with:  streamlit run app.py
 """
@@ -25,6 +27,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
@@ -169,6 +172,8 @@ def _render_run_sidebar() -> str | None:
     st.sidebar.caption(f"📁 {run_manager.run_dir(selected).relative_to(_PROJECT_ROOT)}")
     if cfg.get("description"):
         st.sidebar.caption(f"📝 {cfg['description']}")
+    st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
+    st.sidebar.info("➡️ Open the **Run Workflow** tab to execute this run.")
     return selected
 
 
@@ -617,136 +622,329 @@ def _single_sample_comparison() -> bool:
     return int(mapped) == 1
 
 
-def _render_figures() -> None:
-    """Figure viewer: captioned comparison plots + a filtered PHREEQC-only viewer."""
+def _render_comparison_figures() -> None:
+    """Measured-vs-PHREEQC + residual plots. Belongs with the lab comparison
+    (Results tab), not the PHREEQC-only model outputs."""
     pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
-    if not pngs:
-        st.warning("No figures yet — run Phase 1 (and the workflow once measured data exists).")
+    comparison = [p for p in pngs if p.name in _COMPARISON_FIGURES]
+    if not comparison:
+        return
+    st.subheader("Measured vs PHREEQC")
+    if _single_sample_comparison():
+        st.warning(
+            "This is a single-sample comparison, not a trend. It only checks one "
+            "mapped condition."
+        )
+    for png in comparison:
+        st.image(str(png), use_container_width=True)
+        st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
+
+
+def _render_phreeqc_only_figures() -> None:
+    """PHREEQC model-output plots only (pH, element molality, saturation indices,
+    …). Excludes the measured-vs-PHREEQC comparison/residual figures."""
+    pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
+    phreeqc_only = [p for p in pngs if p.name not in _COMPARISON_FIGURES]
+    if not phreeqc_only:
+        st.warning("No PHREEQC figures yet — run Phase 1 to generate them.")
+        return
+    st.info(
+        "These are **PHREEQC model outputs, not measured experimental data.** "
+        "Crowded axis labels come from the many PHREEQC solution states plotted "
+        "together — use the selector to view one figure at a time."
+    )
+    names = [p.name for p in phreeqc_only]
+    choice = st.selectbox("Choose a PHREEQC figure", names, key="phreeqc_fig_choice")
+    chosen = next(p for p in phreeqc_only if p.name == choice)
+    st.image(str(chosen), use_container_width=True)
+    st.caption(f"{choice} — PHREEQC model output, not a measurement.")
+
+
+# --------------------------------------------------------------------------- #
+# Shared script-runner button (so Run Workflow + Tools reuse one code path;
+# distinct key prefixes keep Streamlit widget identities unique)
+# --------------------------------------------------------------------------- #
+def _script_button(label: str, script: str, result_label: str, key: str,
+                   refresh_csv: bool = False) -> None:
+    if st.button(label, use_container_width=True, key=key):
+        with st.spinner(f"Running {result_label}…"):
+            proc = _run_script(script)
+        _show_process_result(result_label, proc)
+        if refresh_csv:
+            _read_csv.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Tab renderers — each is a self-contained view; all reuse the helpers above.
+# --------------------------------------------------------------------------- #
+def _render_overview(selected_run: str | None) -> None:
+    """Project status cards + selected-run summary + a recommended next step."""
+    master_path = config.PROCESSED_DIR / config.MASTER_DATASET_CSV
+    template_path = config.EXPERIMENTAL_ICP_DIR / config.EXPERIMENTAL_TEMPLATE_CSV
+    measured = _load_measured_safe()
+    measured_exists = has_measured_data(measured)
+
+    st.subheader("Project status")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("master_dataset.csv", "present" if master_path.exists() else "missing")
+    n_rows = (
+        len(_read_csv(str(master_path), master_path.stat().st_mtime))
+        if master_path.exists() else 0
+    )
+    c2.metric("master rows", n_rows)
+    c3.metric("release template", "present" if template_path.exists() else "missing")
+    c4.metric("measured data", "yes" if measured_exists else "not yet")
+    if not measured_exists:
+        st.info(
+            "No measured experimental release data found yet — only the blank template. "
+            "Phase 2 comparison and any future ML stay dormant until real data is entered."
+        )
+
+    st.divider()
+    st.subheader("Selected run")
+    if not selected_run:
+        st.info("No run selected. Create or open one in the **Experiment runs** sidebar (left).")
         return
 
-    comparison = [p for p in pngs if p.name in _COMPARISON_FIGURES]
-    phreeqc_only = [p for p in pngs if p.name not in _COMPARISON_FIGURES]
+    cfg = run_manager.load_run_config(selected_run)
+    rt = cfg.get("run_type")
+    data = run_manager.read_data_file(selected_run)
+    lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES
+    has_map = run_manager.has_mapping(selected_run) if lab_like else False
 
-    if comparison:
-        st.subheader("Measured vs PHREEQC")
-        if _single_sample_comparison():
-            st.warning(
-                "This is a single-sample comparison, not a trend. It only checks one "
-                "mapped condition."
+    st.markdown(f"**`{selected_run}`**")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Run type", rt)
+    s2.metric("Data rows", len(data))
+    s3.metric("Mapping", ("yes" if has_map else "no") if lab_like else "n/a")
+    st.caption(f"📁 {run_manager.run_dir(selected_run).relative_to(_PROJECT_ROOT)} · source `{cfg.get('data_source')}`")
+
+    # What's missing.
+    missing: list[str] = []
+    if data.empty:
+        missing.append("no data rows entered yet")
+    if lab_like:
+        icp_present = any(_has_numeric(data, c) for c in _ICP_MEASURED_COLS)
+        if not icp_present:
+            missing.append("ICP chemistry (Ca/Si/Al/Fe/REE) — pH-only so far")
+        if not has_map:
+            missing.append("sample → PHREEQC mapping (needed for residuals)")
+    if missing:
+        st.markdown("**Missing / not yet present:**")
+        for m in missing:
+            st.markdown(f"- {m}")
+
+    # Recommended next step.
+    if data.empty:
+        nxt = "Add measured rows in the **Data Entry** tab."
+    elif rt == "literature_benchmark":
+        nxt = ("Review the **Literature Benchmark** tab. Literature data are kept "
+               "separate from lab data and are not run through the pipeline.")
+    elif rt == "synthetic_demo":
+        nxt = "This is a synthetic/demo run — for testing only, not scientific output."
+    elif lab_like and not has_map:
+        nxt = ("If this is a pH-only lab run, map the sample to a PHREEQC batch row in "
+               "the **Mapping** tab, then run the workflow in the **Run Workflow** tab.")
+    else:
+        nxt = ("Run the workflow in the **Run Workflow** tab, then read the "
+               "**Results** tab.")
+    st.success(f"**Recommended next step:** {nxt}")
+
+
+def _render_run_data_and_edit(run_name: str, rt: str) -> None:
+    """This run's data table + row deletion + CSV/pipeline export (no mapping)."""
+    data = run_manager.read_data_file(run_name)
+    st.markdown(f"**This run's data** ({len(data)} row(s)):")
+    st.dataframe(data, use_container_width=True, height=300)
+
+    # --- Delete / clean rows --- only affects THIS run's CSV.
+    if not data.empty:
+        with st.expander("🗑️ Delete rows", expanded=False):
+            id_col = run_manager.id_column_for(run_name)
+
+            def _row_label(i: int) -> str:
+                if id_col in data.columns:
+                    val = data.iloc[i][id_col]
+                    shown = "" if pd.isna(val) else str(val).strip()
+                    return f"Row {i} — {id_col}={shown or '(blank)'}"
+                return f"Row {i}"
+
+            to_delete = st.multiselect(
+                "Select row numbers to delete",
+                options=list(range(len(data))),
+                format_func=_row_label,
+                key=f"del_rows_{run_name}",
             )
-        for png in comparison:
-            st.image(str(png), use_container_width=True)
-            st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
+            confirm = st.checkbox(
+                "I understand this will delete the selected rows from this run's CSV.",
+                key=f"del_confirm_{run_name}",
+            )
+            if st.button("Delete selected rows", key=f"del_btn_{run_name}"):
+                if not to_delete:
+                    st.warning("No rows selected — nothing was deleted.")
+                elif not confirm:
+                    st.warning("Tick the confirmation checkbox before deleting.")
+                else:
+                    n = run_manager.delete_data_rows(run_name, to_delete)
+                    st.success(f"Deleted {n} row(s) from this run's CSV.")
+                    _read_csv.clear()
+                    st.rerun()
 
-    if phreeqc_only:
-        st.subheader("PHREEQC model outputs")
+            st.divider()
+            st.caption(f"Remove rows with a blank `{id_col}` or where every value is empty.")
+            if st.button("Remove blank rows", key=f"del_blank_{run_name}"):
+                n = run_manager.remove_blank_data_rows(run_name)
+                if n:
+                    st.success(f"Removed {n} blank row(s).")
+                    _read_csv.clear()
+                    st.rerun()
+                else:
+                    st.info("No blank rows found.")
+
+    # Export this run's CSV.
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        if not data.empty:
+            st.download_button(
+                "⬇️ Export this run's CSV",
+                data=data.to_csv(index=False).encode("utf-8"),
+                file_name=f"{run_name}_{run_manager.spec_for(rt).data_filename}",
+                mime="text/csv",
+                use_container_width=True,
+            )
+    with ec2:
+        if rt in run_manager.LAB_LIKE_RUN_TYPES:
+            if st.button("➡️ Export to pipeline (manual-entry CSV)", use_container_width=True,
+                         key=f"export_pipe_{run_name}"):
+                try:
+                    dest = run_manager.export_lab_run_to_pipeline(run_name)
+                    st.success(
+                        f"Copied to {dest.relative_to(_PROJECT_ROOT)} — the existing "
+                        "scripts (05/07) will pick it up."
+                    )
+                    _read_csv.clear()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+
+
+def _render_data_entry_tab(selected_run: str | None) -> None:
+    if not selected_run:
+        st.info("Select or create a run in the **Experiment runs** sidebar (left) to enter data.")
+        return
+    cfg = run_manager.load_run_config(selected_run)
+    rt = cfg.get("run_type")
+    st.subheader(f"Run `{selected_run}` — {rt}")
+    _run_type_warning(rt)
+
+    if rt in run_manager.LAB_LIKE_RUN_TYPES:
+        _lab_entry_form(selected_run)
+    elif rt == "literature_benchmark":
+        _literature_entry(selected_run)
+    elif rt == "synthetic_demo":
+        _demo_entry(selected_run)
+
+    st.divider()
+    _render_run_data_and_edit(selected_run, rt)
+
+
+def _render_mapping_tab(selected_run: str | None) -> None:
+    if not selected_run:
         st.info(
-            "These are **PHREEQC model outputs, not measured experimental data.** "
-            "Crowded axis labels come from the many PHREEQC solution states plotted "
-            "together — use the selector to view one figure at a time."
+            "Select or create a **lab_experiment** (or **plastic_composite**) run in the "
+            "sidebar to add a sample → PHREEQC mapping."
         )
-        names = [p.name for p in phreeqc_only]
-        choice = st.selectbox("Choose a PHREEQC figure", names, key="phreeqc_fig_choice")
-        chosen = next(p for p in phreeqc_only if p.name == choice)
-        st.image(str(chosen), use_container_width=True)
-        st.caption(f"{choice} — PHREEQC model output, not a measurement.")
+        return
+    rt = run_manager.load_run_config(selected_run).get("run_type")
+    if rt == "literature_benchmark":
+        st.info(
+            "Literature benchmark runs do not use sample-to-PHREEQC mapping as measured "
+            "lab data."
+        )
+        return
+    if rt not in run_manager.LAB_LIKE_RUN_TYPES:
+        st.info(
+            "Mapping is only available for **lab_experiment** or **plastic_composite** "
+            "runs. The current run is a synthetic/demo run (testing only)."
+        )
+        return
+    _render_mapping_section(selected_run)
 
 
-# --------------------------------------------------------------------------- #
-# Page
-# --------------------------------------------------------------------------- #
-st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
-st.title("flyash-phreeqc-ml — control panel")
-st.caption(
-    "A GUI over the existing Phase 1 / Phase 2 scripts. It does not change the "
-    "chemistry or train any model."
-)
-
-# Sidebar "save files" — selecting a run here drives the workspace section below.
-SELECTED_RUN = _render_run_sidebar()
-
-# ---- 1. Project status ---------------------------------------------------- #
-st.header("1. Project status")
-
-master_path = config.PROCESSED_DIR / config.MASTER_DATASET_CSV
-template_path = config.EXPERIMENTAL_ICP_DIR / config.EXPERIMENTAL_TEMPLATE_CSV
-measured = _load_measured_safe()
-measured_exists = has_measured_data(measured)
-
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.metric("master_dataset.csv", "present" if master_path.exists() else "missing")
-with c2:
-    n_rows = len(_read_csv(str(master_path), master_path.stat().st_mtime)) if master_path.exists() else 0
-    st.metric("master rows", n_rows)
-with c3:
-    st.metric("release template", "present" if template_path.exists() else "missing")
-with c4:
-    st.metric("measured data", "yes" if measured_exists else "not yet")
-
-if not measured_exists:
-    st.info(
-        "No measured experimental release data found yet — only the blank template. "
-        "Phase 2 comparison and any future ML stay dormant until real data is entered."
+def _render_run_workflow_tab(selected_run: str | None) -> None:
+    st.write(
+        "Run all the relevant scripts in order for the selected run and see their output. "
+        "For a lab run this exports the run's data (and mapping) to the pipeline, then "
+        "runs Phase 1 → validate → compare → sustainability, stopping at the first failure."
     )
+    if not selected_run:
+        st.info(
+            "Select or create a run in the **Experiment runs** sidebar (left) first, then "
+            "this button will run the workflow for it."
+        )
+    else:
+        rt = run_manager.load_run_config(selected_run).get("run_type")
+        st.caption(f"Selected run: `{selected_run}` — **{rt}**")
+        if st.button("▶️ Run selected experiment workflow", type="primary", key="wf_run_btn"):
+            if rt in run_manager.LAB_LIKE_RUN_TYPES:
+                _run_lab_workflow(selected_run)
+            elif rt == "literature_benchmark":
+                st.warning(
+                    "📚 This is a **literature-benchmark** run. Literature data are kept "
+                    "separate from our measured lab data and are **not** run through the "
+                    "measured-vs-PHREEQC pipeline. Nothing was exported."
+                )
+                _lit = run_manager.read_data_file(selected_run)
+                if not _lit.empty:
+                    st.markdown("**Literature benchmark data:**")
+                    st.dataframe(_lit, use_container_width=True, height=300)
+                else:
+                    st.info("No literature rows entered yet.")
+            elif rt == "synthetic_demo":
+                st.warning(
+                    "🧩 This is a **synthetic/demo** run. Synthetic data are only for "
+                    "testing the code — they are not real experimental data and are not "
+                    "run through the pipeline."
+                )
 
-# ---- 2. Run / Execute selected experiment --------------------------------- #
-st.header("2. Run / Execute selected experiment")
-st.write(
-    "Enter data into a run (in the **Experiment run workspace** section below), then "
-    "click here to run all the relevant scripts in order and see their output. This is "
-    "a convenience wrapper — the individual step buttons still exist further down."
-)
-if not SELECTED_RUN:
-    st.info(
-        "Select or create a run in the **Experiment runs** sidebar (left) first, then "
-        "this button will run the workflow for it."
+    with st.expander("Advanced individual script controls", expanded=False):
+        st.caption("Low-level: run a single script and view its raw output.")
+        a1, a2 = st.columns(2)
+        with a1:
+            _script_button("Run Phase 1 pipeline", "scripts/run_phase1.py", "Phase 1",
+                           "adv_phase1", refresh_csv=True)
+        with a2:
+            _script_button("Run Phase 2 comparison", "scripts/05_compare_experimental.py",
+                           "Phase 2", "adv_phase2", refresh_csv=True)
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            _script_button("Generate experiment plan", "scripts/06_generate_experiment_plan.py",
+                           "Experiment plan", "adv_plan")
+        with b2:
+            _script_button("Validate experimental CSVs",
+                           "scripts/07_validate_experimental_data.py", "Validation", "adv_validate")
+        with b3:
+            _script_button("Run sustainability score", "scripts/08_sustainability_score.py",
+                           "Sustainability score", "adv_sustain")
+
+
+def _render_results_tab(selected_run: str | None) -> None:
+    # What's shown depends on run type, so a literature/synthetic run never displays
+    # the lab measured-vs-PHREEQC residual as if it were its own result.
+    summary_rt = (
+        run_manager.load_run_config(selected_run).get("run_type") if selected_run else None
     )
-else:
-    _wf_cfg = run_manager.load_run_config(SELECTED_RUN)
-    _wf_rt = _wf_cfg.get("run_type")
-    st.caption(f"Selected run: `{SELECTED_RUN}` — **{_wf_rt}**")
-    if st.button("▶️ Run selected experiment workflow", type="primary"):
-        if _wf_rt in run_manager.LAB_LIKE_RUN_TYPES:
-            _run_lab_workflow(SELECTED_RUN)
-        elif _wf_rt == "literature_benchmark":
-            st.warning(
-                "📚 This is a **literature-benchmark** run. Literature data are kept "
-                "separate from our measured lab data and are **not** run through the "
-                "measured-vs-PHREEQC pipeline. Nothing was exported."
-            )
-            _lit = run_manager.read_data_file(SELECTED_RUN)
-            if not _lit.empty:
-                st.markdown("**Literature benchmark data:**")
-                st.dataframe(_lit, use_container_width=True, height=240)
-            else:
-                st.info("No literature rows entered yet.")
-        elif _wf_rt == "synthetic_demo":
-            st.warning(
-                "🧩 This is a **synthetic/demo** run. Synthetic data are only for testing "
-                "the code — they are not real experimental data and are not run through "
-                "the pipeline."
-            )
+    if summary_rt == "literature_benchmark":
+        _render_literature_summary(selected_run)
+        return
+    if summary_rt == "synthetic_demo":
+        st.warning(
+            "This is a synthetic/demo run. Synthetic demo data are for testing the code "
+            "only — not scientific output. The lab-experiment comparison is not shown here."
+        )
+        return
 
-# ---- 3. Results summary --------------------------------------------------- #
-st.header("3. Results summary")
-
-# What's shown depends on the selected run type, so a literature/synthetic run never
-# displays the lab measured-vs-PHREEQC residual as if it were its own result.
-_summary_rt = (
-    run_manager.load_run_config(SELECTED_RUN).get("run_type") if SELECTED_RUN else None
-)
-
-if _summary_rt == "literature_benchmark":
-    _render_literature_summary(SELECTED_RUN)
-elif _summary_rt == "synthetic_demo":
-    st.warning(
-        "This is a synthetic/demo run. Synthetic demo data are for testing the code "
-        "only — not scientific output. The lab-experiment comparison is not shown here."
-    )
-else:
     # lab_experiment / plastic_composite, or no run selected.
-    if _summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
         st.markdown("**Latest lab-experiment PHREEQC comparison.**")
     else:
         st.write(
@@ -758,72 +956,91 @@ else:
         "and sustainability tables in `outputs/tables/`."
     )
     _render_results_summary()
+    _render_comparison_figures()
 
-    # Lab-data QA/QC tables — only alongside the lab summary, never under lit/demo.
-    for _rlabel, _rname in [
+    for label, name in [
         ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
         ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
     ]:
-        _rpath = config.TABLES_DIR / _rname
-        if _rpath.exists():
-            with st.expander(f"{_rlabel} — {_rname}"):
+        path = config.TABLES_DIR / name
+        if path.exists():
+            with st.expander(f"{label} — {name}"):
                 st.dataframe(
-                    _read_csv(str(_rpath), _rpath.stat().st_mtime),
-                    use_container_width=True,
+                    _read_csv(str(path), path.stat().st_mtime),
+                    use_container_width=True, height=300,
                 )
 
-# ---- 4. Run pipeline ------------------------------------------------------ #
-st.header("4. Run pipeline")
-st.write(
-    "These buttons call the existing scripts unchanged "
-    "(`scripts/run_phase1.py`, `scripts/05_compare_experimental.py`)."
-)
-rc1, rc2 = st.columns(2)
-with rc1:
-    if st.button("Run Phase 1 pipeline", use_container_width=True):
-        with st.spinner("Running Phase 1 (parse → processed CSVs → master → plots)…"):
-            proc = _run_script("scripts/run_phase1.py")
-        _show_process_result("Phase 1", proc)
-        _read_csv.clear()  # processed CSVs may have changed
-with rc2:
-    if st.button("Run Phase 2 comparison", use_container_width=True):
-        with st.spinner("Running Phase 2 (measured vs PHREEQC)…"):
-            proc = _run_script("scripts/05_compare_experimental.py")
-        _show_process_result("Phase 2", proc)
-        _read_csv.clear()
 
-# ---- 5. View processed data ----------------------------------------------- #
-st.header("5. View processed data")
-if not config.PROCESSED_DIR.exists():
-    st.warning("`data/processed/` does not exist yet — run Phase 1 first.")
-else:
+def _render_processed_viewer() -> None:
+    if not config.PROCESSED_DIR.exists():
+        st.warning("`data/processed/` does not exist yet — run Phase 1 first.")
+        return
     csvs = sorted(p.name for p in config.PROCESSED_DIR.glob("*.csv"))
     if not csvs:
         st.warning("No processed CSVs yet — run Phase 1 first.")
-    else:
-        # Show preferred files first, then the rest.
-        ordered = [c for c in PREFERRED_PROCESSED if c in csvs] + [
-            c for c in csvs if c not in PREFERRED_PROCESSED
-        ]
-        choice = st.selectbox("Processed CSV", ordered)
-        path = config.PROCESSED_DIR / choice
-        df = _read_csv(str(path), path.stat().st_mtime)
-        st.write(f"{df.shape[0]} rows × {df.shape[1]} columns")
-        st.dataframe(df, use_container_width=True, height=380)
+        return
+    ordered = [c for c in PREFERRED_PROCESSED if c in csvs] + [
+        c for c in csvs if c not in PREFERRED_PROCESSED
+    ]
+    choice = st.selectbox("Processed CSV", ordered, key="processed_csv_choice")
+    path = config.PROCESSED_DIR / choice
+    df = _read_csv(str(path), path.stat().st_mtime)
+    st.write(f"{df.shape[0]} rows × {df.shape[1]} columns")
+    st.dataframe(df, use_container_width=True, height=300)
 
-# ---- 6. Enter experimental data (legacy) ---------------------------------- #
-st.header("6. Enter experimental data")
-st.caption(
-    "**Recommended workflow: use the Experiment Run Workspace (Section 9) instead.** "
-    "This global form writes straight to one shared manual-entry file and predates the "
-    "per-run save files; it is kept for backward compatibility."
-)
-with st.expander("Legacy/manual global data entry", expanded=False):
+
+def _render_phreeqc_tab() -> None:
+    st.subheader("Processed data")
+    st.caption(
+        "These tables and the figures below are **PHREEQC model predictions**, not "
+        "measured experimental data."
+    )
+    _render_processed_viewer()
+    st.divider()
+    st.subheader("PHREEQC model-output figures")
+    _render_phreeqc_only_figures()
+
+
+def _render_literature_tab(selected_run: str | None) -> None:
+    rt = (
+        run_manager.load_run_config(selected_run).get("run_type") if selected_run else None
+    )
+    if rt != "literature_benchmark":
+        st.info(
+            "This tab is for **literature_benchmark** runs. Create or select one in the "
+            "sidebar to review literature data."
+        )
+        return
+    st.warning(
+        "📚 Literature values are reported by other papers — they are **not** our lab "
+        "data and are kept separate. They are never run through the measured-vs-PHREEQC "
+        "pipeline."
+    )
+    lit = run_manager.read_data_file(selected_run)
+    st.metric("Literature rows", len(lit))
+    if lit.empty:
+        st.info("No literature rows entered yet. Add them in the **Data Entry** tab.")
+        return
+
+    st.markdown("**Uploaded literature table:**")
+    st.dataframe(lit, use_container_width=True, height=300)
+
+    present = [c for c in _LIT_SUMMARY_COLS if c in lit.columns]
+    if present:
+        st.markdown("**Key columns summary:**")
+        st.dataframe(lit[present], use_container_width=True, height=300)
+
+    if "comparability_to_our_experiment" in lit.columns:
+        st.markdown("**Data quality / comparability notes:**")
+        cols = [c for c in ["source_id", "comparability_to_our_experiment"] if c in lit.columns]
+        st.dataframe(lit[cols], use_container_width=True, height=200)
+
+
+def _render_legacy_global_form() -> None:
     st.write(
         f"Submitting appends one row to `{MANUAL_ENTRY_PATH.relative_to(_PROJECT_ROOT)}` "
         "(existing rows are never overwritten). Leave a field blank if not measured."
     )
-
     with st.form("experimental_entry", clear_on_submit=True):
         inputs: dict[str, str] = {}
         cols = st.columns(3)
@@ -840,7 +1057,6 @@ with st.expander("Legacy/manual global data entry", expanded=False):
         submitted = st.form_submit_button("Save row")
 
     if submitted:
-        # Validate numeric columns; blanks are allowed (treated as not-measured).
         errors: list[str] = []
         for column in config.EXPERIMENTAL_NUMERIC_COLUMNS:
             raw = (inputs.get(column) or "").strip()
@@ -850,10 +1066,8 @@ with st.expander("Legacy/manual global data entry", expanded=False):
                 float(raw)
             except ValueError:
                 errors.append(f"'{column}' must be a number (got '{raw}').")
-
         if not inputs.get("sample_id", "").strip():
             errors.append("'sample_id' is required.")
-
         if errors:
             for e in errors:
                 st.error(e)
@@ -863,7 +1077,6 @@ with st.expander("Legacy/manual global data entry", expanded=False):
             MANUAL_ENTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
             write_header = not MANUAL_ENTRY_PATH.exists()
             new_df.to_csv(MANUAL_ENTRY_PATH, mode="a", header=write_header, index=False)
-
             total = len(pd.read_csv(MANUAL_ENTRY_PATH))
             st.success(
                 f"Saved sample '{row['sample_id']}'. "
@@ -875,156 +1088,305 @@ with st.expander("Legacy/manual global data entry", expanded=False):
     if MANUAL_ENTRY_PATH.exists():
         existing = pd.read_csv(MANUAL_ENTRY_PATH)
         st.markdown("**Current manual-entry file:**")
-        st.dataframe(existing, use_container_width=True)
+        st.dataframe(existing, use_container_width=True, height=300)
 
-# ---- 7. View figures ------------------------------------------------------ #
-st.header("7. View figures")
-_render_figures()
 
-# ---- 8. Experiment planning ----------------------------------------------- #
-st.header("8. Experiment planning")
-st.write(
-    "Experiment planning tools: generate an experiment run sheet, validate filled "
-    "CSVs, and compute sustainability/selectivity proxies. These call the existing "
-    "scripts unchanged (`scripts/06_…`, `07_…`, `08_…`) and train no model."
-)
-ep1, ep2, ep3 = st.columns(3)
-with ep1:
-    if st.button("Generate experiment plan", use_container_width=True):
-        with st.spinner("Generating experiment plan…"):
-            proc = _run_script("scripts/06_generate_experiment_plan.py")
-        _show_process_result("Experiment plan", proc)
-with ep2:
-    if st.button("Validate experimental CSVs", use_container_width=True):
-        with st.spinner("Validating experimental data…"):
-            proc = _run_script("scripts/07_validate_experimental_data.py")
-        _show_process_result("Validation", proc)
-with ep3:
-    if st.button("Run sustainability score", use_container_width=True):
-        with st.spinner("Scoring sustainability proxies…"):
-            proc = _run_script("scripts/08_sustainability_score.py")
-        _show_process_result("Sustainability score", proc)
-
-st.caption(
-    "The validation report and sustainability score tables are shown in the "
-    "**Results summary** (Section 3) once generated."
-)
-
-# ---- 9. Experiment run workspace ------------------------------------------ #
-st.header("9. Experiment run workspace")
-if not SELECTED_RUN:
-    st.info(
-        "Select or create an experiment run in the **Experiment runs** sidebar "
-        "(left) to enter data into its own save file. This is separate from the "
-        "global manual-entry file in section 6."
+def _render_tools_tab() -> None:
+    st.subheader("Experiment planning tools")
+    st.write(
+        "Generate an experiment run sheet, validate filled CSVs, and compute "
+        "sustainability/selectivity proxies. These call the existing scripts unchanged "
+        "(`scripts/06_…`, `07_…`, `08_…`) and train no model."
     )
-else:
-    _cfg = run_manager.load_run_config(SELECTED_RUN)
-    _rt = _cfg.get("run_type")
-    st.subheader(f"Run `{SELECTED_RUN}` — {_rt}")
-    _run_type_warning(_rt)
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        _script_button("Generate experiment plan", "scripts/06_generate_experiment_plan.py",
+                       "Experiment plan", "tools_plan")
+    with t2:
+        _script_button("Validate experimental CSVs",
+                       "scripts/07_validate_experimental_data.py", "Validation", "tools_validate")
+    with t3:
+        _script_button("Run sustainability score", "scripts/08_sustainability_score.py",
+                       "Sustainability score", "tools_sustain")
 
-    if _rt in run_manager.LAB_LIKE_RUN_TYPES:
-        _lab_entry_form(SELECTED_RUN)
-    elif _rt == "literature_benchmark":
-        _literature_entry(SELECTED_RUN)
-    elif _rt == "synthetic_demo":
-        _demo_entry(SELECTED_RUN)
+    for label, name in [
+        ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
+        ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
+    ]:
+        path = config.TABLES_DIR / name
+        if path.exists():
+            with st.expander(f"{label} — {name}"):
+                st.dataframe(
+                    _read_csv(str(path), path.stat().st_mtime),
+                    use_container_width=True, height=300,
+                )
 
-    # Preview this run's data file. The left-hand index is the row number used by
-    # the "Delete rows" controls below.
-    _data = run_manager.read_data_file(SELECTED_RUN)
-    st.markdown(f"**This run's data** ({len(_data)} row(s)):")
-    st.dataframe(_data, use_container_width=True, height=260)
+    st.divider()
+    st.caption(
+        "Recommended workflow: use the **Data Entry** / **Run Workflow** tabs and the "
+        "per-run save files. The form below predates them and writes to one shared file."
+    )
+    with st.expander("Legacy manual global data entry — not recommended", expanded=False):
+        _render_legacy_global_form()
 
-    # --- Delete / clean rows ---------------------------------------------- #
-    # Only affects THIS run's CSV (experiments/<run>/data/…). Never touches other
-    # runs or data/raw/experimental_icp (that needs the explicit export button).
-    if not _data.empty:
-        with st.expander("🗑️ Delete rows", expanded=False):
-            _id_col = run_manager.id_column_for(SELECTED_RUN)
 
-            def _row_label(i: int) -> str:
-                if _id_col in _data.columns:
-                    val = _data.iloc[i][_id_col]
-                    shown = "" if pd.isna(val) else str(val).strip()
-                    return f"Row {i} — {_id_col}={shown or '(blank)'}"
-                return f"Row {i}"
+# Audit status -> emoji for at-a-glance scanning.
+_AUDIT_STATUS_EMOJI = {
+    calculations.STATUS_PASS: "✅ pass",
+    calculations.STATUS_WARNING: "⚠️ warning",
+    calculations.STATUS_FAIL: "❌ fail",
+    calculations.STATUS_NA: "— not available",
+}
 
-            to_delete = st.multiselect(
-                "Select row numbers to delete",
-                options=list(range(len(_data))),
-                format_func=_row_label,
-                key=f"del_rows_{SELECTED_RUN}",
+
+def _render_formula_registry(dev_mode: bool) -> None:
+    """List every documented formula with equation, I/O, units, provenance."""
+    for f in calculations.FORMULAS:
+        tag = "🧮 app-calculated" if f.source == "app-calculated" else "📥 parsed from PHREEQC"
+        with st.expander(f"{f.name}  ·  {tag}", expanded=False):
+            st.latex(f.latex)
+            st.markdown(
+                f"- **Equation:** `{f.equation}`\n"
+                f"- **Inputs:** {', '.join(f'`{c}`' for c in f.inputs)}\n"
+                f"- **Output:** `{f.output}`\n"
+                f"- **Units:** {f.units}\n"
+                f"- **Provenance:** {f.source}\n\n"
+                f"{f.explanation}"
             )
-            confirm = st.checkbox(
-                "I understand this will delete the selected rows from this run's CSV.",
-                key=f"del_confirm_{SELECTED_RUN}",
-            )
-            if st.button("Delete selected rows", key=f"del_btn_{SELECTED_RUN}"):
-                if not to_delete:
-                    st.warning("No rows selected — nothing was deleted.")
-                elif not confirm:
-                    st.warning("Tick the confirmation checkbox before deleting.")
-                else:
-                    n = run_manager.delete_data_rows(SELECTED_RUN, to_delete)
-                    st.success(f"Deleted {n} row(s) from this run's CSV.")
-                    _read_csv.clear()
-                    st.rerun()
+            if dev_mode and f.detail:
+                st.info(f"🛠️ {f.detail}")
 
-            st.divider()
-            st.caption(
-                "Remove rows with a blank "
-                f"`{_id_col}` or where every value is empty."
-            )
-            if st.button("Remove blank rows", key=f"del_blank_{SELECTED_RUN}"):
-                n = run_manager.remove_blank_data_rows(SELECTED_RUN)
-                if n:
-                    st.success(f"Removed {n} blank row(s).")
-                    _read_csv.clear()
-                    st.rerun()
-                else:
-                    st.info("No blank rows found.")
 
-    # Export this run's CSV.
-    ec1, ec2 = st.columns(2)
-    with ec1:
-        if not _data.empty:
-            st.download_button(
-                "⬇️ Export this run's CSV",
-                data=_data.to_csv(index=False).encode("utf-8"),
-                file_name=f"{SELECTED_RUN}_{run_manager.spec_for(_rt).data_filename}",
-                mime="text/csv",
-                use_container_width=True,
-            )
-    with ec2:
-        # Lab-type runs can be pushed into the existing pipeline's manual-entry file.
-        if _rt in run_manager.LAB_LIKE_RUN_TYPES:
-            if st.button("➡️ Export to pipeline (manual-entry CSV)", use_container_width=True):
-                try:
-                    dest = run_manager.export_lab_run_to_pipeline(SELECTED_RUN)
-                    st.success(
-                        f"Copied to {dest.relative_to(_PROJECT_ROOT)} — the existing "
-                        "scripts (05/07) will pick it up."
-                    )
-                    _read_csv.clear()
-                except run_manager.RunManagerError as exc:
-                    st.error(str(exc))
+def _render_residual_audit() -> None:
+    """Recompute residuals from the stored comparison CSV and report pass/fail."""
+    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
+    if not comp_path.exists():
+        st.info(
+            "No comparison file yet — run a lab workflow with a sample→PHREEQC mapping to "
+            f"generate `{config.COMPARISON_CSV}`, then this audit re-derives every residual."
+        )
+        return
 
-    # Sample -> PHREEQC mapping (lab-like runs only).
-    if _rt in run_manager.LAB_LIKE_RUN_TYPES:
-        _render_mapping_section(SELECTED_RUN)
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    audit = calculations.audit_comparison(comp)
+    if audit.empty:
+        st.info("Comparison file has no residual columns to audit yet.")
+        return
 
-# ---- 10. Safety and limitations ------------------------------------------- #
-st.header("10. Safety and limitations")
-st.warning(
-    "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
-    "thermodynamic predictions, not direct measurements, and assume the modelled "
-    "system reached equilibrium.\n"
-    "- **No ML is trained until real measured experimental release data exists.** "
-    "The interface and Phase 2 comparison are scaffolding; predictions remain NaN "
-    "until measured data and a sample→PHREEQC mapping are provided.\n"
-    "- **Entering a value here does not make it scientifically valid.** Check units, "
-    "detection limits, dilution factors, and experimental metadata before trusting "
-    "any comparison or residual. Garbage in, garbage out."
+    counts = audit["status"].value_counts().to_dict()
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("✅ pass", counts.get(calculations.STATUS_PASS, 0))
+    s2.metric("⚠️ warning", counts.get(calculations.STATUS_WARNING, 0))
+    s3.metric("❌ fail", counts.get(calculations.STATUS_FAIL, 0))
+    s4.metric("— not available", counts.get(calculations.STATUS_NA, 0))
+
+    if counts.get(calculations.STATUS_FAIL, 0):
+        st.error(
+            "At least one stored residual does **not** match a fresh recomputation. "
+            "Investigate the mapping / units before trusting the comparison."
+        )
+    else:
+        st.success(
+            "Every re-derivable residual matches the stored value within tolerance "
+            f"(pass ≤ {calculations.PASS_TOL:g}, warning ≤ {calculations.WARN_TOL:g})."
+        )
+
+    display = audit.copy()
+    display["status"] = display["status"].map(_AUDIT_STATUS_EMOJI).fillna(display["status"])
+    st.dataframe(display, use_container_width=True, height=300)
+    st.caption(
+        "`input_1 − input_2` is recomputed and compared to the stored residual. "
+        "'not available' means a required input (or the stored value) is blank."
+    )
+
+
+def _render_unit_calculator() -> None:
+    st.markdown("**ICP unit conversion** — dilution correction then mg/L → mM.")
+    c1, c2, c3 = st.columns(3)
+    element = c1.selectbox("Element", list(calculations.ATOMIC_MASSES), key="calc_unit_el")
+    reported = c2.number_input("Reported ICP (mg/L)", min_value=0.0, value=5.0,
+                               step=1.0, key="calc_unit_mgl")
+    dil = c3.number_input("Dilution factor", min_value=0.0, value=10.0,
+                          step=1.0, key="calc_unit_dil")
+    mass = calculations.ATOMIC_MASSES[element]
+    corrected = calculations.apply_dilution(reported, dil)
+    mM = calculations.mgl_to_mM(corrected, element) if mass else float("nan")
+    st.latex(r"\mathrm{corrected} = \mathrm{reported} \times \mathrm{dilution};\quad "
+             r"\mathrm{mM} = \dfrac{\mathrm{corrected}}{\mathrm{atomic\ mass}}")
+    st.success(
+        f"corrected = {reported:g} × {dil:g} = **{corrected:g} mg/L** · "
+        f"{element}_mM = {corrected:g} / {mass:g} = **{mM:.4g} mM**"
+    )
+
+
+def _render_ls_calculator() -> None:
+    st.markdown("**Liquid/solid ratio** = solution volume (mL) / fly-ash mass (g).")
+    c1, c2 = st.columns(2)
+    mass_g = c1.number_input("fly_ash_mass_g", min_value=0.0, value=20.0,
+                             step=1.0, key="calc_ls_mass")
+    vol_mL = c2.number_input("solution_volume_mL", min_value=0.0, value=100.0,
+                             step=1.0, key="calc_ls_vol")
+    st.latex(r"\mathrm{L/S} = \dfrac{\mathrm{solution\_volume\_mL}}{\mathrm{fly\_ash\_mass\_g}}")
+    if mass_g > 0:
+        ls = calculations.liquid_solid_ratio(vol_mL, mass_g)
+        st.success(f"L/S = {vol_mL:g} / {mass_g:g} = **{ls:.4g} mL/g**")
+    else:
+        st.warning("Enter a fly-ash mass greater than 0 to compute L/S.")
+
+
+def _render_calc_verification_tab(dev_mode: bool) -> None:
+    st.subheader("Calculation verification / formula audit")
+    st.info(
+        "**PHREEQC is an equilibrium/speciation solver. This app does not rederive PHREEQC "
+        "internally.** It parses PHREEQC output values and verifies that downstream "
+        "calculations, mappings, unit conversions, and residuals are applied correctly."
+    )
+
+    st.markdown("### Formulas used")
+    st.caption("Each formula, its inputs/outputs, units, and whether the app computes it or "
+               "parses it from PHREEQC.")
+    _render_formula_registry(dev_mode)
+
+    st.divider()
+    st.markdown("### Per-row residual audit")
+    st.caption("Recomputes `measured − PHREEQC` from the stored comparison file and checks it "
+               "against the stored residual.")
+    _render_residual_audit()
+
+    st.divider()
+    st.markdown("### Calculators")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        _render_unit_calculator()
+    with cc2:
+        _render_ls_calculator()
+
+    if dev_mode:
+        st.divider()
+        st.markdown("### 🛠️ Developer explanations")
+        st.markdown(
+            "- **Why pH uses activity:** pH = −log₁₀(a_H⁺) is defined on hydrogen-ion "
+            "*activity*. In high-ionic-strength alkali systems activity ≠ concentration, so "
+            "an activity model (PHREEQC) is needed; a naive concentration-based pH would be wrong.\n"
+            "- **Why the saturation index indicates precipitation/dissolution tendency:** "
+            "SI = log₁₀(IAP/Ksp). IAP > Ksp (SI > 0) means the solution holds more dissolved "
+            "ions than equilibrium allows, so the phase tends to precipitate; SI < 0 means it "
+            "tends to dissolve. It is a *tendency*, not a rate.\n"
+            "- **Why residuals alone do not prove model validity:** a small `measured − PHREEQC` "
+            "residual can occur for the wrong reasons (compensating errors, a single tuned "
+            "sample, or pH-only data). Agreement on one analyte/condition is not validation.\n"
+            "- **Why ICP unit conversion must include the dilution factor:** ICP reports the "
+            "*diluted* aliquot. Converting mg/L → mM without first multiplying by the dilution "
+            "factor understates the true solution concentration by that factor."
+        )
+
+
+def _render_help_tab() -> None:
+    st.subheader("How this app works")
+    st.markdown(
+        "1. **Create or open a run** in the sidebar (a 'save file' for one experiment set).\n"
+        "2. **Data Entry** — add measured rows (lab), upload/enter literature rows, or add "
+        "synthetic demo rows, depending on run type.\n"
+        "3. **Mapping** (lab runs) — link each `sample_id` to the PHREEQC result row for the "
+        "same chemistry.\n"
+        "4. **Run Workflow** — export to the pipeline and run Phase 1 → validate → compare → "
+        "sustainability.\n"
+        "5. **Results** — read the measured-vs-PHREEQC comparison, pH residuals, validation, "
+        "and sustainability proxies.\n"
+        "6. **PHREEQC Outputs** — browse processed tables and model figures."
+    )
+
+    st.subheader("Run types")
+    st.markdown(
+        "- **lab_experiment** — our measured release data (pH-only or full ICP). The only "
+        "type compared against PHREEQC as real data.\n"
+        "- **literature_benchmark** — values reported by other papers, kept separate and "
+        "never run through the pipeline as lab data.\n"
+        "- **synthetic_demo** — fake data for testing the code only; never scientific output.\n"
+        "- **plastic_composite** — lab-like run for plastic-composite experiments."
+    )
+
+    st.subheader("Sample → PHREEQC mapping")
+    st.markdown(
+        "PHREEQC output `.pqo` filenames and measured `sample_id`s differ, so the comparison "
+        "needs an explicit link: each measured `sample_id` → one PHREEQC `record_key` "
+        "(`<file>|sim<N>|<state>|sol<N>`). Comparisons default to the post-equilibration "
+        "(`batch`) state. **Without a mapping, residuals stay NaN** — a deliberate, visible "
+        "state rather than a wrong join."
+    )
+
+    st.subheader("Residuals")
+    st.markdown(
+        "`residual_X = measured − PHREEQC` (in mM for Ca/Si/Al/Fe; pH for pH). Positive means "
+        "the measured value is higher than the PHREEQC prediction. Fe is often unpredicted by "
+        "the CEMDATA18 runs, so `residual_Fe` may be entirely NaN — that means **unavailable**, "
+        "not 'PHREEQC predicts zero Fe'."
+    )
+
+    st.subheader("Limitations & safety")
+    st.warning(
+        "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
+        "thermodynamic predictions, not direct measurements, and assume the modelled "
+        "system reached equilibrium.\n"
+        "- **pH-only data only validates pH.** Ca/Si/Al/Fe/REE validation requires "
+        "ICP-OES / ICP-MS data.\n"
+        "- **Literature data must stay separate from lab data** — it is benchmark context, "
+        "not our measurements.\n"
+        "- **No ML is trained until real measured experimental release data exists.** "
+        "The interface and Phase 2 comparison are scaffolding; predictions remain NaN "
+        "until measured data and a sample→PHREEQC mapping are provided.\n"
+        "- **Entering a value here does not make it scientifically valid.** Check units, "
+        "detection limits, dilution factors, and experimental metadata before trusting "
+        "any comparison or residual. Garbage in, garbage out."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Page — wide layout, run-management sidebar, and a tabbed dashboard
+# --------------------------------------------------------------------------- #
+st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
+st.title("flyash-phreeqc-ml — control panel")
+st.caption(
+    "A GUI over the existing Phase 1 / Phase 2 scripts. It does not change the "
+    "chemistry or train any model."
 )
+
+# Sidebar "save files" — selecting a run here drives every tab below.
+SELECTED_RUN = _render_run_sidebar()
+
+st.sidebar.divider()
+DEV_MODE = st.sidebar.checkbox(
+    "🛠️ Developer explanation mode", value=False, key="dev_mode",
+    help="Show deeper chemistry/statistics explanations, mainly in the "
+         "Calculation Verification tab.",
+)
+
+(
+    tab_overview, tab_entry, tab_map, tab_run, tab_results,
+    tab_phreeqc, tab_lit, tab_tools, tab_calc, tab_help,
+) = st.tabs([
+    "Overview", "Data Entry", "Mapping", "Run Workflow", "Results",
+    "PHREEQC Outputs", "Literature Benchmark", "Tools",
+    "Calculation Verification", "Help / Safety",
+])
+
+with tab_overview:
+    _render_overview(SELECTED_RUN)
+with tab_entry:
+    _render_data_entry_tab(SELECTED_RUN)
+with tab_map:
+    _render_mapping_tab(SELECTED_RUN)
+with tab_run:
+    _render_run_workflow_tab(SELECTED_RUN)
+with tab_results:
+    _render_results_tab(SELECTED_RUN)
+with tab_phreeqc:
+    _render_phreeqc_tab()
+with tab_lit:
+    _render_literature_tab(SELECTED_RUN)
+with tab_tools:
+    _render_tools_tab()
+with tab_calc:
+    _render_calc_verification_tab(DEV_MODE)
+with tab_help:
+    _render_help_tab()

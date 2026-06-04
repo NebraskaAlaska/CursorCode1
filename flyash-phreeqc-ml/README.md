@@ -64,6 +64,7 @@ flyash-phreeqc-ml/
 │   │   └── build_master.py      # join everything into master_dataset.csv
 │   ├── compare/                 # Phase 2: measured vs PHREEQC
 │   │   └── residuals.py         # residual_<X> = measured − PHREEQC
+│   ├── calculations.py          # formula registry + residual audit (app transparency, no chemistry)
 │   └── viz/
 │       ├── plots.py             # Phase 1 exploratory plots
 │       └── compare_plots.py     # Phase 2 measured-vs-PHREEQC plots
@@ -107,18 +108,62 @@ pip install -r requirements.txt   # includes streamlit
 streamlit run app.py
 ```
 
+**Layout.** The app is a wide **tabbed dashboard** driven by a run-management **sidebar**
+(select/create a run; see its name/type/folder/source; a run-type warning; and a
+**Developer explanation mode** toggle). The tabs are:
+
+- **Overview** — project + selected-run status, what's missing, a recommended next step.
+- **Data Entry** — run-type-specific entry (lab measured-release form, literature CSV
+  upload + manual rows, or synthetic/demo form), plus this run's table, row deletion, and
+  CSV/pipeline export.
+- **Mapping** — link each measured `sample_id` to a PHREEQC `record_key` (lab-like runs).
+- **Run Workflow** — the **"Run selected experiment workflow"** button (below) + an
+  "Advanced individual script controls" expander.
+- **Results** — run-type-aware: the measured-vs-PHREEQC summary, comparison/residual
+  figures, pH residual cards, and validation + sustainability tables for a lab run; the
+  benchmark summary for a literature run.
+- **PHREEQC Outputs** — processed-CSV previewer + a PHREEQC-**only** model-output figure
+  viewer (the measured-vs-PHREEQC comparison plots live in **Results**).
+- **Literature Benchmark** — the literature table + comparability summary (literature runs).
+- **Tools** — the experiment-planning scripts (06/07/08) and their output tables; the
+  legacy global manual-entry form is tucked in a "not recommended" expander.
+- **Calculation Verification** — formula registry, per-row residual audit, and calculators
+  (see *Calculation verification* below).
+- **Help / Safety** — workflow, run types, mapping, residuals, and limitations.
+
 **Running the workflow.** After entering data into a run, click the
-**"Run selected experiment workflow"** button inside the app (section 2). For a lab
-run it exports the run's CSV to the pipeline and runs Phase 1, validation, the
+**"Run selected experiment workflow"** button in the **Run Workflow** tab. For a lab
+run it exports the run's CSV (and mapping) to the pipeline and runs Phase 1, validation, the
 measured-vs-PHREEQC comparison, and the sustainability score in order — showing each
 command's output and stopping at the first failure. The individual step buttons remain
-available.
+available in the "Advanced individual script controls" expander.
 
-It provides: project status, buttons to run Phase 1 / Phase 2 (with live stdout/stderr),
-a processed-CSV previewer, a form to enter measured experimental data (appended to
-`data/raw/experimental_icp/experimental_release_manual_entry.csv`, never overwritten —
-and gitignored), a figure viewer, and an **Experiment runs** sidebar (see below). The app
-changes no chemistry and trains no model; see its *Safety and limitations* section.
+The app reuses package functions, changes no chemistry, and trains no model. The legacy
+global entry form appends to
+`data/raw/experimental_icp/experimental_release_manual_entry.csv` (never overwritten — and
+gitignored); per-run entry writes into the selected run's own `experiments/<name>/data/`.
+See the **Help / Safety** tab for limitations.
+
+## Calculation verification / formula audit
+
+The **Calculation Verification** tab (backed by `flyash_phreeqc_ml/calculations.py`) makes
+the app's arithmetic transparent — what formulas are used, what inputs/units they assume,
+and whether stored values match a fresh recomputation. It shows:
+
+- a **formula registry** (residuals; ICP mg/L → mM with atomic masses; dilution correction;
+  liquid/solid ratio; mass released; recovery %; plus *explanations* of PHREEQC's saturation
+  index `SI = log10(IAP/Ksp)` and `pH = -log10(a_H+)`), each with equation, inputs, output,
+  units, a short meaning, and whether the app computes it or **parses it from PHREEQC**;
+- a **per-row residual audit** that recomputes `measured − PHREEQC` from
+  `data/processed/comparison_measured_vs_phreeqc.csv` and labels each as
+  **pass** / **warning** / **fail** / **not available** (within tolerance, vs the stored value);
+- small **calculators** for mg/L → mM (with dilution) and liquid/solid ratio.
+
+**PHREEQC is not rederived.** The app parses PHREEQC's output and verifies that the
+downstream mappings, unit conversions, and residuals are applied correctly — saturation
+index and pH come straight from the solver. Developer explanation mode adds deeper
+chemistry/statistics notes (why pH uses activity, why SI indicates precipitation tendency,
+why residuals alone don't prove validity, why ICP conversion needs the dilution factor).
 
 ## Experiment runs / save files
 
