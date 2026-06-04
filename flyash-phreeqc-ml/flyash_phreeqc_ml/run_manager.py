@@ -436,6 +436,57 @@ def append_demo_row(run_name: str, row: dict) -> Path:
     return _append_row(path, stamped, DEMO_DATA_COLUMNS)
 
 
+# Columns an uploaded lab CSV must contain (the rest of the release schema is
+# optional). These are the experiment metadata + pH that every measured row needs;
+# chemistry/ICP columns may be filled in later.
+LAB_REQUIRED_COLUMNS = [
+    "sample_id",
+    "experiment_date",
+    "fly_ash_type",
+    "NaOH_M",
+    "time_min",
+    "temperature_C",
+    "liquid_solid_ratio",
+    "CO2_condition",
+    "initial_pH",
+    "final_pH",
+]
+LAB_OPTIONAL_COLUMNS = [
+    c for c in config.EXPERIMENTAL_RELEASE_COLUMNS if c not in LAB_REQUIRED_COLUMNS
+]
+
+
+def missing_lab_required_columns(df: pd.DataFrame) -> list[str]:
+    """Return the required lab columns absent from ``df`` (empty list = valid)."""
+    return [c for c in LAB_REQUIRED_COLUMNS if c not in df.columns]
+
+
+def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace") -> Path:
+    """Write an uploaded DataFrame to a lab-type run's ``experimental_release.csv``.
+
+    ``mode="replace"`` overwrites the run's CSV; ``mode="append"`` concatenates the
+    new rows onto any existing ones. The frame is reindexed to the release schema
+    (extra columns kept after the canonical ones). Raises :class:`RunTypeError` for
+    non-lab runs, so literature/synthetic data can never land in a lab release file.
+    """
+    if mode not in ("replace", "append"):
+        raise ValueError(f"mode must be 'replace' or 'append', got {mode!r}")
+    path = lab_release_path(run_name)  # enforces the lab-only guardrail
+    extra = [c for c in df.columns if c not in config.EXPERIMENTAL_RELEASE_COLUMNS]
+    ordered = list(config.EXPERIMENTAL_RELEASE_COLUMNS) + extra
+    out = df.reindex(columns=ordered)
+    if mode == "append" and path.exists():
+        existing = pd.read_csv(path)
+        cols = ordered + [c for c in existing.columns if c not in ordered]
+        out = pd.concat(
+            [existing.reindex(columns=cols), out.reindex(columns=cols)],
+            ignore_index=True,
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False)
+    return path
+
+
 def save_literature_dataframe(run_name: str, df: pd.DataFrame) -> Path:
     """Overwrite a literature run's benchmark CSV from an uploaded DataFrame.
 

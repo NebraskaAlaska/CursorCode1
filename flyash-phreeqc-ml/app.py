@@ -177,6 +177,77 @@ def _render_run_sidebar() -> str | None:
     return selected
 
 
+def _lab_csv_upload(run_name: str) -> None:
+    """Upload a filled experimental CSV into a lab run's experimental_release.csv.
+
+    Validates the required columns, previews the rows, warns on synthetic/test
+    sample_ids, and (when the run already has data) asks whether to replace or
+    append. Only ever writes to this lab run's own ``data/experimental_release.csv``.
+    """
+    st.markdown("**Upload experimental CSV**")
+    st.caption(
+        "Upload a filled measured-release CSV. It is saved to this run's "
+        "`data/experimental_release.csv` — lab data only, never literature or synthetic."
+    )
+    up = st.file_uploader("Upload experimental CSV", type=["csv"], key=f"lab_csv_up_{run_name}")
+    if up is None:
+        return
+
+    try:
+        df = pd.read_csv(up)
+    except Exception as exc:  # pragma: no cover - UI guard
+        st.error(f"Could not read CSV: {exc}")
+        return
+
+    missing = run_manager.missing_lab_required_columns(df)
+    if missing:
+        st.error("Upload rejected — missing required column(s): "
+                 + ", ".join(f"`{c}`" for c in missing))
+        st.caption("Required columns: " + ", ".join(run_manager.LAB_REQUIRED_COLUMNS))
+        return
+
+    # (10) rows loaded + preview.
+    st.success(f"Parsed {len(df)} row(s) × {df.shape[1]} column(s).")
+    st.dataframe(df, use_container_width=True, height=300)
+
+    # (10) synthetic / test warnings.
+    if "sample_id" in df.columns:
+        sid = df["sample_id"].astype(str).str.upper()
+        flagged = int(sid.str.contains("TEST|SYNTH", na=False, regex=True).sum())
+        if flagged:
+            st.warning(
+                f"⚠️ {flagged} `sample_id` value(s) contain 'TEST' or 'SYNTH'. "
+                "Check this is real experimental data, not placeholders."
+            )
+    st.caption(
+        "⚠️ Synthetic or mock data must **not** be interpreted as real experimental "
+        "evidence. Only upload measured lab data into a lab_experiment run."
+    )
+
+    existing = run_manager.read_data_file(run_name)
+    if not existing.empty:
+        # (7) file already has data — ask replace vs append.
+        st.info(f"This run already has {len(existing)} row(s). Choose how to save:")
+        rc, ac = st.columns(2)
+        if rc.button("Replace current run data", key=f"lab_csv_replace_{run_name}"):
+            dest = run_manager.save_lab_dataframe(run_name, df, mode="replace")
+            st.success(f"Replaced — {len(df)} row(s) written to {dest.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+            st.rerun()
+        if ac.button("Append to current run data", key=f"lab_csv_append_{run_name}"):
+            dest = run_manager.save_lab_dataframe(run_name, df, mode="append")
+            total = len(run_manager.read_data_file(run_name))
+            st.success(f"Appended — run now has {total} row(s) in {dest.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+            st.rerun()
+    else:
+        if st.button("Save uploaded CSV to this run", key=f"lab_csv_save_{run_name}"):
+            dest = run_manager.save_lab_dataframe(run_name, df, mode="replace")
+            st.success(f"Saved — {len(df)} row(s) to {dest.relative_to(_PROJECT_ROOT)}.")
+            _read_csv.clear()
+            st.rerun()
+
+
 def _lab_entry_form(run_name: str) -> None:
     """Measured-release entry form for a lab-type run (pH-only or full ICP)."""
     st.write(
@@ -837,6 +908,8 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
     _run_type_warning(rt)
 
     if rt in run_manager.LAB_LIKE_RUN_TYPES:
+        _lab_csv_upload(selected_run)
+        st.divider()
         _lab_entry_form(selected_run)
     elif rt == "literature_benchmark":
         _literature_entry(selected_run)
@@ -915,14 +988,11 @@ def _render_run_workflow_tab(selected_run: str | None) -> None:
         with a2:
             _script_button("Run Phase 2 comparison", "scripts/05_compare_experimental.py",
                            "Phase 2", "adv_phase2", refresh_csv=True)
-        b1, b2, b3 = st.columns(3)
+        b1, b2 = st.columns(2)
         with b1:
-            _script_button("Generate experiment plan", "scripts/06_generate_experiment_plan.py",
-                           "Experiment plan", "adv_plan")
-        with b2:
             _script_button("Validate experimental CSVs",
                            "scripts/07_validate_experimental_data.py", "Validation", "adv_validate")
-        with b3:
+        with b2:
             _script_button("Run sustainability score", "scripts/08_sustainability_score.py",
                            "Sustainability score", "adv_sustain")
 
@@ -1092,20 +1162,16 @@ def _render_legacy_global_form() -> None:
 
 
 def _render_tools_tab() -> None:
-    st.subheader("Experiment planning tools")
+    st.subheader("Data Checks and Derived Metrics")
     st.write(
-        "Generate an experiment run sheet, validate filled CSVs, and compute "
-        "sustainability/selectivity proxies. These call the existing scripts unchanged "
-        "(`scripts/06_…`, `07_…`, `08_…`) and train no model."
+        "These tools check entered data and calculate derived metrics. They do not "
+        "generate lab plans or train a model."
     )
-    t1, t2, t3 = st.columns(3)
+    t1, t2 = st.columns(2)
     with t1:
-        _script_button("Generate experiment plan", "scripts/06_generate_experiment_plan.py",
-                       "Experiment plan", "tools_plan")
-    with t2:
         _script_button("Validate experimental CSVs",
                        "scripts/07_validate_experimental_data.py", "Validation", "tools_validate")
-    with t3:
+    with t2:
         _script_button("Run sustainability score", "scripts/08_sustainability_score.py",
                        "Sustainability score", "tools_sustain")
 

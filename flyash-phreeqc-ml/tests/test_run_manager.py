@@ -137,6 +137,72 @@ def test_save_literature_dataframe_reorders_to_schema(runs_root):
 
 
 # --------------------------------------------------------------------------- #
+# Lab CSV upload (validation + replace/append)
+# --------------------------------------------------------------------------- #
+def _full_lab_row(sample_id="S1"):
+    return {c: "" for c in config.EXPERIMENTAL_RELEASE_COLUMNS} | {
+        "sample_id": sample_id, "experiment_date": "2026-06-04",
+        "fly_ash_type": "ClassC", "NaOH_M": "4", "time_min": "60",
+        "temperature_C": "25", "liquid_solid_ratio": "10",
+        "CO2_condition": "sealed", "initial_pH": "7", "final_pH": "12.8",
+    }
+
+
+def test_missing_lab_required_columns_detects_gaps():
+    full = pd.DataFrame([_full_lab_row()])
+    assert run_manager.missing_lab_required_columns(full) == []
+    partial = full.drop(columns=["final_pH", "NaOH_M"])
+    assert set(run_manager.missing_lab_required_columns(partial)) == {"final_pH", "NaOH_M"}
+
+
+def test_save_lab_dataframe_replace_writes_schema(runs_root):
+    run_manager.create_run("up1", "lab_experiment", created_at="t")
+    df = pd.DataFrame([_full_lab_row("A"), _full_lab_row("B")])
+    path = run_manager.save_lab_dataframe("up1", df, mode="replace")
+    assert path.name == "experimental_release.csv"
+    out = pd.read_csv(path)
+    assert list(out.columns)[:len(config.EXPERIMENTAL_RELEASE_COLUMNS)] == \
+        config.EXPERIMENTAL_RELEASE_COLUMNS
+    assert list(out["sample_id"]) == ["A", "B"]
+
+
+def test_save_lab_dataframe_replace_overwrites(runs_root):
+    run_manager.create_run("up2", "lab_experiment", created_at="t")
+    run_manager.save_lab_dataframe("up2", pd.DataFrame([_full_lab_row("A")]), mode="replace")
+    run_manager.save_lab_dataframe("up2", pd.DataFrame([_full_lab_row("B")]), mode="replace")
+    out = run_manager.read_data_file("up2")
+    assert list(out["sample_id"]) == ["B"]
+
+
+def test_save_lab_dataframe_append_concatenates(runs_root):
+    run_manager.create_run("up3", "lab_experiment", created_at="t")
+    run_manager.save_lab_dataframe("up3", pd.DataFrame([_full_lab_row("A")]), mode="replace")
+    run_manager.save_lab_dataframe("up3", pd.DataFrame([_full_lab_row("B")]), mode="append")
+    out = run_manager.read_data_file("up3")
+    assert list(out["sample_id"]) == ["A", "B"]
+
+
+def test_save_lab_dataframe_keeps_extra_columns(runs_root):
+    run_manager.create_run("up4", "lab_experiment", created_at="t")
+    df = pd.DataFrame([_full_lab_row("A") | {"extra_col": "keep"}])
+    run_manager.save_lab_dataframe("up4", df, mode="replace")
+    out = run_manager.read_data_file("up4")
+    assert "extra_col" in out.columns
+
+
+def test_save_lab_dataframe_rejects_bad_mode(runs_root):
+    run_manager.create_run("up5", "lab_experiment", created_at="t")
+    with pytest.raises(ValueError):
+        run_manager.save_lab_dataframe("up5", pd.DataFrame([_full_lab_row()]), mode="merge")
+
+
+def test_save_lab_dataframe_blocks_literature_run(runs_root):
+    run_manager.create_run("uplit", "literature_benchmark", created_at="t")
+    with pytest.raises(run_manager.RunTypeError):
+        run_manager.save_lab_dataframe("uplit", pd.DataFrame([_full_lab_row()]), mode="replace")
+
+
+# --------------------------------------------------------------------------- #
 # Guardrails: literature data cannot become lab experimental data
 # --------------------------------------------------------------------------- #
 def test_literature_run_cannot_write_lab_release(runs_root):
