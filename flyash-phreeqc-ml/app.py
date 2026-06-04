@@ -30,6 +30,7 @@ import streamlit as st  # noqa: E402
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
+from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
     load_experimental_release,
@@ -437,7 +438,9 @@ def _render_mapping_quality(mapping: pd.DataFrame) -> None:
         st.warning(
             "Multiple samples are mapped to the same PHREEQC row. Scatter plots may "
             "appear as vertical lines because the model prediction is identical for "
-            "those samples."
+            "those samples.\n\n"
+            "Your graph may form a vertical line because several samples share the "
+            "same model prediction."
         )
     if summary["n_samples"] > summary["n_unique_rows"]:
         st.warning(
@@ -446,44 +449,145 @@ def _render_mapping_quality(mapping: pd.DataFrame) -> None:
         )
 
 
-def _render_mapping_section(run_name: str) -> None:
-    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
+@st.cache_data(show_spinner=False)
+def _scenario_manifest(results_path_str: str, mtime: float) -> pd.DataFrame:
+    """Build (and persist) the PHREEQC scenario manifest, cached on results mtime."""
+    manifest = scenarios.build_scenario_manifest(pd.read_csv(results_path_str))
+    dest = scenarios.scenario_manifest_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.to_csv(dest, index=False)  # data/processed/ is gitignored
+    return manifest
 
-    Saves to the run's own ``data/sample_phreeqc_map.csv`` and can export a copy
-    to the pipeline location the comparison script reads.
-    """
-    st.markdown("---")
-    st.subheader("Sample → PHREEQC mapping")
+
+# Columns the Scenario Explorer table shows (readable subset of the manifest).
+_EXPLORER_COLUMNS = [
+    "scenario_label", "source_file", "state", "solution_number",
+    "predicted_pH", "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM",
+    "predicted_Fe_mM", "liquid_solid_ratio", "CO2_condition", "metadata_quality",
+]
+
+
+def _render_scenario_explorer(run_name: str, manifest: pd.DataFrame) -> None:
+    """Feature 2 — filterable, readable table of PHREEQC scenarios."""
+    st.markdown("#### PHREEQC Scenario Explorer")
     st.caption(
-        "Link each measured sample to the PHREEQC result row for the same chemistry. "
-        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
-        "residuals later, once ICP data exist)."
+        "Each PHREEQC result row described in plain terms, with metadata inferred "
+        "from the source filename where safe (anything uncertain is `unknown`)."
     )
-
-    data = run_manager.read_data_file(run_name)
-    sample_ids: list[str] = []
-    if "sample_id" in data.columns:
-        for s in data["sample_id"].astype(str).map(str.strip).tolist():
-            if s and s.lower() != "nan":
-                sample_ids.append(s)
-    sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
-
-    if not sample_ids:
-        st.info("No `sample_id` rows in this run yet — enter data first.")
+    if manifest.empty:
+        st.info("No PHREEQC scenarios yet — run Phase 1 to generate results.")
         return
 
-    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
-    if not results_path.exists():
-        st.info(
-            "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(Section 4 or the workflow button) to generate PHREEQC results."
+    f1, f2, f3, f4 = st.columns(4)
+    state_choice = f1.selectbox(
+        "state", ["batch only", "initial only", "all"], key=f"exp_state_{run_name}")
+    co2_opts = ["all"] + sorted(manifest["CO2_condition"].dropna().astype(str).unique())
+    co2_choice = f2.selectbox("CO2_condition", co2_opts, key=f"exp_co2_{run_name}")
+    ls_vals = sorted(
+        {f"{v:g}" for v in manifest["liquid_solid_ratio"].dropna().tolist()})
+    ls_choice = f3.selectbox("liquid_solid_ratio", ["all"] + ls_vals, key=f"exp_ls_{run_name}")
+    src_opts = ["all"] + sorted(manifest["source_file"].dropna().astype(str).unique())
+    src_choice = f4.selectbox("source_file", src_opts, key=f"exp_src_{run_name}")
+
+    view = manifest
+    if state_choice == "batch only":
+        view = view[view["state"].astype(str).str.lower() == "batch"]
+    elif state_choice == "initial only":
+        view = view[view["state"].astype(str).str.lower() == "initial"]
+    if co2_choice != "all":
+        view = view[view["CO2_condition"].astype(str) == co2_choice]
+    if ls_choice != "all":
+        view = view[view["liquid_solid_ratio"].map(lambda v: f"{v:g}") == ls_choice]
+    if src_choice != "all":
+        view = view[view["source_file"].astype(str) == src_choice]
+
+    cols = [c for c in _EXPLORER_COLUMNS if c in view.columns]
+    st.dataframe(view[cols], use_container_width=True, height=280)
+    st.caption(f"{len(view)} of {len(manifest)} scenarios shown.")
+
+
+_ASSISTANT_META_FIELDS = [
+    "NaOH_M", "time_min", "liquid_solid_ratio", "CO2_condition",
+    "temperature_C", "final_pH", "Ca_mM", "Si_mM", "Al_mM", "Fe_mM",
+]
+
+
+def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
+                              sample_ids: list[str], manifest: pd.DataFrame) -> None:
+    """Features 3/4/5 — sample metadata, top-3 suggestions, approve, no-match warning."""
+    st.markdown("#### Mapping Assistant")
+    st.caption(
+        "Pick a measured sample; the assistant scores PHREEQC scenarios with simple, "
+        "transparent rules (no ML) and suggests the best matches."
+    )
+    sel_sample = st.selectbox("Experimental sample_id", sample_ids,
+                              key=f"assist_sample_{run_name}")
+    sample_row = data[data["sample_id"].astype(str).str.strip() == sel_sample]
+    sample = sample_row.iloc[0].to_dict() if not sample_row.empty else {"sample_id": sel_sample}
+
+    meta = {f: sample.get(f, "") for f in _ASSISTANT_META_FIELDS if f in sample}
+    if meta:
+        st.markdown("**Sample metadata:**")
+        st.dataframe(pd.DataFrame([meta]), use_container_width=True, height=80)
+
+    if manifest.empty:
+        st.info("No PHREEQC scenarios available to suggest yet — run Phase 1 first.")
+        return
+
+    suggestions = scenarios.suggest_mappings(sample, manifest, top_n=3)
+    if not suggestions or suggestions[0]["confidence"] == "low":
+        # Feature 5 — best match is weak.
+        st.error(
+            "No strong PHREEQC match exists for this sample. The comparison may be "
+            "misleading. Consider generating a new PHREEQC simulation for this "
+            "experimental condition."
         )
-        return
-    phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
-    if "record_key" not in phreeqc.columns:
-        st.warning("`phreeqc_results.csv` has no `record_key` column — cannot map.")
-        return
 
+    for i, sug in enumerate(suggestions):
+        conf = sug["confidence"]
+        badge = {"high": "🟢 high", "medium": "🟡 medium", "low": "🔴 low"}.get(conf, conf)
+        with st.container(border=True):
+            st.markdown(f"**{sug['scenario_label']}** · score {sug['score']} · {badge} confidence")
+            st.caption(f"`{sug['suggested_phreeqc_record_key']}`")
+            st.markdown(
+                f"- **Reason:** {sug['reason']}\n"
+                f"- **Matched:** {', '.join(sug['matched_fields']) or '—'}\n"
+                f"- **Mismatched:** {', '.join(sug['mismatched_fields']) or '—'}\n"
+                f"- **Missing metadata:** {', '.join(sug['missing_metadata']) or '—'}"
+            )
+            if st.button("Use this mapping", key=f"assist_use_{run_name}_{i}"):
+                try:
+                    run_manager.add_mapping(
+                        run_name, sel_sample, sug["suggested_phreeqc_record_key"])
+                    st.success(
+                        f"Mapped `{sel_sample}` → `{sug['suggested_phreeqc_record_key']}`.")
+                    _read_csv.clear()
+                    st.rerun()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+
+
+def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
+                       manifest: pd.DataFrame) -> None:
+    """Feature 6 — samples that would need a fresh PHREEQC simulation."""
+    needed = scenarios.samples_needing_simulation(data, mapping, manifest)
+    st.markdown("#### Samples needing new PHREEQC simulations")
+    if needed.empty:
+        st.success("Every sample has a confident, non-colliding PHREEQC mapping.")
+        return
+    st.caption(
+        "Flagged when a sample has no mapping, only a low-confidence match, or shares "
+        "its PHREEQC row with other samples."
+    )
+    st.dataframe(needed, use_container_width=True, height=240)
+
+
+def _render_manual_mapping(run_name: str, phreeqc: pd.DataFrame,
+                           sample_ids: list[str]) -> None:
+    """Feature 7 — the original manual dropdown, kept as advanced mode."""
+    st.warning(
+        "Use manual mapping only if you understand what the PHREEQC row represents."
+    )
     only_batch = st.checkbox(
         "Only show PHREEQC 'batch' rows (post-equilibration)",
         value=True, key=f"map_batch_{run_name}",
@@ -522,11 +626,63 @@ def _render_mapping_section(run_name: str) -> None:
         except run_manager.RunManagerError as exc:
             st.error(str(exc))
 
+
+def _render_mapping_section(run_name: str) -> None:
+    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
+
+    Assistant-driven: a scenario explorer + rule-based suggestions guide the user,
+    with the original manual dropdown kept under an advanced expander. Saves to the
+    run's own ``data/sample_phreeqc_map.csv`` and can export a copy to the pipeline.
+    """
+    st.markdown("---")
+    st.subheader("Sample → PHREEQC mapping")
+    st.caption(
+        "Link each measured sample to the PHREEQC result row for the same chemistry. "
+        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
+        "residuals later, once ICP data exist)."
+    )
+
+    data = run_manager.read_data_file(run_name)
+    sample_ids: list[str] = []
+    if "sample_id" in data.columns:
+        for s in data["sample_id"].astype(str).map(str.strip).tolist():
+            if s and s.lower() != "nan":
+                sample_ids.append(s)
+    sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
+
+    if not sample_ids:
+        st.info("No `sample_id` rows in this run yet — enter data first.")
+        return
+
+    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
+    if not results_path.exists():
+        st.info(
+            "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
+            "(the Run Workflow tab) to generate PHREEQC results."
+        )
+        return
+    phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
+    if "record_key" not in phreeqc.columns:
+        st.warning("`phreeqc_results.csv` has no `record_key` column — cannot map.")
+        return
+
+    manifest = _scenario_manifest(str(results_path), results_path.stat().st_mtime)
+
+    _render_scenario_explorer(run_name, manifest)
+    st.markdown("---")
+    _render_mapping_assistant(run_name, data, sample_ids, manifest)
+
+    st.markdown("---")
     mapping = run_manager.read_mapping(run_name)
     st.markdown(f"**Existing mappings** ({len(mapping)}):")
     st.dataframe(mapping, use_container_width=True, height=170)
-
     _render_mapping_quality(mapping)
+
+    st.markdown("---")
+    _render_sim_needed(run_name, data, mapping, manifest)
+
+    with st.expander("Advanced manual mapping", expanded=False):
+        _render_manual_mapping(run_name, phreeqc, sample_ids)
 
     if not mapping.empty:
         with st.expander("🗑️ Delete mappings"):
