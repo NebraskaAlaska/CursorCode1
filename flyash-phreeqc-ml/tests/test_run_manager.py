@@ -237,6 +237,83 @@ def test_remove_blank_rows_noop_when_none(runs_root):
 
 
 # --------------------------------------------------------------------------- #
+# Sample -> PHREEQC mapping
+# --------------------------------------------------------------------------- #
+def test_mapping_columns_match_pipeline_contract():
+    # The comparison script + residuals.py require exactly these two columns.
+    assert run_manager.MAPPING_COLUMNS == ["sample_id", "phreeqc_record_key"]
+    assert run_manager.MAPPING_COLUMNS[0] == "sample_id"
+
+
+def test_add_mapping_writes_and_upserts(runs_root):
+    run_manager.create_run("m1", "lab_experiment", created_at="t")
+    run_manager.add_mapping("m1", "S1", "fileA|sim1|batch|sol1")
+    run_manager.add_mapping("m1", "S2", "fileA|sim1|batch|sol2")
+    df = pd.read_csv(run_manager.mapping_path("m1"))
+    assert list(df.columns) == run_manager.MAPPING_COLUMNS
+    assert dict(zip(df["sample_id"], df["phreeqc_record_key"])) == {
+        "S1": "fileA|sim1|batch|sol1",
+        "S2": "fileA|sim1|batch|sol2",
+    }
+    # Re-mapping S1 replaces (upsert), does not duplicate.
+    run_manager.add_mapping("m1", "S1", "fileA|sim1|batch|sol9")
+    df = pd.read_csv(run_manager.mapping_path("m1"))
+    assert len(df) == 2
+    assert df.loc[df["sample_id"] == "S1", "phreeqc_record_key"].iloc[0] == "fileA|sim1|batch|sol9"
+
+
+def test_add_mapping_rejects_blanks(runs_root):
+    run_manager.create_run("m2", "lab_experiment", created_at="t")
+    with pytest.raises(run_manager.RunManagerError):
+        run_manager.add_mapping("m2", "", "key")
+    with pytest.raises(run_manager.RunManagerError):
+        run_manager.add_mapping("m2", "S1", "")
+
+
+def test_has_mapping(runs_root):
+    run_manager.create_run("m3", "lab_experiment", created_at="t")
+    assert run_manager.has_mapping("m3") is False
+    run_manager.add_mapping("m3", "S1", "k1")
+    assert run_manager.has_mapping("m3") is True
+
+
+def test_delete_mapping_rows(runs_root):
+    run_manager.create_run("m4", "lab_experiment", created_at="t")
+    run_manager.add_mapping("m4", "S1", "k1")
+    run_manager.add_mapping("m4", "S2", "k2")
+    assert run_manager.delete_mapping_rows("m4", [0]) == 1
+    df = pd.read_csv(run_manager.mapping_path("m4"))
+    assert df["sample_id"].tolist() == ["S2"]
+
+
+def test_mapping_only_for_lab_like_runs(runs_root):
+    run_manager.create_run("m5", "literature_benchmark", created_at="t")
+    with pytest.raises(run_manager.RunTypeError):
+        run_manager.mapping_path("m5")
+    with pytest.raises(run_manager.RunTypeError):
+        run_manager.add_mapping("m5", "S1", "k1")
+
+
+def test_export_mapping_to_pipeline(runs_root, tmp_path, monkeypatch):
+    dest_dir = tmp_path / "experimental_icp"
+    monkeypatch.setattr(config, "EXPERIMENTAL_ICP_DIR", dest_dir)
+    run_manager.create_run("m6", "lab_experiment", created_at="t")
+    run_manager.add_mapping("m6", "S1", "k1")
+    dest = run_manager.export_mapping_to_pipeline("m6")
+    assert dest == dest_dir / config.SAMPLE_PHREEQC_MAP_CSV
+    df = pd.read_csv(dest)
+    assert list(df.columns) == run_manager.MAPPING_COLUMNS
+    assert df["phreeqc_record_key"].iloc[0] == "k1"
+
+
+def test_export_mapping_requires_existing_mapping(runs_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "EXPERIMENTAL_ICP_DIR", tmp_path / "icp")
+    run_manager.create_run("m7", "lab_experiment", created_at="t")
+    with pytest.raises(run_manager.RunManagerError):
+        run_manager.export_mapping_to_pipeline("m7")
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline bridge
 # --------------------------------------------------------------------------- #
 def test_export_lab_run_to_pipeline(runs_root, tmp_path, monkeypatch):

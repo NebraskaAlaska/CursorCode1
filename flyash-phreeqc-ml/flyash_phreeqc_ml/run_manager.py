@@ -532,6 +532,95 @@ def remove_blank_data_rows(run_name: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Sample -> PHREEQC mapping
+# --------------------------------------------------------------------------- #
+# The comparison script (scripts/05) reads this 2-column file to link each
+# measured sample_id to a PHREEQC record_key. Same filename/columns as the
+# pipeline expects (config.SAMPLE_PHREEQC_MAP_CSV).
+MAPPING_COLUMNS = ["sample_id", "phreeqc_record_key"]
+
+
+def mapping_path(run_name: str) -> Path:
+    """Path to a lab-type run's ``sample_phreeqc_map.csv`` (lab-like runs only)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_data_dir(run_name) / config.SAMPLE_PHREEQC_MAP_CSV
+
+
+def read_mapping(run_name: str) -> pd.DataFrame:
+    """Read the run's sample->PHREEQC mapping (empty 2-col frame if not created)."""
+    path = mapping_path(run_name)
+    if path.exists():
+        return pd.read_csv(path)
+    return pd.DataFrame(columns=MAPPING_COLUMNS)
+
+
+def add_mapping(run_name: str, sample_id: str, phreeqc_record_key: str) -> pd.DataFrame:
+    """Upsert one ``sample_id -> phreeqc_record_key`` link and save it.
+
+    If ``sample_id`` is already mapped, its row is replaced (one link per sample).
+    Returns the full mapping frame after the write.
+    """
+    sid = str(sample_id).strip()
+    key = str(phreeqc_record_key).strip()
+    if not sid:
+        raise RunManagerError("sample_id must not be blank")
+    if not key:
+        raise RunManagerError("phreeqc_record_key must not be blank")
+
+    df = read_mapping(run_name)
+    if "sample_id" in df.columns and not df.empty:
+        df = df[df["sample_id"].astype(str).str.strip() != sid]
+    new = pd.DataFrame([{"sample_id": sid, "phreeqc_record_key": key}], columns=MAPPING_COLUMNS)
+    out = pd.concat([df, new], ignore_index=True)[MAPPING_COLUMNS]
+
+    path = mapping_path(run_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False)
+    return out
+
+
+def delete_mapping_rows(run_name: str, row_indices) -> int:
+    """Delete mapping rows by 0-based position. Returns the number removed."""
+    path = mapping_path(run_name)
+    if not path.exists():
+        return 0
+    df = read_mapping(run_name)
+    n = len(df)
+    valid = sorted({int(i) for i in row_indices if 0 <= int(i) < n})
+    if not valid:
+        return 0
+    kept = df.drop(df.index[valid]).reset_index(drop=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kept.to_csv(path, index=False)
+    return len(valid)
+
+
+def has_mapping(run_name: str) -> bool:
+    """True if the run has at least one non-blank sample->PHREEQC link."""
+    df = read_mapping(run_name)
+    if df.empty or "sample_id" not in df.columns:
+        return False
+    return bool(df["sample_id"].apply(lambda v: not _is_blank(v)).any())
+
+
+def export_mapping_to_pipeline(run_name: str) -> Path:
+    """Copy the run's mapping into the location the comparison script reads.
+
+    Writes to ``data/raw/experimental_icp/sample_phreeqc_map.csv`` so step 05 picks
+    it up automatically. Raises if the run has no mapping yet.
+    """
+    src = mapping_path(run_name)  # enforces lab-like run_type
+    if not src.exists():
+        raise RunManagerError(
+            f"run {run_name!r} has no sample->PHREEQC mapping yet — create one first."
+        )
+    dest = config.EXPERIMENTAL_ICP_DIR / config.SAMPLE_PHREEQC_MAP_CSV
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pd.read_csv(src).to_csv(dest, index=False)
+    return dest
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline bridge
 # --------------------------------------------------------------------------- #
 def export_lab_run_to_pipeline(run_name: str) -> Path:

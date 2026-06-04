@@ -282,6 +282,177 @@ def _is_not_number(raw: str) -> bool:
         return True
 
 
+def _run_lab_workflow(run_name: str) -> None:
+    """Export a lab run to the pipeline, then run the relevant scripts in order.
+
+    Stops at the first failing step (non-zero exit), showing the command, stdout,
+    stderr and a pass/fail status for each. Only touches the pipeline's
+    manual-entry file via the explicit export; other runs are unaffected.
+    """
+    # Step 1 — export this run's CSV into the pipeline's manual-entry location.
+    st.markdown("**Step 1 — Export run data → pipeline**")
+    try:
+        dest = run_manager.export_lab_run_to_pipeline(run_name)
+        st.success(f"Exported to `{dest.relative_to(_PROJECT_ROOT)}`.")
+    except run_manager.RunManagerError as exc:
+        st.error(f"Export failed: {exc}")
+        st.error("⛔ Workflow stopped — no scripts were run.")
+        return
+
+    # Mapping — needed for measured-vs-PHREEQC residuals. Export it if present,
+    # otherwise warn (the workflow still runs, just without residuals).
+    if run_manager.has_mapping(run_name):
+        map_dest = run_manager.export_mapping_to_pipeline(run_name)
+        st.success(f"Sample→PHREEQC mapping exported to `{map_dest.relative_to(_PROJECT_ROOT)}`.")
+    else:
+        st.warning(
+            "No sample-to-PHREEQC mapping found. The workflow can still run, but "
+            "measured-vs-PHREEQC residuals will not be calculated. Add a mapping in "
+            "the **Sample → PHREEQC mapping** part of the workspace below."
+        )
+
+    # Steps 2..N — run each script, halting on the first failure.
+    steps = [
+        ("Phase 1 pipeline", "scripts/run_phase1.py"),
+        ("Validate experimental data", "scripts/07_validate_experimental_data.py"),
+        ("Compare measured vs PHREEQC", "scripts/05_compare_experimental.py"),
+        ("Sustainability score", "scripts/08_sustainability_score.py"),
+    ]
+    for i, (label, script) in enumerate(steps, start=2):
+        st.markdown(f"**Step {i} — {label}**")
+        st.code(f"python {script}", language="bash")
+        with st.spinner(f"Running {label}…"):
+            proc = _run_script(script)
+        _show_process_result(label, proc)
+        if proc.returncode != 0:
+            st.error(f"⛔ Workflow stopped at step {i} ({label}) — see stderr above.")
+            return
+
+    st.success("✅ Workflow complete — all steps succeeded.")
+    st.info(
+        "Outputs written to:\n"
+        "- `data/processed/` — parsed tables, master dataset, comparison\n"
+        "- `outputs/tables/` — validation report, sustainability score\n"
+        "- `reports/figures/` — plots"
+    )
+    _read_csv.clear()  # processed CSVs changed; refresh the viewers below
+
+
+def _render_mapping_section(run_name: str) -> None:
+    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
+
+    Saves to the run's own ``data/sample_phreeqc_map.csv`` and can export a copy
+    to the pipeline location the comparison script reads.
+    """
+    st.markdown("---")
+    st.subheader("Sample → PHREEQC mapping")
+    st.caption(
+        "Link each measured sample to the PHREEQC result row for the same chemistry. "
+        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
+        "residuals later, once ICP data exist)."
+    )
+
+    data = run_manager.read_data_file(run_name)
+    sample_ids: list[str] = []
+    if "sample_id" in data.columns:
+        for s in data["sample_id"].astype(str).map(str.strip).tolist():
+            if s and s.lower() != "nan":
+                sample_ids.append(s)
+    sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
+
+    if not sample_ids:
+        st.info("No `sample_id` rows in this run yet — enter data first.")
+        return
+
+    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
+    if not results_path.exists():
+        st.info(
+            "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
+            "(Section 3 or the workflow button) to generate PHREEQC results."
+        )
+        return
+    phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
+    if "record_key" not in phreeqc.columns:
+        st.warning("`phreeqc_results.csv` has no `record_key` column — cannot map.")
+        return
+
+    only_batch = st.checkbox(
+        "Only show PHREEQC 'batch' rows (post-equilibration)",
+        value=True, key=f"map_batch_{run_name}",
+    )
+    view = phreeqc
+    if only_batch and "state" in phreeqc.columns:
+        batch = phreeqc[phreeqc["state"] == "batch"]
+        view = batch if not batch.empty else phreeqc
+
+    label_cols = [
+        c for c in ["record_key", "source_file", "simulation", "state",
+                    "solution_number", "pH", "mol_Ca", "mol_Si", "mol_Al", "mol_Na"]
+        if c in view.columns
+    ]
+
+    def _phreeqc_label(pos) -> str:
+        row = view.loc[pos]
+        return " | ".join(f"{c}={row[c]}" for c in label_cols)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_sample = st.selectbox("sample_id", sample_ids, key=f"map_sample_{run_name}")
+    with c2:
+        sel_pos = st.selectbox(
+            "PHREEQC result row", list(view.index),
+            format_func=_phreeqc_label, key=f"map_pheq_{run_name}",
+        )
+
+    if st.button("Save mapping", key=f"map_save_{run_name}"):
+        record_key = str(view.loc[sel_pos, "record_key"]).strip()
+        try:
+            run_manager.add_mapping(run_name, sel_sample, record_key)
+            st.success(f"Mapped `{sel_sample}` → `{record_key}`.")
+            _read_csv.clear()
+            st.rerun()
+        except run_manager.RunManagerError as exc:
+            st.error(str(exc))
+
+    mapping = run_manager.read_mapping(run_name)
+    st.markdown(f"**Existing mappings** ({len(mapping)}):")
+    st.dataframe(mapping, use_container_width=True, height=170)
+
+    if not mapping.empty:
+        with st.expander("🗑️ Delete mappings"):
+            def _map_label(i: int) -> str:
+                r = mapping.iloc[i]
+                return f"Row {i} — {r.get('sample_id', '')} → {r.get('phreeqc_record_key', '')}"
+            to_del = st.multiselect(
+                "Select mapping rows to delete", options=list(range(len(mapping))),
+                format_func=_map_label, key=f"map_del_{run_name}",
+            )
+            confirm = st.checkbox(
+                "I understand this will delete the selected mapping rows.",
+                key=f"map_delc_{run_name}",
+            )
+            if st.button("Delete selected mappings", key=f"map_delbtn_{run_name}"):
+                if not to_del:
+                    st.warning("No mapping rows selected — nothing was deleted.")
+                elif not confirm:
+                    st.warning("Tick the confirmation checkbox before deleting.")
+                else:
+                    n = run_manager.delete_mapping_rows(run_name, to_del)
+                    st.success(f"Deleted {n} mapping row(s).")
+                    st.rerun()
+
+        if st.button("➡️ Export mapping to pipeline", key=f"map_export_{run_name}"):
+            try:
+                dest = run_manager.export_mapping_to_pipeline(run_name)
+                st.success(
+                    f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 "
+                    "will use it to compute residuals."
+                )
+                _read_csv.clear()
+            except run_manager.RunManagerError as exc:
+                st.error(str(exc))
+
+
 # --------------------------------------------------------------------------- #
 # Page
 # --------------------------------------------------------------------------- #
@@ -320,8 +491,46 @@ if not measured_exists:
         "Phase 2 comparison and any future ML stay dormant until real data is entered."
     )
 
-# ---- 2. Run pipeline ------------------------------------------------------ #
-st.header("2. Run pipeline")
+# ---- 2. Run / Execute selected experiment --------------------------------- #
+st.header("2. Run / Execute selected experiment")
+st.write(
+    "Enter data into a run (in the **Experiment run workspace** section below), then "
+    "click here to run all the relevant scripts in order and see their output. This is "
+    "a convenience wrapper — the individual step buttons still exist further down."
+)
+if not SELECTED_RUN:
+    st.info(
+        "Select or create a run in the **Experiment runs** sidebar (left) first, then "
+        "this button will run the workflow for it."
+    )
+else:
+    _wf_cfg = run_manager.load_run_config(SELECTED_RUN)
+    _wf_rt = _wf_cfg.get("run_type")
+    st.caption(f"Selected run: `{SELECTED_RUN}` — **{_wf_rt}**")
+    if st.button("▶️ Run selected experiment workflow", type="primary"):
+        if _wf_rt in run_manager.LAB_LIKE_RUN_TYPES:
+            _run_lab_workflow(SELECTED_RUN)
+        elif _wf_rt == "literature_benchmark":
+            st.warning(
+                "📚 This is a **literature-benchmark** run. Literature data are kept "
+                "separate from our measured lab data and are **not** run through the "
+                "measured-vs-PHREEQC pipeline. Nothing was exported."
+            )
+            _lit = run_manager.read_data_file(SELECTED_RUN)
+            if not _lit.empty:
+                st.markdown("**Literature benchmark data:**")
+                st.dataframe(_lit, use_container_width=True, height=240)
+            else:
+                st.info("No literature rows entered yet.")
+        elif _wf_rt == "synthetic_demo":
+            st.warning(
+                "🧩 This is a **synthetic/demo** run. Synthetic data are only for testing "
+                "the code — they are not real experimental data and are not run through "
+                "the pipeline."
+            )
+
+# ---- 3. Run pipeline ------------------------------------------------------ #
+st.header("3. Run pipeline")
 st.write(
     "These buttons call the existing scripts unchanged "
     "(`scripts/run_phase1.py`, `scripts/05_compare_experimental.py`)."
@@ -340,8 +549,8 @@ with rc2:
         _show_process_result("Phase 2", proc)
         _read_csv.clear()
 
-# ---- 3. View processed data ----------------------------------------------- #
-st.header("3. View processed data")
+# ---- 4. View processed data ----------------------------------------------- #
+st.header("4. View processed data")
 if not config.PROCESSED_DIR.exists():
     st.warning("`data/processed/` does not exist yet — run Phase 1 first.")
 else:
@@ -359,8 +568,8 @@ else:
         st.write(f"{df.shape[0]} rows × {df.shape[1]} columns")
         st.dataframe(df, use_container_width=True, height=380)
 
-# ---- 4. Enter experimental data ------------------------------------------- #
-st.header("4. Enter experimental data")
+# ---- 5. Enter experimental data ------------------------------------------- #
+st.header("5. Enter experimental data")
 st.write(
     f"Submitting appends one row to `{MANUAL_ENTRY_PATH.relative_to(_PROJECT_ROOT)}` "
     "(existing rows are never overwritten). Leave a field blank if not measured."
@@ -419,8 +628,8 @@ if MANUAL_ENTRY_PATH.exists():
         existing = pd.read_csv(MANUAL_ENTRY_PATH)
         st.dataframe(existing, use_container_width=True)
 
-# ---- 5. View figures ------------------------------------------------------ #
-st.header("5. View figures")
+# ---- 6. View figures ------------------------------------------------------ #
+st.header("6. View figures")
 pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
 if not pngs:
     st.warning("No figures yet — run Phase 1 (and Phase 2 once measured data exists).")
@@ -428,8 +637,8 @@ else:
     for png in pngs:
         st.image(str(png), caption=str(png.relative_to(_PROJECT_ROOT)), use_container_width=True)
 
-# ---- 6. Experiment planning ----------------------------------------------- #
-st.header("6. Experiment planning")
+# ---- 7. Experiment planning ----------------------------------------------- #
+st.header("7. Experiment planning")
 st.write(
     "Pre-data helpers for Monday: generate the run sheet, QA/QC a filled CSV, and "
     "compute sustainability proxies. These call the existing scripts unchanged "
@@ -465,13 +674,13 @@ for _label, _name in [
                 use_container_width=True,
             )
 
-# ---- 7. Experiment run workspace ------------------------------------------ #
-st.header("7. Experiment run workspace")
+# ---- 8. Experiment run workspace ------------------------------------------ #
+st.header("8. Experiment run workspace")
 if not SELECTED_RUN:
     st.info(
         "Select or create an experiment run in the **Experiment runs** sidebar "
         "(left) to enter data into its own save file. This is separate from the "
-        "global manual-entry file in section 4."
+        "global manual-entry file in section 5."
     )
 else:
     _cfg = run_manager.load_run_config(SELECTED_RUN)
@@ -566,8 +775,12 @@ else:
                 except run_manager.RunManagerError as exc:
                     st.error(str(exc))
 
-# ---- 8. Safety and limitations -------------------------------------------- #
-st.header("8. Safety and limitations")
+    # Sample -> PHREEQC mapping (lab-like runs only).
+    if _rt in run_manager.LAB_LIKE_RUN_TYPES:
+        _render_mapping_section(SELECTED_RUN)
+
+# ---- 9. Safety and limitations -------------------------------------------- #
+st.header("9. Safety and limitations")
 st.warning(
     "- **PHREEQC is equilibrium / speciation modelling.** Its outputs are "
     "thermodynamic predictions, not direct measurements, and assume the modelled "

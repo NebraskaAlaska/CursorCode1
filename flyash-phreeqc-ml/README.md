@@ -106,6 +106,13 @@ pip install -r requirements.txt   # includes streamlit
 streamlit run app.py
 ```
 
+**Running the workflow.** After entering data into a run, click the
+**"Run selected experiment workflow"** button inside the app (section 2). For a lab
+run it exports the run's CSV to the pipeline and runs Phase 1, validation, the
+measured-vs-PHREEQC comparison, and the sustainability score in order — showing each
+command's output and stopping at the first failure. The individual step buttons remain
+available.
+
 It provides: project status, buttons to run Phase 1 / Phase 2 (with live stdout/stderr),
 a processed-CSV previewer, a form to enter measured experimental data (appended to
 `data/raw/experimental_icp/experimental_release_manual_entry.csv`, never overwritten —
@@ -150,6 +157,33 @@ never a lab run's `experimental_release.csv`.
 **Feeding a lab run into the pipeline.** A lab run's **Export to pipeline** button copies its
 `experimental_release.csv` to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
 — the file the existing scripts already read — so steps 05/07 run unchanged.
+
+### Sample → PHREEQC mapping (needed for residuals)
+
+**What it is.** A small table linking each measured `sample_id` to the PHREEQC result row
+(`record_key`) that represents the *same* chemistry. PHREEQC `.pqo` outputs and lab samples
+have no shared key, so the link is made by hand — there is no reliable automatic join.
+
+**Why it's needed.** The comparison step (`scripts/05_compare_experimental.py`) computes
+`residual = measured − PHREEQC` per sample. Without the mapping it has nothing to join on, so
+it prints *"no measured/PHREEQC pairs to plot (mapping not set yet)"* and leaves residuals NaN —
+a deliberate "not linked yet" state, not a wrong join.
+
+**How to map pH-only lab data.** In the app's **Experiment run workspace → Sample → PHREEQC
+mapping**: pick a `sample_id`, pick the matching PHREEQC `batch` row (shown with `record_key`,
+`pH`, `mol_Ca/Si/Al/Na`, …), and click **Save mapping**. Run Phase 1 first so
+`data/processed/phreeqc_results.csv` exists. The mapping is saved to the run's own
+`experiments/<run_name>/data/sample_phreeqc_map.csv`; **Export mapping to pipeline** copies it to
+`data/raw/experimental_icp/sample_phreeqc_map.csv`, where step 05 reads it automatically. With a
+mapping in place and `final_pH` filled, step 05 computes `residual_pH = final_pH − phreeqc_pH`.
+
+**Later: ICP residuals.** The same mapping drives Ca/Si/Al/Fe residuals once those `*_mM`
+measurements are entered — no re-mapping needed. (Fe may stay NaN if the PHREEQC runs don't
+model Fe; that is "unavailable", not "predicted zero".)
+
+The **"Run selected experiment workflow"** button uses the mapping automatically: if the
+selected lab run has one, it is exported to the pipeline before the comparison runs; if not, the
+workflow still runs but warns that residuals won't be calculated.
 
 Run data and outputs are **gitignored by default** (`experiments/*/data/*.csv`,
 `experiments/*/outputs/`, `experiments/*/run_config.yaml`); only `experiments/README.md` is
