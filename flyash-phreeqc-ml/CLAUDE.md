@@ -50,7 +50,8 @@ Phase 3 (ML) is not started.
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
-  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, and the generated plan in
+  `20*_release*.csv`, `*measured*.csv`, the manual-entry file, the generated plan
+  (`experiment_plan.csv`), and the generated `sample_phreeqc_map.csv` in
   `data/raw/experimental_icp/`, with a `!`-re-include keeping **only** the blank
   `experimental_release_template.csv` tracked. So real lab data stays out of git unless
   deliberately force-added. (gitignore comments must be on their own line — an inline `#` becomes
@@ -155,16 +156,28 @@ modules together and own all file I/O paths.
   helper, so **no PyYAML dependency**). `export_lab_run_to_pipeline` copies a lab run's CSV into
   `data/raw/experimental_icp/experimental_release_manual_entry.csv` so the existing scripts run
   unchanged. Paths derive from `config.EXPERIMENT_RUNS_DIR`. Synthetic rows are force-tagged
-  `source_type=synthetic_demo`.
+  `source_type=synthetic_demo`. **Row editing:** `delete_data_rows` (by 0-based position) and
+  `remove_blank_data_rows` clean a run's own CSV in place (file kept, only rows removed), for any
+  run type. **Sample→PHREEQC mapping** (lab-like runs only): `add_mapping` upserts one
+  `sample_id → phreeqc_record_key` link (columns `MAPPING_COLUMNS`, matching what `scripts/05` +
+  `compare/residuals.py` expect), `read_mapping` / `delete_mapping_rows` / `has_mapping` manage it
+  in `experiments/<run>/data/sample_phreeqc_map.csv`, and `export_mapping_to_pipeline` copies it to
+  `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts: project status, run
-  buttons (it `subprocess`-runs `run_phase1.py` / step 05 / steps 06–08 and shows stdout/stderr), a
-  processed-CSV previewer, an experimental-data entry form, an experiment-planning section, a
-  figure viewer, and an **Experiment runs** sidebar + workspace (create/open a run, type-specific
-  entry forms, per-run preview, export). It reuses package functions and adds no chemistry/ML logic.
-  The section-4 form appends rows to
-  `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored — never overwritten);
-  the run workspace writes into the selected run's own `experiments/<name>/data/` file instead.
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized in numbered
+  sections (1–10): project status; **Run / Execute selected experiment** (one button that, for a
+  lab run, exports the run CSV + mapping to the pipeline then runs Phase 1 → 07 → 05 → 08 in order,
+  stopping at the first failure; warns if no mapping); **Results summary** (run-type-aware — lab
+  shows the measured-vs-PHREEQC comparison/residual cards, literature shows its own benchmark
+  summary with any lab comparison only in a collapsed/warned expander, synthetic shows a
+  testing-only warning); run-pipeline buttons; processed-CSV previewer; the **legacy** global
+  entry form (now inside a "Legacy/manual global data entry" expander — the run workspace is the
+  recommended path); a figure viewer (captioned measured-vs-PHREEQC plots + a filtered
+  PHREEQC-only viewer); a general **experiment-planning** section; and the **Experiment runs**
+  sidebar + workspace (create/open a run, type-specific entry, per-run preview, row deletion,
+  sample→PHREEQC mapping, export). It reuses package functions and adds no chemistry/ML logic. The
+  legacy form appends to `data/raw/experimental_icp/experimental_release_manual_entry.csv`
+  (gitignored); the run workspace writes into the selected run's own `experiments/<name>/data/`.
 
 ### Key conventions
 
