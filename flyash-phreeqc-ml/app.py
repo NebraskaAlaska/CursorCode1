@@ -621,39 +621,42 @@ def _single_sample_comparison() -> bool:
     return int(mapped) == 1
 
 
-def _render_figures() -> None:
-    """Figure viewer: captioned comparison plots + a filtered PHREEQC-only viewer."""
+def _render_comparison_figures() -> None:
+    """Measured-vs-PHREEQC + residual plots. Belongs with the lab comparison
+    (Results tab), not the PHREEQC-only model outputs."""
     pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
-    if not pngs:
-        st.warning("No figures yet — run Phase 1 (and the workflow once measured data exists).")
-        return
-
     comparison = [p for p in pngs if p.name in _COMPARISON_FIGURES]
-    phreeqc_only = [p for p in pngs if p.name not in _COMPARISON_FIGURES]
-
-    if comparison:
-        st.subheader("Measured vs PHREEQC")
-        if _single_sample_comparison():
-            st.warning(
-                "This is a single-sample comparison, not a trend. It only checks one "
-                "mapped condition."
-            )
-        for png in comparison:
-            st.image(str(png), use_container_width=True)
-            st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
-
-    if phreeqc_only:
-        st.subheader("PHREEQC model outputs")
-        st.info(
-            "These are **PHREEQC model outputs, not measured experimental data.** "
-            "Crowded axis labels come from the many PHREEQC solution states plotted "
-            "together — use the selector to view one figure at a time."
+    if not comparison:
+        return
+    st.subheader("Measured vs PHREEQC")
+    if _single_sample_comparison():
+        st.warning(
+            "This is a single-sample comparison, not a trend. It only checks one "
+            "mapped condition."
         )
-        names = [p.name for p in phreeqc_only]
-        choice = st.selectbox("Choose a PHREEQC figure", names, key="phreeqc_fig_choice")
-        chosen = next(p for p in phreeqc_only if p.name == choice)
-        st.image(str(chosen), use_container_width=True)
-        st.caption(f"{choice} — PHREEQC model output, not a measurement.")
+    for png in comparison:
+        st.image(str(png), use_container_width=True)
+        st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
+
+
+def _render_phreeqc_only_figures() -> None:
+    """PHREEQC model-output plots only (pH, element molality, saturation indices,
+    …). Excludes the measured-vs-PHREEQC comparison/residual figures."""
+    pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
+    phreeqc_only = [p for p in pngs if p.name not in _COMPARISON_FIGURES]
+    if not phreeqc_only:
+        st.warning("No PHREEQC figures yet — run Phase 1 to generate them.")
+        return
+    st.info(
+        "These are **PHREEQC model outputs, not measured experimental data.** "
+        "Crowded axis labels come from the many PHREEQC solution states plotted "
+        "together — use the selector to view one figure at a time."
+    )
+    names = [p.name for p in phreeqc_only]
+    choice = st.selectbox("Choose a PHREEQC figure", names, key="phreeqc_fig_choice")
+    chosen = next(p for p in phreeqc_only if p.name == choice)
+    st.image(str(chosen), use_container_width=True)
+    st.caption(f"{choice} — PHREEQC model output, not a measurement.")
 
 
 # --------------------------------------------------------------------------- #
@@ -952,6 +955,7 @@ def _render_results_tab(selected_run: str | None) -> None:
         "and sustainability tables in `outputs/tables/`."
     )
     _render_results_summary()
+    _render_comparison_figures()
 
     for label, name in [
         ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
@@ -992,8 +996,8 @@ def _render_phreeqc_tab() -> None:
     )
     _render_processed_viewer()
     st.divider()
-    st.subheader("Figures")
-    _render_figures()
+    st.subheader("PHREEQC model-output figures")
+    _render_phreeqc_only_figures()
 
 
 def _render_literature_tab(selected_run: str | None) -> None:
