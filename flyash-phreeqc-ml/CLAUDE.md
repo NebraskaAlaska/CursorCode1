@@ -215,6 +215,23 @@ modules together and own all file I/O paths.
   unmapped, only low-confidence, or sharing a PHREEQC row (collision). Covered by
   `tests/test_scenarios.py`.
 
+- **`import_mapping.py`** — flexible experimental-file import (ingest helper, no chemistry, no ML).
+  Pure functions the Data-tab lab uploader wires to widgets: `file_kind` / `list_excel_sheets` /
+  `read_tabular` read `.csv`/`.xlsx`/`.xls` (one Excel sheet at a time); `suggest_column_mapping`
+  maps uploaded headers onto the release schema (`MAPPING_TARGETS` = `EXPERIMENTAL_RELEASE_COLUMNS`
+  + optional `leachant`/`acid_M`) via **hand-written** `COLUMN_SYNONYMS` (two passes — exact name
+  wins over alias, one source column used once); `convert_concentration` / `convert_series_to_mM`
+  convert mg/L·ppm·ppb → mM reusing `calculations.ATOMIC_MASSES` (`mM = mg/L / atomic_mass`,
+  ppb = µg/L; Sc/REE stay ppb). `build_schema_frame` produces a schema-aligned frame: chemistry
+  unit-converted, `leachant`/`acid_M` filled (acid rows — `is_acid_leachant` — get `NaOH_M` blanked
+  + an `ACID_IMPORT_NOTE`, never forced into `NaOH_M`), provenance (`PROVENANCE_COLUMNS`:
+  file/sheet/row/timestamp/warning/units) and unknown columns (`extra__` prefix) appended so
+  nothing is dropped silently. `summarize_import` is the pre-save report (missing required, pH
+  outside 0–14, blank/duplicate sample_ids, no-measured-value rows, converted columns, row
+  classification pH-only/chemistry-present/incomplete). The extra columns ride through
+  `run_manager.save_lab_dataframe` (which keeps non-canonical columns after the schema), so the
+  existing pipeline is unaffected. Covered by `tests/test_import_mapping.py`.
+
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
   wide-layout **guided five-tab workflow** driven by a run-management **sidebar** (run selector +
   create-run expander; current run name/type/folder/source; a run-type warning; a "go to Run +
@@ -225,9 +242,11 @@ modules together and own all file I/O paths.
      missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run
      / ICP-missing / mock-data cases), and a **workflow checklist** (Data uploaded → Data checked →
      Mapping complete → Workflow run → Results available).
-  2. **Data** (`_render_data_entry_tab`) — run-type specific: lab measured-release form **plus an
-     "Upload experimental CSV"** uploader (required-column validation, replace/append, synthetic-data
-     warnings), literature CSV upload + manual rows, or synthetic/demo form — plus this run's table,
+  2. **Data** (`_render_data_entry_tab`) — run-type specific: lab measured-release form **plus a
+     flexible "Upload experimental data file"** importer (`_lab_data_import`, `.csv`/`.xlsx`/`.xls`
+     via `import_mapping`: raw preview → Excel sheet pick → column mapping → unit conversion →
+     leachant/provenance → pre-save validation → confirm-checkbox-gated replace/append),
+     literature CSV upload + manual rows, or synthetic/demo form — plus this run's table,
      row deletion, CSV/pipeline export, a **basic validation summary** (error/warning counts via the
      07 validator, lab runs), and the **legacy global manual-entry form** under a "not recommended"
      expander.

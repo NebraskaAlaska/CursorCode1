@@ -15,6 +15,7 @@ Run with:  streamlit run app.py
 """
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ import streamlit as st  # noqa: E402
 
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
+from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
@@ -179,75 +181,202 @@ def _render_run_sidebar() -> str | None:
     return selected
 
 
-def _lab_csv_upload(run_name: str) -> None:
-    """Upload a filled experimental CSV into a lab run's experimental_release.csv.
+def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
+    """Read an uploaded CSV/Excel into a raw frame (handles sheet selection).
 
-    Validates the required columns, previews the rows, warns on synthetic/test
-    sample_ids, and (when the run already has data) asks whether to replace or
-    append. Only ever writes to this lab run's own ``data/experimental_release.csv``.
+    Returns ``(raw_df_or_None, kind, sheet_name)``. Renders the file-type / sheet
+    widgets and any read error inline. ``raw_df`` is None when the file can't be
+    read yet (bad type, unreadable, or empty).
     """
-    st.markdown("**Upload experimental CSV**")
+    try:
+        kind = import_mapping.file_kind(up.name)
+    except import_mapping.ImportMappingError as exc:
+        st.error(str(exc))
+        return None, "", ""
+
+    data = up.getvalue()
+    sheet_name = ""
+    if kind == "excel":
+        try:
+            sheets = import_mapping.list_excel_sheets(io.BytesIO(data))
+        except import_mapping.ImportMappingError as exc:
+            st.error(str(exc))
+            return None, kind, ""
+        sheet_name = st.selectbox(
+            "Select sheet", sheets, key=f"lab_import_sheet_{run_name}",
+            help="Excel workbooks can hold several sheets — pick the one to import.",
+        )
+
+    try:
+        raw = import_mapping.read_tabular(io.BytesIO(data), kind=kind, sheet=sheet_name or None)
+    except import_mapping.ImportMappingError as exc:
+        st.error(str(exc))
+        return None, kind, sheet_name
+    except Exception as exc:  # pragma: no cover - UI guard
+        st.error(f"Could not read file: {exc}")
+        return None, kind, sheet_name
+
+    if raw.empty:
+        st.warning("The selected file / sheet has no rows.")
+        return None, kind, sheet_name
+    return raw, kind, sheet_name
+
+
+def _import_render_report(report: dict) -> None:
+    """Render the pre-save validation summary (Feature 7) inline."""
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rows to save", report["n_rows"])
+    c2.metric("Rows missing required", report["rows_missing_required"])
+    c3.metric("Blank sample IDs", report["blank_sample_ids"])
+    c4.metric("Rows with no values", report["rows_no_measured_values"])
+
+    if report["missing_required_columns"]:
+        st.error("Missing required column(s): "
+                 + ", ".join(f"`{c}`" for c in report["missing_required_columns"]))
+    if report["rows_missing_required"]:
+        st.warning(f"⚠️ {report['rows_missing_required']} row(s) are missing one or more "
+                   "required metadata fields (sample_id, date, fly_ash_type, NaOH_M, "
+                   "time, temperature, L/S, CO2, initial/final pH).")
+    if report["ph_out_of_range"]:
+        st.warning("⚠️ pH outside 0–14: "
+                   + "; ".join(f"row {p['row']} {p['column']}={p['value']:g}"
+                               for p in report["ph_out_of_range"][:8]))
+    if report["duplicate_sample_ids"]:
+        st.warning("⚠️ Duplicate sample_id(s): "
+                   + ", ".join(f"`{s}`" for s in report["duplicate_sample_ids"][:10]))
+    if report["rows_no_measured_values"]:
+        st.warning(f"⚠️ {report['rows_no_measured_values']} row(s) have no measured values "
+                   "(no pH and no chemistry).")
+    if report["converted_columns"]:
+        st.info("Converted to mM: "
+                + ", ".join(f"`{c}` (from {u})" for c, u in report["converted_columns"].items()))
+    if report["classifications"]:
+        st.caption("Row classification — "
+                   + ", ".join(f"{k}: {v}" for k, v in report["classifications"].items()))
+
+
+def _lab_data_import(run_name: str) -> None:
+    """Flexible CSV/Excel import into a lab run's experimental_release.csv.
+
+    Reads .csv/.xlsx/.xls, previews the raw file, lets the user pick the Excel
+    sheet, suggests a column mapping onto the app schema, converts chemistry units
+    to mM, records leachant/provenance, validates, and only saves after explicit
+    confirmation. Acid (HCl) rows are never forced into NaOH_M. Only ever writes to
+    this lab run's own ``data/experimental_release.csv``.
+    """
+    st.markdown("**Upload experimental data file**")
     st.caption(
-        "Upload a filled measured-release CSV. It is saved to this run's "
-        "`data/experimental_release.csv` — lab data only, never literature or synthetic."
+        "Accepts `.csv`, `.xlsx`, or `.xls`. Preview → pick sheet → map columns → "
+        "check units → confirm before saving to this run's `experimental_release.csv` "
+        "(lab data only, never literature or synthetic)."
     )
-    up = st.file_uploader("Upload experimental CSV", type=["csv"], key=f"lab_csv_up_{run_name}")
+    up = st.file_uploader(
+        "Upload experimental data file", type=["csv", "xlsx", "xls"],
+        key=f"lab_import_up_{run_name}",
+    )
     if up is None:
         return
 
-    try:
-        df = pd.read_csv(up)
-    except Exception as exc:  # pragma: no cover - UI guard
-        st.error(f"Could not read CSV: {exc}")
+    raw, kind, sheet_name = _import_raw_frame(run_name, up)
+    if raw is None:
         return
 
-    missing = run_manager.missing_lab_required_columns(df)
-    if missing:
-        st.error("Upload rejected — missing required column(s): "
-                 + ", ".join(f"`{c}`" for c in missing))
-        st.caption("Required columns: " + ", ".join(run_manager.LAB_REQUIRED_COLUMNS))
-        return
+    # Feature 2 — raw preview before saving.
+    st.markdown("**1 · Raw preview (nothing is saved yet)**")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("File", up.name)
+    m2.metric("Type", kind)
+    m3.metric("Sheet", sheet_name or "—")
+    m4.metric("Raw shape", f"{raw.shape[0]} × {raw.shape[1]}")
+    st.dataframe(raw, use_container_width=True, height=220)
+    st.caption("Detected columns: " + ", ".join(f"`{c}`" for c in map(str, raw.columns)))
 
-    # (10) rows loaded + preview.
-    st.success(f"Parsed {len(df)} row(s) × {df.shape[1]} column(s).")
-    st.dataframe(df, use_container_width=True, height=300)
+    # Feature 3 — column mapping interface.
+    st.markdown("**2 · Map uploaded columns → app schema**")
+    st.caption("Suggestions are pre-filled from column names; adjust any of them.")
+    suggestion = import_mapping.suggest_column_mapping(raw.columns)
+    options = ["(leave blank)"] + [str(c) for c in raw.columns]
+    mapping: dict[str, str | None] = {}
+    mcols = st.columns(3)
+    for i, target in enumerate(import_mapping.MAPPING_TARGETS):
+        widget_col = mcols[i % 3]
+        default = suggestion.get(target)
+        idx = options.index(str(default)) if (default is not None and str(default) in options) else 0
+        choice = widget_col.selectbox(target, options, index=idx, key=f"lab_map_{run_name}_{target}")
+        mapping[target] = None if choice == "(leave blank)" else choice
 
-    # (10) synthetic / test warnings.
-    if "sample_id" in df.columns:
-        sid = df["sample_id"].astype(str).str.upper()
-        flagged = int(sid.str.contains("TEST|SYNTH", na=False, regex=True).sum())
-        if flagged:
-            st.warning(
-                f"⚠️ {flagged} `sample_id` value(s) contain 'TEST' or 'SYNTH'. "
-                "Check this is real experimental data, not placeholders."
+    # Feature 4 — unit handling for mapped chemistry columns.
+    st.markdown("**3 · Units for chemistry columns**")
+    st.caption("mM = mg/L / atomic_mass. mg/L and ppm are equivalent; ppb = µg/L. "
+               "Sc and total REE stay in ppb.")
+    units: dict[str, str] = {}
+    mapped_chem = [c for c in import_mapping.CHEM_VALUE_COLUMNS if mapping.get(c)]
+    if mapped_chem:
+        ucols = st.columns(3)
+        for i, chem in enumerate(mapped_chem):
+            units[chem] = ucols[i % 3].selectbox(
+                f"{chem} unit", import_mapping.UNIT_OPTIONS, index=0,
+                key=f"lab_unit_{run_name}_{chem}",
             )
+    else:
+        st.caption("No chemistry columns mapped — nothing to convert.")
+
+    # Feature 5 — acid/base (leachant) support.
+    st.markdown("**4 · Leachant (acid / base)**")
+    default_leachant = st.selectbox(
+        "Default leachant when not given in a column", ["NaOH", "HCl", "other"],
+        key=f"lab_leachant_{run_name}",
+    )
     st.caption(
-        "⚠️ Synthetic or mock data must **not** be interpreted as real experimental "
-        "evidence. Only upload measured lab data into a lab_experiment run."
+        "A mapped `leachant` column overrides this per row. Rows that look like acid "
+        "leaching get `NaOH_M` blanked, `leachant`/`acid_M` recorded, and a warning note."
     )
 
+    # Feature 6/7 — build the transformed (schema-aligned) frame + validation.
+    transformed = import_mapping.build_schema_frame(
+        raw, mapping, units, filename=up.name, sheet_name=sheet_name,
+        default_leachant=default_leachant,
+    )
+    st.markdown("**5 · Transformed preview & validation**")
+    _import_render_report(import_mapping.summarize_import(transformed, units))
+    st.dataframe(transformed, use_container_width=True, height=240)
+
+    if "sample_id" in transformed.columns:
+        sid = transformed["sample_id"].astype(str).str.upper()
+        flagged = int(sid.str.contains("TEST|SYNTH|MOCK|DEMO", na=False, regex=True).sum())
+        if flagged:
+            st.warning(f"⚠️ {flagged} sample_id(s) look like placeholders (TEST/SYNTH/MOCK/DEMO). "
+                       "Only save real measured lab data into a lab run.")
+
+    # Feature 8 — save options (replace / append), gated on confirmation.
+    st.markdown("**6 · Save**")
+    confirmed = st.checkbox(
+        "I reviewed the imported data and understand these values will be saved to this "
+        "experiment run.", key=f"lab_import_confirm_{run_name}",
+    )
     existing = run_manager.read_data_file(run_name)
+
+    def _do_save(mode: str) -> None:
+        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode)
+        saved = run_manager.read_data_file(run_name)
+        _read_csv.clear()
+        st.success(f"Saved {len(transformed)} imported row(s) ({mode}) → "
+                   f"`{dest.relative_to(_PROJECT_ROOT)}`. Run now has {len(saved)} row(s).")
+        st.dataframe(saved, use_container_width=True, height=240)
+
     if not existing.empty:
-        # (7) file already has data — ask replace vs append.
         st.info(f"This run already has {len(existing)} row(s). Choose how to save:")
         rc, ac = st.columns(2)
-        if rc.button("Replace current run data", key=f"lab_csv_replace_{run_name}"):
-            dest = run_manager.save_lab_dataframe(run_name, df, mode="replace")
-            st.success(f"Replaced — {len(df)} row(s) written to {dest.relative_to(_PROJECT_ROOT)}.")
-            _read_csv.clear()
-            st.rerun()
-        if ac.button("Append to current run data", key=f"lab_csv_append_{run_name}"):
-            dest = run_manager.save_lab_dataframe(run_name, df, mode="append")
-            total = len(run_manager.read_data_file(run_name))
-            st.success(f"Appended — run now has {total} row(s) in {dest.relative_to(_PROJECT_ROOT)}.")
-            _read_csv.clear()
-            st.rerun()
+        if rc.button("Replace current run data", key=f"lab_import_replace_{run_name}",
+                     disabled=not confirmed):
+            _do_save("replace")
+        if ac.button("Append to current run data", key=f"lab_import_append_{run_name}",
+                     disabled=not confirmed):
+            _do_save("append")
     else:
-        if st.button("Save uploaded CSV to this run", key=f"lab_csv_save_{run_name}"):
-            dest = run_manager.save_lab_dataframe(run_name, df, mode="replace")
-            st.success(f"Saved — {len(df)} row(s) to {dest.relative_to(_PROJECT_ROOT)}.")
-            _read_csv.clear()
-            st.rerun()
+        if st.button("Save imported data to this run", key=f"lab_import_save_{run_name}",
+                     disabled=not confirmed):
+            _do_save("replace")
 
 
 def _lab_entry_form(run_name: str) -> None:
@@ -1188,7 +1317,7 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
     _run_type_warning(rt)
 
     if rt in run_manager.LAB_LIKE_RUN_TYPES:
-        _lab_csv_upload(selected_run)
+        _lab_data_import(selected_run)
         st.divider()
         _lab_entry_form(selected_run)
     elif rt == "literature_benchmark":
