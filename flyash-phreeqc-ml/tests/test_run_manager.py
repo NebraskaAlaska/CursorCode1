@@ -203,6 +203,54 @@ def test_save_lab_dataframe_blocks_literature_run(runs_root):
 
 
 # --------------------------------------------------------------------------- #
+# Mapping quality summary
+# --------------------------------------------------------------------------- #
+def test_summarize_mapping_empty():
+    s = run_manager.summarize_mapping(pd.DataFrame(columns=run_manager.MAPPING_COLUMNS))
+    assert s == {
+        "n_samples": 0, "n_unique_rows": 0,
+        "samples_per_row": {}, "duplicated_rows": [], "has_collisions": False,
+    }
+
+
+def test_summarize_mapping_distinct_rows_no_collision():
+    df = pd.DataFrame([
+        {"sample_id": "S1", "phreeqc_record_key": "K1"},
+        {"sample_id": "S2", "phreeqc_record_key": "K2"},
+    ])
+    s = run_manager.summarize_mapping(df)
+    assert s["n_samples"] == 2
+    assert s["n_unique_rows"] == 2
+    assert s["has_collisions"] is False
+    assert s["duplicated_rows"] == []
+
+
+def test_summarize_mapping_detects_collision():
+    df = pd.DataFrame([
+        {"sample_id": "S1", "phreeqc_record_key": "K1"},
+        {"sample_id": "S2", "phreeqc_record_key": "K1"},
+        {"sample_id": "S3", "phreeqc_record_key": "K2"},
+    ])
+    s = run_manager.summarize_mapping(df)
+    assert s["n_samples"] == 3
+    assert s["n_unique_rows"] == 2
+    assert s["has_collisions"] is True
+    assert s["duplicated_rows"] == ["K1"]
+    assert s["samples_per_row"]["K1"] == 2
+
+
+def test_summarize_mapping_ignores_blank_keys():
+    df = pd.DataFrame([
+        {"sample_id": "S1", "phreeqc_record_key": "K1"},
+        {"sample_id": "S2", "phreeqc_record_key": ""},
+        {"sample_id": "S3", "phreeqc_record_key": "nan"},
+    ])
+    s = run_manager.summarize_mapping(df)
+    assert s["n_samples"] == 1
+    assert s["n_unique_rows"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # Guardrails: literature data cannot become lab experimental data
 # --------------------------------------------------------------------------- #
 def test_literature_run_cannot_write_lab_release(runs_root):

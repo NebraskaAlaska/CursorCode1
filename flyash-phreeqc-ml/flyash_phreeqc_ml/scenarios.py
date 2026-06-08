@@ -1,0 +1,419 @@
+"""PHREEQC scenario manifest + rule-based mapping assistant.
+
+This module helps a user decide *which* PHREEQC result row a measured sample
+should be mapped to, instead of blindly picking from a dropdown. It does **no
+chemistry and no ML** — it only:
+
+1. Builds a readable *scenario manifest* from ``phreeqc_results.csv`` (converting
+   the molality columns PHREEQC already produced to mM and inferring a little
+   metadata from the source filename, marking anything it cannot infer as
+   ``unknown`` rather than guessing), and
+2. Scores each scenario against a measured sample with a transparent rule-based
+   score (no learned weights) so the app can *suggest* the best matches and flag
+   samples that need a brand-new PHREEQC simulation.
+
+The molality→mM conversion is the same one ``compare/residuals.py`` already uses
+(``config.PHREEQC_MOLALITY_TO_MM``); nothing here recomputes PHREEQC output.
+"""
+from __future__ import annotations
+
+import math
+import re
+from pathlib import Path
+
+import pandas as pd
+
+from . import config
+
+# --------------------------------------------------------------------------- #
+# Manifest schema
+# --------------------------------------------------------------------------- #
+MANIFEST_COLUMNS = [
+    "phreeqc_record_key",
+    "source_file",
+    "simulation",
+    "state",
+    "solution_number",
+    "predicted_pH",
+    "predicted_Ca_mM",
+    "predicted_Si_mM",
+    "predicted_Al_mM",
+    "predicted_Fe_mM",
+    "liquid_solid_ratio",
+    "CO2_condition",
+    "NaOH_M",
+    "temperature_C",
+    "scenario_label",
+    "metadata_quality",
+    "notes",
+]
+
+UNKNOWN = "unknown"
+
+# Molality columns PHREEQC reports -> the measured mM column they correspond to.
+_MOLALITY_TO_MM = {
+    "Ca": "mol_Ca",
+    "Si": "mol_Si",
+    "Al": "mol_Al",
+    "Fe": "mol_Fe",
+}
+
+# CO2 vocabulary families. Two labels are "compatible" if they share a family
+# (or either is unknown). atmospheric/open vent CO2 in; sealed/low/no-CO2 keep it
+# out — opposite families are a real conflict, not just a missing match.
+_CO2_OPEN = {"open", "atm_co2", "atmco2", "atmospheric", "atmospheric/open"}
+_CO2_SEALED = {"sealed", "low_co2", "lowco2", "noco2", "sealed-like"}
+
+# Confidence bands for the rule-based score (max achievable is 9).
+HIGH_SCORE = 7
+MEDIUM_SCORE = 4  # below this is "low" -> treated as no good match
+
+
+# --------------------------------------------------------------------------- #
+# Small parsing helpers
+# --------------------------------------------------------------------------- #
+def _to_float(value) -> float | None:
+    """Best-effort float; returns None for blanks/NaN/non-numeric."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "unknown", "none"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def co2_family(label) -> str:
+    """Normalise a CO2 label to a family: ``open`` / ``sealed`` / ``unknown``."""
+    if label is None:
+        return UNKNOWN
+    token = str(label).strip().lower()
+    if not token or token == "nan":
+        return UNKNOWN
+    if token in _CO2_OPEN:
+        return "open"
+    if token in _CO2_SEALED:
+        return "sealed"
+    return UNKNOWN
+
+
+def co2_compatible(sample_label, scenario_label) -> bool:
+    """True if two CO2 labels share a family (or either is unknown)."""
+    a, b = co2_family(sample_label), co2_family(scenario_label)
+    return a == UNKNOWN or b == UNKNOWN or a == b
+
+
+# --------------------------------------------------------------------------- #
+# Feature 1 — metadata inference + scenario manifest
+# --------------------------------------------------------------------------- #
+def infer_metadata_from_filename(source_file: str) -> dict:
+    """Infer the little metadata a PHREEQC filename safely reveals.
+
+    Only confident tokens are used; everything else stays ``unknown``:
+    * ``L-S_5`` (or ``LS5``) -> ``liquid_solid_ratio = 5``
+    * ``atmCO2`` -> ``CO2_condition = atm_CO2`` (vents to air / open family)
+    * ``lowCO2`` -> ``CO2_condition = low_CO2`` (sealed-like family)
+    * ``noCO2``  -> ``CO2_condition = sealed`` (no CO2 ingress)
+    """
+    name = str(source_file or "")
+    out = {"liquid_solid_ratio": None, "CO2_condition": UNKNOWN, "notes": []}
+
+    m = re.search(r"L[-_ ]?S[-_ ]?(\d+(?:\.\d+)?)", name, flags=re.IGNORECASE)
+    if m:
+        out["liquid_solid_ratio"] = float(m.group(1))
+        out["notes"].append(f"L/S {m.group(1)} inferred from filename")
+
+    low = name.lower()
+    if "atmco2" in low:
+        out["CO2_condition"] = "atm_CO2"
+        out["notes"].append("atmCO2 -> atm_CO2 (open/atmospheric)")
+    elif "lowco2" in low:
+        out["CO2_condition"] = "low_CO2"
+        out["notes"].append("lowCO2 -> low_CO2 (sealed-like)")
+    elif "noco2" in low:
+        out["CO2_condition"] = "sealed"
+        out["notes"].append("noCO2 -> sealed (no CO2 ingress)")
+
+    return out
+
+
+def _metadata_quality(ls_ratio, co2_condition) -> str:
+    """How much filename metadata we could infer: good / partial / unknown."""
+    have_ls = ls_ratio is not None
+    have_co2 = co2_condition not in (None, UNKNOWN)
+    if have_ls and have_co2:
+        return "good"
+    if have_ls or have_co2:
+        return "partial"
+    return UNKNOWN
+
+
+def _scenario_label(stem: str, state, ls_ratio, co2_condition, solution_number) -> str:
+    """Human-readable one-line label for a PHREEQC scenario."""
+    parts: list[str] = []
+    if ls_ratio is not None:
+        parts.append(f"L/S {ls_ratio:g}")
+    if co2_condition not in (None, UNKNOWN):
+        parts.append(str(co2_condition))
+    state_txt = str(state) if state not in (None, "") else "?"
+    sol = "" if solution_number in (None, "") else f" sol{solution_number}"
+    cond = ", ".join(parts) if parts else stem
+    return f"{cond} — {state_txt}{sol}"
+
+
+def build_scenario_manifest(results: pd.DataFrame) -> pd.DataFrame:
+    """Build the scenario manifest from a parsed ``phreeqc_results`` frame.
+
+    Missing molality columns (e.g. ``mol_Fe``, which CEMDATA18 often omits) become
+    NaN predictions, not zero — "unavailable", not "predicted zero".
+    """
+    if results is None or results.empty:
+        return pd.DataFrame(columns=MANIFEST_COLUMNS)
+
+    rows: list[dict] = []
+    for _, r in results.iterrows():
+        source_file = r.get("source_file", "")
+        inferred = infer_metadata_from_filename(source_file)
+        ls_ratio = inferred["liquid_solid_ratio"]
+        co2 = inferred["CO2_condition"]
+        state = r.get("state", "")
+        stem = str(source_file).rsplit(".", 1)[0]
+
+        predicted = {}
+        for element, mol_col in _MOLALITY_TO_MM.items():
+            mol = _to_float(r.get(mol_col)) if mol_col in results.columns else None
+            predicted[f"predicted_{element}_mM"] = (
+                mol * config.PHREEQC_MOLALITY_TO_MM if mol is not None else float("nan")
+            )
+
+        notes = list(inferred["notes"])
+        if "mol_Fe" not in results.columns:
+            notes.append("Fe not predicted by PHREEQC (unavailable, not zero)")
+        if str(state).lower() == "initial":
+            notes.append("initial = starting solution, usually not the final measured state")
+
+        rows.append({
+            "phreeqc_record_key": r.get("record_key", ""),
+            "source_file": source_file,
+            "simulation": r.get("simulation", ""),
+            "state": state,
+            "solution_number": r.get("solution_number", ""),
+            "predicted_pH": _to_float(r.get("pH")),
+            **predicted,
+            "liquid_solid_ratio": ls_ratio if ls_ratio is not None else float("nan"),
+            "CO2_condition": co2,
+            "NaOH_M": float("nan"),  # not inferable from these filenames
+            "temperature_C": _to_float(r.get("temperature_c")),
+            "scenario_label": _scenario_label(
+                stem, state, ls_ratio, co2, r.get("solution_number", "")),
+            "metadata_quality": _metadata_quality(ls_ratio, co2),
+            "notes": "; ".join(notes),
+        })
+
+    return pd.DataFrame(rows, columns=MANIFEST_COLUMNS)
+
+
+def scenario_manifest_path() -> Path:
+    """Path the manifest CSV is written to (under ``data/processed/``)."""
+    return config.PROCESSED_DIR / config.PHREEQC_SCENARIO_MANIFEST_CSV
+
+
+def load_results(results_path: Path | None = None) -> pd.DataFrame:
+    """Read ``phreeqc_results.csv`` (empty frame if it does not exist yet)."""
+    path = results_path or (config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV)
+    if not Path(path).exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def write_scenario_manifest(results_path: Path | None = None,
+                            out_path: Path | None = None) -> Path:
+    """Build the manifest from results and write it to ``data/processed/``."""
+    manifest = build_scenario_manifest(load_results(results_path))
+    dest = out_path or scenario_manifest_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.to_csv(dest, index=False)
+    return dest
+
+
+# --------------------------------------------------------------------------- #
+# Feature 3 — rule-based scoring + suggestions
+# --------------------------------------------------------------------------- #
+def confidence_for(score: int) -> str:
+    """Map a rule-based score to high / medium / low confidence."""
+    if score >= HIGH_SCORE:
+        return "high"
+    if score >= MEDIUM_SCORE:
+        return "medium"
+    return "low"
+
+
+def score_scenario(sample: dict, scenario: dict) -> dict:
+    """Rule-based score for mapping ``sample`` to a PHREEQC ``scenario`` row.
+
+    Transparent, hand-written rules (no learned weights):
+    * +3 batch state, -4 initial state,
+    * +3 matching liquid_solid_ratio,
+    * +2 compatible CO2_condition,
+    * +1 matching-or-unknown temperature,
+    * -2 on a major conflict (opposite CO2 family or a different known L/S).
+    """
+    score = 0
+    matched: list[str] = []
+    mismatched: list[str] = []
+    missing: list[str] = []
+
+    state = str(scenario.get("state", "")).strip().lower()
+    if state == "batch":
+        score += 3
+        matched.append("state=batch")
+    elif state == "initial":
+        score -= 4
+        mismatched.append("state=initial (starting solution)")
+
+    s_ls = _to_float(sample.get("liquid_solid_ratio"))
+    m_ls = _to_float(scenario.get("liquid_solid_ratio"))
+    if s_ls is None or m_ls is None:
+        missing.append("liquid_solid_ratio")
+    elif abs(s_ls - m_ls) < 1e-6:
+        score += 3
+        matched.append("liquid_solid_ratio")
+    else:
+        mismatched.append(f"liquid_solid_ratio ({s_ls:g} vs {m_ls:g})")
+
+    s_co2 = sample.get("CO2_condition")
+    m_co2 = scenario.get("CO2_condition")
+    sf, mf = co2_family(s_co2), co2_family(m_co2)
+    if sf == UNKNOWN or mf == UNKNOWN:
+        missing.append("CO2_condition")
+    elif sf == mf:
+        score += 2
+        matched.append("CO2_condition")
+    else:
+        mismatched.append(f"CO2_condition ({s_co2} vs {m_co2})")
+
+    s_t = _to_float(sample.get("temperature_C"))
+    m_t = _to_float(scenario.get("temperature_C"))
+    if s_t is None or m_t is None:
+        score += 1
+        matched.append("temperature (unknown ok)")
+    elif abs(s_t - m_t) < 1.0:
+        score += 1
+        matched.append("temperature")
+    else:
+        mismatched.append(f"temperature ({s_t:g} vs {m_t:g})")
+
+    # Major metadata conflict: opposite CO2 families, or two known but different L/S.
+    conflict = (sf != UNKNOWN and mf != UNKNOWN and sf != mf) or (
+        s_ls is not None and m_ls is not None and abs(s_ls - m_ls) >= 1e-6
+    )
+    if conflict:
+        score -= 2
+
+    if mismatched:
+        reason = "; ".join(matched + [f"CONFLICT: {x}" for x in mismatched])
+    elif matched:
+        reason = "; ".join(matched)
+    else:
+        reason = "no comparable metadata"
+
+    return {
+        "score": int(score),
+        "confidence": confidence_for(int(score)),
+        "reason": reason,
+        "matched_fields": matched,
+        "mismatched_fields": mismatched,
+        "missing_metadata": missing,
+    }
+
+
+def suggest_mappings(sample: dict, manifest: pd.DataFrame, top_n: int = 3) -> list[dict]:
+    """Score every scenario for ``sample`` and return the top ``top_n`` suggestions."""
+    if manifest is None or manifest.empty:
+        return []
+    scored: list[dict] = []
+    for _, scenario in manifest.iterrows():
+        result = score_scenario(sample, scenario.to_dict())
+        scored.append({
+            "suggested_phreeqc_record_key": scenario.get("phreeqc_record_key", ""),
+            "scenario_label": scenario.get("scenario_label", ""),
+            **result,
+        })
+    scored.sort(key=lambda d: d["score"], reverse=True)
+    return scored[:top_n]
+
+
+def best_confidence(sample: dict, manifest: pd.DataFrame) -> str:
+    """Confidence of the single best scenario for a sample (``low`` if none)."""
+    top = suggest_mappings(sample, manifest, top_n=1)
+    return top[0]["confidence"] if top else "low"
+
+
+# --------------------------------------------------------------------------- #
+# Feature 6 — samples that need a brand-new PHREEQC simulation
+# --------------------------------------------------------------------------- #
+_SIM_NEEDED_COLUMNS = [
+    "sample_id",
+    "NaOH_M",
+    "time_min",
+    "liquid_solid_ratio",
+    "CO2_condition",
+    "reason_new_simulation_needed",
+]
+
+
+def samples_needing_simulation(samples: pd.DataFrame, mapping: pd.DataFrame,
+                               manifest: pd.DataFrame) -> pd.DataFrame:
+    """List samples whose comparison would be weak without a new simulation.
+
+    A sample is flagged when any of these hold:
+    * it has no mapping yet,
+    * its best available scenario is only *low* confidence, or
+    * it shares its mapped PHREEQC row with other samples (collision -> a scatter
+      plot collapses to a vertical line).
+    """
+    if samples is None or samples.empty or "sample_id" not in samples.columns:
+        return pd.DataFrame(columns=_SIM_NEEDED_COLUMNS)
+
+    # sample_id -> mapped record_key, and which keys are shared by 2+ samples.
+    mapped: dict[str, str] = {}
+    if mapping is not None and not mapping.empty and "sample_id" in mapping.columns:
+        for _, m in mapping.iterrows():
+            sid = str(m.get("sample_id", "")).strip()
+            key = str(m.get("phreeqc_record_key", "")).strip()
+            if sid and key and key.lower() != "nan":
+                mapped[sid] = key
+    key_counts: dict[str, int] = {}
+    for key in mapped.values():
+        key_counts[key] = key_counts.get(key, 0) + 1
+    collided = {k for k, n in key_counts.items() if n > 1}
+
+    rows: list[dict] = []
+    for _, sample in samples.iterrows():
+        sid = str(sample.get("sample_id", "")).strip()
+        if not sid or sid.lower() == "nan":
+            continue
+        reasons: list[str] = []
+        if sid not in mapped:
+            reasons.append("no mapping exists")
+        else:
+            if mapped[sid] in collided:
+                reasons.append("shares one PHREEQC row with other samples")
+        if best_confidence(sample.to_dict(), manifest) == "low":
+            reasons.append("best PHREEQC match is low confidence")
+
+        if reasons:
+            rows.append({
+                "sample_id": sid,
+                "NaOH_M": sample.get("NaOH_M", ""),
+                "time_min": sample.get("time_min", ""),
+                "liquid_solid_ratio": sample.get("liquid_solid_ratio", ""),
+                "CO2_condition": sample.get("CO2_condition", ""),
+                "reason_new_simulation_needed": "; ".join(reasons),
+            })
+
+    return pd.DataFrame(rows, columns=_SIM_NEEDED_COLUMNS)

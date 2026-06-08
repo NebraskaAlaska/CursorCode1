@@ -29,10 +29,24 @@ experiment — **not** a blind replacement for the chemistry.
   `run_config.yaml`, `data/`, and `outputs/`. It is a save/open layer over the existing workflow,
   not a replacement, and it keeps literature data out of the measured-release file.
 - **Calculation verification / formula audit** (transparency, no ML). `flyash_phreeqc_ml/calculations.py`
-  + the app's **Calculation Verification** tab document every downstream formula (residuals, ICP
+  + the app's **Calculation Verification** view (in the Audit / Help tab) document every downstream formula (residuals, ICP
   mg/L→mM, dilution, L/S ratio, mass released, recovery) and **re-derive** the stored residuals to
   confirm they match (`pass`/`warning`/`fail`/`not available`). PHREEQC's SI and pH are explained,
   not recomputed.
+- **Mapping assistant + scenario explorer** (guided mapping, no ML). `flyash_phreeqc_ml/scenarios.py`
+  builds a readable **PHREEQC scenario manifest** from `phreeqc_results.csv` (molality→mM, metadata
+  inferred from the source filename where safe, else `unknown`) and scores each scenario against a
+  measured sample with **transparent rule-based** weights (no learning) so the Match PHREEQC tab can
+  *suggest* the best PHREEQC rows, flag samples needing a new simulation, and warn on collisions.
+  Plus **lab CSV upload** for lab runs, **mapping-quality** checks, and the app no longer generates
+  experiment plans — its job is now ingest → verify → map → run → interpret.
+- **Guided-workflow UI** (UI-only reorg, no chemistry/ML). The Streamlit app was condensed from ten
+  scattered tabs into **five workflow tabs** — **Start**, **Data**, **Match PHREEQC**, **Run +
+  Results**, **Audit / Help** — matching the ingest → verify → map → run → interpret order. No
+  functionality was removed: it was relocated (e.g. Run Workflow + Results merged; PHREEQC Outputs +
+  Calculation Verification + Help folded into Audit / Help; the old Tools/Literature tabs absorbed
+  into Data / Run + Results). Start adds a data-quality line, a richer recommended-next-action, and a
+  workflow checklist.
 
 Phase 3 (ML) is not started.
 
@@ -163,47 +177,85 @@ modules together and own all file I/O paths.
   unchanged. Paths derive from `config.EXPERIMENT_RUNS_DIR`. Synthetic rows are force-tagged
   `source_type=synthetic_demo`. **Row editing:** `delete_data_rows` (by 0-based position) and
   `remove_blank_data_rows` clean a run's own CSV in place (file kept, only rows removed), for any
-  run type. **Sample→PHREEQC mapping** (lab-like runs only): `add_mapping` upserts one
-  `sample_id → phreeqc_record_key` link (columns `MAPPING_COLUMNS`, matching what `scripts/05` +
-  `compare/residuals.py` expect), `read_mapping` / `delete_mapping_rows` / `has_mapping` manage it
-  in `experiments/<run>/data/sample_phreeqc_map.csv`, and `export_mapping_to_pipeline` copies it to
-  `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05.
+  run type. **Lab CSV upload:** `save_lab_dataframe(run_name, df, mode="replace"|"append")` writes
+  an uploaded measured-release CSV through `lab_release_path` (so the `RunTypeError` guardrail still
+  blocks literature/synthetic data); `missing_lab_required_columns` validates against
+  `LAB_REQUIRED_COLUMNS` (the 10 metadata+pH columns every measured row needs). **Sample→PHREEQC
+  mapping** (lab-like runs only): `add_mapping` upserts one `sample_id → phreeqc_record_key` link
+  (columns `MAPPING_COLUMNS`, matching what `scripts/05` + `compare/residuals.py` expect),
+  `read_mapping` / `delete_mapping_rows` / `has_mapping` manage it in
+  `experiments/<run>/data/sample_phreeqc_map.csv`, `export_mapping_to_pipeline` copies it to
+  `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05, and `summarize_mapping` (pure)
+  reports samples / unique PHREEQC rows / samples-per-row + collisions for the mapping-quality
+  warnings.
 
 - **`calculations.py`** — calculation transparency + audit (no chemistry, no ML). Pure arithmetic
   that documents and **re-derives the downstream math** the app applies on top of PHREEQC output:
   `mgl_to_mM` (uses `ATOMIC_MASSES`), `apply_dilution`, `liquid_solid_ratio`, `mass_released_mg`,
   `recovery_percent`, and `residual`. A `FORMULAS` registry of `Formula` dataclasses (equation,
   LaTeX, inputs, output, units, explanation, provenance `app-calculated` vs `parsed from PHREEQC`,
-  plus a dev-mode `detail`) drives the Calculation Verification tab. The **audit engine**
+  plus a dev-mode `detail`) drives the Calculation Verification block (in the **Audit / Help** tab).
+  The **audit engine**
   (`classify` / `audit_residual` / `audit_comparison`) recomputes each `measured − PHREEQC`
   residual from `comparison_measured_vs_phreeqc.csv` and labels it `pass` / `warning` / `fail` /
   `not available` against tolerances (`PASS_TOL=1e-6`, `WARN_TOL=1e-4`). It **explains** PHREEQC's
   saturation index and pH but never recomputes them — PHREEQC stays authoritative. Covered by
   `tests/test_calculations.py`.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, reorganized as a
-  wide-layout **tabbed dashboard** driven by a run-management **sidebar** (run selector + create-run
-  expander; current run name/type/folder/source; a run-type warning; a "go to Run Workflow tab"
-  reminder; and a **Developer explanation mode** toggle). The ten tabs are: **Overview** (project +
-  selected-run status cards, what's missing, a recommended next step); **Data Entry** (run-type
-  specific — lab measured-release form, literature CSV upload + manual rows, or synthetic/demo
-  form — plus this run's table, row deletion, and CSV/pipeline export); **Mapping** (lab-like runs
-  only: sample_id → PHREEQC record_key upsert/preview/delete/export); **Run Workflow** (one
-  primary button that, for a lab run, exports the run CSV + mapping then runs Phase 1 → 07 → 05 →
-  08, stopping at the first failure, warning if no mapping; plus an "Advanced individual script
-  controls" expander); **Results** (run-type-aware — lab shows the measured-vs-PHREEQC summary,
-  comparison/residual figures, pH residual cards, validation + sustainability tables; literature
-  shows its own benchmark summary; synthetic shows a testing-only warning); **PHREEQC Outputs**
-  (processed-CSV previewer + a filtered PHREEQC-**only** model-output figure viewer — the
-  measured-vs-PHREEQC comparison plots live in Results, not here); **Literature Benchmark**
-  (literature table + key-columns/comparability summary, shown only for literature runs);
-  **Tools** (the experiment-planning scripts 06/07/08 + their output tables, with the **legacy**
-  global manual-entry form tucked in a "not recommended" expander); **Calculation Verification**
-  (the formula registry, per-row residual audit, mg/L→mM and L/S calculators, and extra
-  developer-mode explanations); and **Help / Safety** (workflow, run types, mapping, residuals, and
-  limitations). It reuses package functions and adds no chemistry/ML logic. The legacy form appends
-  to `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored); the run
-  workspace writes into the selected run's own `experiments/<name>/data/`.
+- **`scenarios.py`** — PHREEQC scenario manifest + rule-based mapping assistant (no chemistry, no
+  ML). `build_scenario_manifest` / `write_scenario_manifest` turn `phreeqc_results.csv` into
+  `data/processed/phreeqc_scenario_manifest.csv` (`MANIFEST_COLUMNS`): molality→mM via
+  `config.PHREEQC_MOLALITY_TO_MM` (missing `mol_Fe` → NaN, not zero), a readable `scenario_label`,
+  and metadata `infer`-red from the source filename only where safe (`L-S_5`→L/S 5; `atmCO2`→
+  `atm_CO2`; `lowCO2`→`low_CO2`; `noCO2`→`sealed`; else `unknown`, with `metadata_quality`
+  good/partial/unknown). `score_scenario` applies **hand-written** rules (+3 batch / −4 initial /
+  +3 L/S match / +2 compatible CO₂ / +1 temp match-or-unknown / −2 major conflict) and
+  `confidence_for` bands them high/medium/low (`HIGH_SCORE=7`, `MEDIUM_SCORE=4`); `suggest_mappings`
+  returns the top-N scenarios for a sample, and `samples_needing_simulation` flags samples that are
+  unmapped, only low-confidence, or sharing a PHREEQC row (collision). Covered by
+  `tests/test_scenarios.py`.
+
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
+  wide-layout **guided five-tab workflow** driven by a run-management **sidebar** (run selector +
+  create-run expander; current run name/type/folder/source; a run-type warning; a "go to Run +
+  Results tab" reminder; and a **Developer explanation mode** toggle). The five tabs follow the
+  ingest → verify → map → run → interpret order:
+  1. **Start** (`_render_overview`) — project status cards + selected-run summary (run type, data
+     rows, mapped samples, unique PHREEQC rows used), a one-line **data-quality status**, what's
+     missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run
+     / ICP-missing / mock-data cases), and a **workflow checklist** (Data uploaded → Data checked →
+     Mapping complete → Workflow run → Results available).
+  2. **Data** (`_render_data_entry_tab`) — run-type specific: lab measured-release form **plus an
+     "Upload experimental CSV"** uploader (required-column validation, replace/append, synthetic-data
+     warnings), literature CSV upload + manual rows, or synthetic/demo form — plus this run's table,
+     row deletion, CSV/pipeline export, a **basic validation summary** (error/warning counts via the
+     07 validator, lab runs), and the **legacy global manual-entry form** under a "not recommended"
+     expander.
+  3. **Match PHREEQC** (`_render_mapping_tab`, lab-like runs only) — a **PHREEQC Scenario Explorer**
+     (filterable manifest table), a **Mapping Assistant** (pick a sample → top-3 rule-scored
+     suggestions with confidence + "Use this mapping" buttons, a no-good-match warning), a
+     mapping-quality summary with collision/coarse warnings, a "samples needing new PHREEQC
+     simulations" table, existing-mapping upsert/preview/delete/export, and the original dropdown
+     kept under an **"Advanced manual mapping"** expander.
+  4. **Run + Results** (`_render_run_and_results_tab`) — combines workflow execution and results: one
+     primary button that, for a lab run, exports the run CSV + mapping then runs Phase 1 → 07 → 05 →
+     08, stopping at the first failure, warning if no mapping (plus an "Advanced individual script
+     controls" expander); then the run-type-aware results — lab shows the measured-vs-PHREEQC
+     summary, comparison/residual figures, an interpretation note on coarse mapping, pH residual
+     cards, validation + sustainability tables; literature shows its own benchmark summary; synthetic
+     shows a testing-only warning.
+  5. **Audit / Help** (`_render_audit_help_tab`) — the Calculation Verification block (formula
+     registry, per-row residual audit, mg/L→mM and L/S calculators, developer-mode explanations),
+     the **PHREEQC raw outputs** (processed-CSV previewer + PHREEQC-**only** model-output figure
+     viewer) under expanders, and the **Help / Safety** reference (workflow, run types, mapping,
+     residuals, limitations).
+
+  It reuses package functions and adds no chemistry/ML logic. Tables are height-limited so they don't
+  stretch the page; advanced content (raw PHREEQC tables, individual scripts, formula-audit details,
+  legacy/global data entry, advanced manual mapping) lives in expanders. The legacy form appends to
+  `data/raw/experimental_icp/experimental_release_manual_entry.csv` (gitignored); the run workspace
+  writes into the selected run's own `experiments/<name>/data/`. **Experiment-plan generation (06)
+  is not surfaced in the UI** — the app no longer creates plans.
 
 ### Key conventions
 
@@ -219,7 +271,15 @@ modules together and own all file I/O paths.
   labels. There is no separate "none/atmospheric/elevated" set — those older labels were removed.
 - **Fe is often unpredicted.** The CEMDATA18 runs may omit `mol_Fe`, so `phreeqc_Fe_mM` and
   `residual_Fe` can be entirely NaN. Step 05 prints an explicit WARNING when Fe is *measured* but
-  PHREEQC has no Fe prediction — this is "unavailable", not "PHREEQC predicts zero Fe".
+  PHREEQC has no Fe prediction — this is "unavailable", not "PHREEQC predicts zero Fe". The scenario
+  manifest follows the same rule: a missing molality column → NaN prediction, never zero.
+- **The app ingests, it does not plan.** The Streamlit app's purpose is ingest → verify → map →
+  run → interpret. Experiment-plan generation (`scripts/06_generate_experiment_plan.py`) was removed
+  from the UI; the script still exists and is runnable from the CLI, but no button surfaces it.
+- **Scenario metadata is inferred conservatively.** `scenarios.infer_metadata_from_filename` only
+  reads tokens it is sure of (`L-S_<n>`, `atmCO2`/`lowCO2`/`noCO2`); everything else (notably
+  `NaOH_M`, never in these filenames) stays `unknown` rather than being guessed. The mapping
+  assistant's scores are **hand-written rules, not learned weights** — keep them transparent.
 - The `sample_id` format `CFA-NaOH{M}M-LS{ratio}-{min}min-{CO2}-R{rep}` (built by
   `plan_generator.make_sample_id`) is the human-facing link from run sheet → filled release CSV →
   `sample_phreeqc_map.csv` → comparison. It's the dedup key in the plan (replicates kept distinct),

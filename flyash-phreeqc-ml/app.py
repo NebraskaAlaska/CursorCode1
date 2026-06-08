@@ -1,10 +1,10 @@
 """Streamlit interface for the flyash-phreeqc-ml project.
 
 A thin GUI on top of the existing Phase 1 / Phase 2 code — it does **not**
-reimplement any pipeline logic. A run-management sidebar drives a tabbed
-dashboard (Overview, Data Entry, Mapping, Run Workflow, Results, PHREEQC
-Outputs, Literature Benchmark, Tools, Help / Safety). Each tab reuses the
-package functions; this file adds no chemistry or ML. It lets you:
+reimplement any pipeline logic. A run-management sidebar drives a guided
+five-tab workflow (Start, Data, Match PHREEQC, Run + Results, Audit / Help).
+Each tab reuses the package functions; this file adds no chemistry or ML.
+It lets you:
 
 * see project + run status at a glance,
 * enter measured / literature / demo data into per-run save files,
@@ -30,6 +30,8 @@ import streamlit as st  # noqa: E402
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
+from flyash_phreeqc_ml import scenarios  # noqa: E402
+from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
     load_experimental_release,
@@ -173,7 +175,7 @@ def _render_run_sidebar() -> str | None:
     if cfg.get("description"):
         st.sidebar.caption(f"📝 {cfg['description']}")
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
-    st.sidebar.info("➡️ Open the **Run Workflow** tab to execute this run.")
+    st.sidebar.info("➡️ Open the **Run + Results** tab to execute this run.")
     return selected
 
 
@@ -384,7 +386,7 @@ def _run_lab_workflow(run_name: str) -> None:
         st.warning(
             "No sample-to-PHREEQC mapping found. The workflow can still run, but "
             "measured-vs-PHREEQC residuals will not be calculated. Add a mapping in "
-            "the **Sample → PHREEQC mapping** part of the workspace below."
+            "the **Match PHREEQC** tab."
         )
 
     # Steps 2..N — run each script, halting on the first failure.
@@ -414,44 +416,179 @@ def _run_lab_workflow(run_name: str) -> None:
     _read_csv.clear()  # processed CSVs changed; refresh the viewers below
 
 
-def _render_mapping_section(run_name: str) -> None:
-    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
-
-    Saves to the run's own ``data/sample_phreeqc_map.csv`` and can export a copy
-    to the pipeline location the comparison script reads.
-    """
-    st.markdown("---")
-    st.subheader("Sample → PHREEQC mapping")
-    st.caption(
-        "Link each measured sample to the PHREEQC result row for the same chemistry. "
-        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
-        "residuals later, once ICP data exist)."
-    )
-
-    data = run_manager.read_data_file(run_name)
-    sample_ids: list[str] = []
-    if "sample_id" in data.columns:
-        for s in data["sample_id"].astype(str).map(str.strip).tolist():
-            if s and s.lower() != "nan":
-                sample_ids.append(s)
-    sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
-
-    if not sample_ids:
-        st.info("No `sample_id` rows in this run yet — enter data first.")
+def _render_mapping_quality(mapping: pd.DataFrame) -> None:
+    """Small mapping-quality summary + collision warning for the Mapping tab."""
+    summary = run_manager.summarize_mapping(mapping)
+    if summary["n_samples"] == 0:
         return
 
-    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
-    if not results_path.exists():
-        st.info(
-            "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(Section 4 or the workflow button) to generate PHREEQC results."
+    st.markdown("**Mapping quality**")
+    m1, m2 = st.columns(2)
+    m1.metric("Mapped samples", summary["n_samples"])
+    m2.metric("Unique PHREEQC rows used", summary["n_unique_rows"])
+
+    if summary["samples_per_row"]:
+        per_row = pd.DataFrame(
+            [{"phreeqc_record_key": k, "samples_mapped": v}
+             for k, v in summary["samples_per_row"].items()]
         )
-        return
-    phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
-    if "record_key" not in phreeqc.columns:
-        st.warning("`phreeqc_results.csv` has no `record_key` column — cannot map.")
+        st.caption("Samples per PHREEQC row:")
+        st.dataframe(per_row, use_container_width=True, height=170)
+
+    if summary["has_collisions"]:
+        st.warning(
+            "Multiple samples are mapped to the same PHREEQC row. Scatter plots may "
+            "appear as vertical lines because the model prediction is identical for "
+            "those samples.\n\n"
+            "Your graph may form a vertical line because several samples share the "
+            "same model prediction."
+        )
+    if summary["n_samples"] > summary["n_unique_rows"]:
+        st.warning(
+            "There are more samples than distinct PHREEQC rows, so the comparison may "
+            "not represent distinct model conditions."
+        )
+
+
+@st.cache_data(show_spinner=False)
+def _scenario_manifest(results_path_str: str, mtime: float) -> pd.DataFrame:
+    """Build (and persist) the PHREEQC scenario manifest, cached on results mtime."""
+    manifest = scenarios.build_scenario_manifest(pd.read_csv(results_path_str))
+    dest = scenarios.scenario_manifest_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.to_csv(dest, index=False)  # data/processed/ is gitignored
+    return manifest
+
+
+# Columns the Scenario Explorer table shows (readable subset of the manifest).
+_EXPLORER_COLUMNS = [
+    "scenario_label", "source_file", "state", "solution_number",
+    "predicted_pH", "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM",
+    "predicted_Fe_mM", "liquid_solid_ratio", "CO2_condition", "metadata_quality",
+]
+
+
+def _render_scenario_explorer(run_name: str, manifest: pd.DataFrame) -> None:
+    """Feature 2 — filterable, readable table of PHREEQC scenarios."""
+    st.markdown("#### PHREEQC Scenario Explorer")
+    st.caption(
+        "Each PHREEQC result row described in plain terms, with metadata inferred "
+        "from the source filename where safe (anything uncertain is `unknown`)."
+    )
+    if manifest.empty:
+        st.info("No PHREEQC scenarios yet — run Phase 1 to generate results.")
         return
 
+    f1, f2, f3, f4 = st.columns(4)
+    state_choice = f1.selectbox(
+        "state", ["batch only", "initial only", "all"], key=f"exp_state_{run_name}")
+    co2_opts = ["all"] + sorted(manifest["CO2_condition"].dropna().astype(str).unique())
+    co2_choice = f2.selectbox("CO2_condition", co2_opts, key=f"exp_co2_{run_name}")
+    ls_vals = sorted(
+        {f"{v:g}" for v in manifest["liquid_solid_ratio"].dropna().tolist()})
+    ls_choice = f3.selectbox("liquid_solid_ratio", ["all"] + ls_vals, key=f"exp_ls_{run_name}")
+    src_opts = ["all"] + sorted(manifest["source_file"].dropna().astype(str).unique())
+    src_choice = f4.selectbox("source_file", src_opts, key=f"exp_src_{run_name}")
+
+    view = manifest
+    if state_choice == "batch only":
+        view = view[view["state"].astype(str).str.lower() == "batch"]
+    elif state_choice == "initial only":
+        view = view[view["state"].astype(str).str.lower() == "initial"]
+    if co2_choice != "all":
+        view = view[view["CO2_condition"].astype(str) == co2_choice]
+    if ls_choice != "all":
+        view = view[view["liquid_solid_ratio"].map(lambda v: f"{v:g}") == ls_choice]
+    if src_choice != "all":
+        view = view[view["source_file"].astype(str) == src_choice]
+
+    cols = [c for c in _EXPLORER_COLUMNS if c in view.columns]
+    st.dataframe(view[cols], use_container_width=True, height=280)
+    st.caption(f"{len(view)} of {len(manifest)} scenarios shown.")
+
+
+_ASSISTANT_META_FIELDS = [
+    "NaOH_M", "time_min", "liquid_solid_ratio", "CO2_condition",
+    "temperature_C", "final_pH", "Ca_mM", "Si_mM", "Al_mM", "Fe_mM",
+]
+
+
+def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
+                              sample_ids: list[str], manifest: pd.DataFrame) -> None:
+    """Features 3/4/5 — sample metadata, top-3 suggestions, approve, no-match warning."""
+    st.markdown("#### Mapping Assistant")
+    st.caption(
+        "Pick a measured sample; the assistant scores PHREEQC scenarios with simple, "
+        "transparent rules (no ML) and suggests the best matches."
+    )
+    sel_sample = st.selectbox("Experimental sample_id", sample_ids,
+                              key=f"assist_sample_{run_name}")
+    sample_row = data[data["sample_id"].astype(str).str.strip() == sel_sample]
+    sample = sample_row.iloc[0].to_dict() if not sample_row.empty else {"sample_id": sel_sample}
+
+    meta = {f: sample.get(f, "") for f in _ASSISTANT_META_FIELDS if f in sample}
+    if meta:
+        st.markdown("**Sample metadata:**")
+        st.dataframe(pd.DataFrame([meta]), use_container_width=True, height=80)
+
+    if manifest.empty:
+        st.info("No PHREEQC scenarios available to suggest yet — run Phase 1 first.")
+        return
+
+    suggestions = scenarios.suggest_mappings(sample, manifest, top_n=3)
+    if not suggestions or suggestions[0]["confidence"] == "low":
+        # Feature 5 — best match is weak.
+        st.error(
+            "No strong PHREEQC match exists for this sample. The comparison may be "
+            "misleading. Consider generating a new PHREEQC simulation for this "
+            "experimental condition."
+        )
+
+    for i, sug in enumerate(suggestions):
+        conf = sug["confidence"]
+        badge = {"high": "🟢 high", "medium": "🟡 medium", "low": "🔴 low"}.get(conf, conf)
+        with st.container(border=True):
+            st.markdown(f"**{sug['scenario_label']}** · score {sug['score']} · {badge} confidence")
+            st.caption(f"`{sug['suggested_phreeqc_record_key']}`")
+            st.markdown(
+                f"- **Reason:** {sug['reason']}\n"
+                f"- **Matched:** {', '.join(sug['matched_fields']) or '—'}\n"
+                f"- **Mismatched:** {', '.join(sug['mismatched_fields']) or '—'}\n"
+                f"- **Missing metadata:** {', '.join(sug['missing_metadata']) or '—'}"
+            )
+            if st.button("Use this mapping", key=f"assist_use_{run_name}_{i}"):
+                try:
+                    run_manager.add_mapping(
+                        run_name, sel_sample, sug["suggested_phreeqc_record_key"])
+                    st.success(
+                        f"Mapped `{sel_sample}` → `{sug['suggested_phreeqc_record_key']}`.")
+                    _read_csv.clear()
+                    st.rerun()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+
+
+def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
+                       manifest: pd.DataFrame) -> None:
+    """Feature 6 — samples that would need a fresh PHREEQC simulation."""
+    needed = scenarios.samples_needing_simulation(data, mapping, manifest)
+    st.markdown("#### Samples needing new PHREEQC simulations")
+    if needed.empty:
+        st.success("Every sample has a confident, non-colliding PHREEQC mapping.")
+        return
+    st.caption(
+        "Flagged when a sample has no mapping, only a low-confidence match, or shares "
+        "its PHREEQC row with other samples."
+    )
+    st.dataframe(needed, use_container_width=True, height=240)
+
+
+def _render_manual_mapping(run_name: str, phreeqc: pd.DataFrame,
+                           sample_ids: list[str]) -> None:
+    """Feature 7 — the original manual dropdown, kept as advanced mode."""
+    st.warning(
+        "Use manual mapping only if you understand what the PHREEQC row represents."
+    )
     only_batch = st.checkbox(
         "Only show PHREEQC 'batch' rows (post-equilibration)",
         value=True, key=f"map_batch_{run_name}",
@@ -490,9 +627,63 @@ def _render_mapping_section(run_name: str) -> None:
         except run_manager.RunManagerError as exc:
             st.error(str(exc))
 
+
+def _render_mapping_section(run_name: str) -> None:
+    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
+
+    Assistant-driven: a scenario explorer + rule-based suggestions guide the user,
+    with the original manual dropdown kept under an advanced expander. Saves to the
+    run's own ``data/sample_phreeqc_map.csv`` and can export a copy to the pipeline.
+    """
+    st.markdown("---")
+    st.subheader("Sample → PHREEQC mapping")
+    st.caption(
+        "Link each measured sample to the PHREEQC result row for the same chemistry. "
+        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
+        "residuals later, once ICP data exist)."
+    )
+
+    data = run_manager.read_data_file(run_name)
+    sample_ids: list[str] = []
+    if "sample_id" in data.columns:
+        for s in data["sample_id"].astype(str).map(str.strip).tolist():
+            if s and s.lower() != "nan":
+                sample_ids.append(s)
+    sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
+
+    if not sample_ids:
+        st.info("No `sample_id` rows in this run yet — enter data first.")
+        return
+
+    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
+    if not results_path.exists():
+        st.info(
+            "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
+            "(the Run + Results tab) to generate PHREEQC results."
+        )
+        return
+    phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
+    if "record_key" not in phreeqc.columns:
+        st.warning("`phreeqc_results.csv` has no `record_key` column — cannot map.")
+        return
+
+    manifest = _scenario_manifest(str(results_path), results_path.stat().st_mtime)
+
+    _render_scenario_explorer(run_name, manifest)
+    st.markdown("---")
+    _render_mapping_assistant(run_name, data, sample_ids, manifest)
+
+    st.markdown("---")
     mapping = run_manager.read_mapping(run_name)
     st.markdown(f"**Existing mappings** ({len(mapping)}):")
     st.dataframe(mapping, use_container_width=True, height=170)
+    _render_mapping_quality(mapping)
+
+    st.markdown("---")
+    _render_sim_needed(run_name, data, mapping, manifest)
+
+    with st.expander("Advanced manual mapping", expanded=False):
+        _render_manual_mapping(run_name, phreeqc, sample_ids)
 
     if not mapping.empty:
         with st.expander("🗑️ Delete mappings"):
@@ -561,12 +752,30 @@ def _looks_like_test(comp: pd.DataFrame) -> bool:
     return bool(sids.str.upper().str.contains("TEST").any())
 
 
+def _looks_like_run_test(data: pd.DataFrame) -> bool:
+    """True if any sample_id in a run's data frame looks like mock/test data."""
+    if data.empty or "sample_id" not in data.columns:
+        return False
+    sids = data["sample_id"].astype(str).str.upper()
+    return bool(sids.str.contains("TEST|SYNTH|DEMO|MOCK", na=False, regex=True).any())
+
+
+def _comparison_has_residuals() -> bool:
+    """True if the comparison CSV exists and has at least one numeric residual."""
+    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
+    if not comp_path.exists():
+        return False
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    return any(_has_numeric(comp, f"residual_{el}")
+               for el in ["pH", "Ca", "Si", "Al", "Fe"])
+
+
 def _render_results_summary() -> None:
     """Honest, presentation-friendly summary of the latest comparison run."""
     comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
     if not comp_path.exists():
         st.info(
-            "No comparison results yet. Run the workflow (Section 2) for a lab run "
+            "No comparison results yet. Run the workflow (above) for a lab run "
             "that has a sample→PHREEQC mapping to generate "
             "`data/processed/comparison_measured_vs_phreeqc.csv`."
         )
@@ -782,20 +991,41 @@ def _render_overview(selected_run: str | None) -> None:
     data = run_manager.read_data_file(selected_run)
     lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES
     has_map = run_manager.has_mapping(selected_run) if lab_like else False
+    map_summary = (
+        run_manager.summarize_mapping(run_manager.read_mapping(selected_run))
+        if lab_like else {"n_samples": 0, "n_unique_rows": 0, "has_collisions": False}
+    )
+    icp_present = lab_like and any(_has_numeric(data, c) for c in _ICP_MEASURED_COLS)
+    is_mock = _looks_like_run_test(data)
+    comp_exists = (config.PROCESSED_DIR / config.COMPARISON_CSV).exists()
 
     st.markdown(f"**`{selected_run}`**")
-    s1, s2, s3 = st.columns(3)
+    s1, s2, s3, s4 = st.columns(4)
     s1.metric("Run type", rt)
     s2.metric("Data rows", len(data))
-    s3.metric("Mapping", ("yes" if has_map else "no") if lab_like else "n/a")
+    s3.metric("Mapped samples", map_summary["n_samples"] if lab_like else "n/a")
+    s4.metric("Unique PHREEQC rows used",
+              map_summary["n_unique_rows"] if lab_like else "n/a")
     st.caption(f"📁 {run_manager.run_dir(selected_run).relative_to(_PROJECT_ROOT)} · source `{cfg.get('data_source')}`")
+
+    # Data quality status (one honest line).
+    if data.empty:
+        quality = "⚪ No data entered yet."
+    elif is_mock:
+        quality = "🔴 Mock/test data detected — for code checking only, not evidence."
+    elif lab_like and not icp_present:
+        quality = "🟡 pH-only — ICP chemistry (Ca/Si/Al/Fe/REE) not yet entered."
+    elif lab_like and icp_present:
+        quality = "🟢 Full ICP chemistry present."
+    else:
+        quality = f"🟢 {len(data)} row(s) entered."
+    st.markdown(f"**Data quality:** {quality}")
 
     # What's missing.
     missing: list[str] = []
     if data.empty:
         missing.append("no data rows entered yet")
     if lab_like:
-        icp_present = any(_has_numeric(data, c) for c in _ICP_MEASURED_COLS)
         if not icp_present:
             missing.append("ICP chemistry (Ca/Si/Al/Fe/REE) — pH-only so far")
         if not has_map:
@@ -805,21 +1035,50 @@ def _render_overview(selected_run: str | None) -> None:
         for m in missing:
             st.markdown(f"- {m}")
 
-    # Recommended next step.
+    # Recommended next action.
     if data.empty:
-        nxt = "Add measured rows in the **Data Entry** tab."
+        nxt = "Upload or enter lab data in the **Data** tab."
+    elif is_mock:
+        nxt = "Use only for code checking, not scientific conclusions."
     elif rt == "literature_benchmark":
-        nxt = ("Review the **Literature Benchmark** tab. Literature data are kept "
-               "separate from lab data and are not run through the pipeline.")
+        nxt = ("Review the literature table in the **Data** tab. Literature data are "
+               "kept separate from lab data and are not run through the pipeline.")
     elif rt == "synthetic_demo":
         nxt = "This is a synthetic/demo run — for testing only, not scientific output."
     elif lab_like and not has_map:
-        nxt = ("If this is a pH-only lab run, map the sample to a PHREEQC batch row in "
-               "the **Mapping** tab, then run the workflow in the **Run Workflow** tab.")
+        nxt = "Map samples to PHREEQC scenarios in the **Match PHREEQC** tab."
+    elif lab_like and map_summary["has_collisions"]:
+        nxt = ("Review mapping in the **Match PHREEQC** tab; several samples share one "
+               "PHREEQC row, so graphs may be misleading.")
+    elif not comp_exists:
+        nxt = "Run the workflow in the **Run + Results** tab to generate results."
+    elif lab_like and not icp_present:
+        nxt = "Only pH comparison is meaningful until ICP data are added."
     else:
-        nxt = ("Run the workflow in the **Run Workflow** tab, then read the "
-               "**Results** tab.")
-    st.success(f"**Recommended next step:** {nxt}")
+        nxt = "Read the comparison in the **Run + Results** tab."
+    st.success(f"**Recommended next action:** {nxt}")
+
+    # Workflow checklist.
+    st.divider()
+    st.subheader("Workflow checklist")
+    data_uploaded = not data.empty
+    data_checked = (config.TABLES_DIR / config.EXPERIMENTAL_VALIDATION_REPORT_CSV).exists()
+    mapping_complete = lab_like and has_map
+    workflow_run = comp_exists
+    results_available = comp_exists and _comparison_has_residuals()
+
+    def _check(done: bool, label: str) -> str:
+        return f"{'✅' if done else '⬜'} {label}"
+
+    st.markdown(
+        "\n".join([
+            _check(data_uploaded, "Data uploaded"),
+            _check(data_checked, "Data checked"),
+            _check(mapping_complete, "Mapping complete"),
+            _check(workflow_run, "Workflow run"),
+            _check(results_available, "Results available"),
+        ])
+    )
 
 
 def _render_run_data_and_edit(run_name: str, rt: str) -> None:
@@ -898,6 +1157,27 @@ def _render_run_data_and_edit(run_name: str, rt: str) -> None:
                     st.error(str(exc))
 
 
+def _render_basic_validation_summary(run_name: str) -> None:
+    """Quick error/warning count over this lab run's data (reuses the validator)."""
+    data = run_manager.read_data_file(run_name)
+    if data.empty:
+        return
+    issues = validate_experimental_df(data, source=run_name)
+    real = [i for i in issues if i.get("severity") in ("error", "warning")]
+    errors = [i for i in real if i["severity"] == "error"]
+    warnings = [i for i in real if i["severity"] == "warning"]
+
+    st.markdown("**Basic data validation**")
+    v1, v2 = st.columns(2)
+    v1.metric("Errors", len(errors))
+    v2.metric("Warnings", len(warnings))
+    if not real:
+        st.success("No validation errors or warnings on the entered rows.")
+    else:
+        report = pd.DataFrame(real)[["severity", "check", "column", "message"]]
+        st.dataframe(report, use_container_width=True, height=200)
+
+
 def _render_data_entry_tab(selected_run: str | None) -> None:
     if not selected_run:
         st.info("Select or create a run in the **Experiment runs** sidebar (left) to enter data.")
@@ -918,6 +1198,18 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
 
     st.divider()
     _render_run_data_and_edit(selected_run, rt)
+
+    if rt in run_manager.LAB_LIKE_RUN_TYPES:
+        st.divider()
+        _render_basic_validation_summary(selected_run)
+
+    st.divider()
+    with st.expander("Legacy global data entry — not recommended", expanded=False):
+        st.caption(
+            "This form predates per-run save files and writes to one shared "
+            "pipeline file. Prefer the run-specific entry above."
+        )
+        _render_legacy_global_form()
 
 
 def _render_mapping_tab(selected_run: str | None) -> None:
@@ -1027,6 +1319,11 @@ def _render_results_tab(selected_run: str | None) -> None:
     )
     _render_results_summary()
     _render_comparison_figures()
+    st.info(
+        "📈 **Interpreting the plots:** if measured values vary while PHREEQC "
+        "predictions stay constant, this usually means the mapping is too coarse or "
+        "more PHREEQC simulations are needed."
+    )
 
     for label, name in [
         ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
@@ -1039,6 +1336,15 @@ def _render_results_tab(selected_run: str | None) -> None:
                     _read_csv(str(path), path.stat().st_mtime),
                     use_container_width=True, height=300,
                 )
+
+
+def _render_run_and_results_tab(selected_run: str | None) -> None:
+    """Combined workflow execution + results (the two used to be separate tabs)."""
+    st.subheader("Run workflow")
+    _render_run_workflow_tab(selected_run)
+    st.divider()
+    st.subheader("Results")
+    _render_results_tab(selected_run)
 
 
 def _render_processed_viewer() -> None:
@@ -1057,53 +1363,6 @@ def _render_processed_viewer() -> None:
     df = _read_csv(str(path), path.stat().st_mtime)
     st.write(f"{df.shape[0]} rows × {df.shape[1]} columns")
     st.dataframe(df, use_container_width=True, height=300)
-
-
-def _render_phreeqc_tab() -> None:
-    st.subheader("Processed data")
-    st.caption(
-        "These tables and the figures below are **PHREEQC model predictions**, not "
-        "measured experimental data."
-    )
-    _render_processed_viewer()
-    st.divider()
-    st.subheader("PHREEQC model-output figures")
-    _render_phreeqc_only_figures()
-
-
-def _render_literature_tab(selected_run: str | None) -> None:
-    rt = (
-        run_manager.load_run_config(selected_run).get("run_type") if selected_run else None
-    )
-    if rt != "literature_benchmark":
-        st.info(
-            "This tab is for **literature_benchmark** runs. Create or select one in the "
-            "sidebar to review literature data."
-        )
-        return
-    st.warning(
-        "📚 Literature values are reported by other papers — they are **not** our lab "
-        "data and are kept separate. They are never run through the measured-vs-PHREEQC "
-        "pipeline."
-    )
-    lit = run_manager.read_data_file(selected_run)
-    st.metric("Literature rows", len(lit))
-    if lit.empty:
-        st.info("No literature rows entered yet. Add them in the **Data Entry** tab.")
-        return
-
-    st.markdown("**Uploaded literature table:**")
-    st.dataframe(lit, use_container_width=True, height=300)
-
-    present = [c for c in _LIT_SUMMARY_COLS if c in lit.columns]
-    if present:
-        st.markdown("**Key columns summary:**")
-        st.dataframe(lit[present], use_container_width=True, height=300)
-
-    if "comparability_to_our_experiment" in lit.columns:
-        st.markdown("**Data quality / comparability notes:**")
-        cols = [c for c in ["source_id", "comparability_to_our_experiment"] if c in lit.columns]
-        st.dataframe(lit[cols], use_container_width=True, height=200)
 
 
 def _render_legacy_global_form() -> None:
@@ -1159,41 +1418,6 @@ def _render_legacy_global_form() -> None:
         existing = pd.read_csv(MANUAL_ENTRY_PATH)
         st.markdown("**Current manual-entry file:**")
         st.dataframe(existing, use_container_width=True, height=300)
-
-
-def _render_tools_tab() -> None:
-    st.subheader("Data Checks and Derived Metrics")
-    st.write(
-        "These tools check entered data and calculate derived metrics. They do not "
-        "generate lab plans or train a model."
-    )
-    t1, t2 = st.columns(2)
-    with t1:
-        _script_button("Validate experimental CSVs",
-                       "scripts/07_validate_experimental_data.py", "Validation", "tools_validate")
-    with t2:
-        _script_button("Run sustainability score", "scripts/08_sustainability_score.py",
-                       "Sustainability score", "tools_sustain")
-
-    for label, name in [
-        ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
-        ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
-    ]:
-        path = config.TABLES_DIR / name
-        if path.exists():
-            with st.expander(f"{label} — {name}"):
-                st.dataframe(
-                    _read_csv(str(path), path.stat().st_mtime),
-                    use_container_width=True, height=300,
-                )
-
-    st.divider()
-    st.caption(
-        "Recommended workflow: use the **Data Entry** / **Run Workflow** tabs and the "
-        "per-run save files. The form below predates them and writes to one shared file."
-    )
-    with st.expander("Legacy manual global data entry — not recommended", expanded=False):
-        _render_legacy_global_form()
 
 
 # Audit status -> emoji for at-a-glance scanning.
@@ -1350,16 +1574,17 @@ def _render_calc_verification_tab(dev_mode: bool) -> None:
 def _render_help_tab() -> None:
     st.subheader("How this app works")
     st.markdown(
-        "1. **Create or open a run** in the sidebar (a 'save file' for one experiment set).\n"
-        "2. **Data Entry** — add measured rows (lab), upload/enter literature rows, or add "
+        "1. **Start** — create or open a run in the sidebar (a 'save file' for one "
+        "experiment set) and check the status + workflow checklist.\n"
+        "2. **Data** — add measured rows (lab), upload/enter literature rows, or add "
         "synthetic demo rows, depending on run type.\n"
-        "3. **Mapping** (lab runs) — link each `sample_id` to the PHREEQC result row for the "
-        "same chemistry.\n"
-        "4. **Run Workflow** — export to the pipeline and run Phase 1 → validate → compare → "
-        "sustainability.\n"
-        "5. **Results** — read the measured-vs-PHREEQC comparison, pH residuals, validation, "
-        "and sustainability proxies.\n"
-        "6. **PHREEQC Outputs** — browse processed tables and model figures."
+        "3. **Match PHREEQC** (lab runs) — link each `sample_id` to the PHREEQC result row "
+        "for the same chemistry.\n"
+        "4. **Run + Results** — export to the pipeline, run Phase 1 → validate → compare → "
+        "sustainability, then read the measured-vs-PHREEQC comparison, pH residuals, "
+        "validation, and sustainability proxies.\n"
+        "5. **Audit / Help** — formula audit, calculators, raw PHREEQC tables/figures, and "
+        "this reference."
     )
 
     st.subheader("Run types")
@@ -1407,6 +1632,26 @@ def _render_help_tab() -> None:
     )
 
 
+def _render_audit_help_tab(dev_mode: bool) -> None:
+    """Combined audit + reference tab: formula audit, calculators, raw PHREEQC
+    outputs (in an expander), and the Help / Safety reference."""
+    _render_calc_verification_tab(dev_mode)
+
+    st.divider()
+    st.subheader("PHREEQC raw outputs & model-only plots")
+    st.caption(
+        "These tables and figures are **PHREEQC model predictions**, not measured "
+        "experimental data."
+    )
+    with st.expander("Processed PHREEQC tables", expanded=False):
+        _render_processed_viewer()
+    with st.expander("PHREEQC model-output figures", expanded=False):
+        _render_phreeqc_only_figures()
+
+    st.divider()
+    _render_help_tab()
+
+
 # --------------------------------------------------------------------------- #
 # Page — wide layout, run-management sidebar, and a tabbed dashboard
 # --------------------------------------------------------------------------- #
@@ -1427,32 +1672,17 @@ DEV_MODE = st.sidebar.checkbox(
          "Calculation Verification tab.",
 )
 
-(
-    tab_overview, tab_entry, tab_map, tab_run, tab_results,
-    tab_phreeqc, tab_lit, tab_tools, tab_calc, tab_help,
-) = st.tabs([
-    "Overview", "Data Entry", "Mapping", "Run Workflow", "Results",
-    "PHREEQC Outputs", "Literature Benchmark", "Tools",
-    "Calculation Verification", "Help / Safety",
+tab_start, tab_data, tab_map, tab_run_results, tab_audit = st.tabs([
+    "Start", "Data", "Match PHREEQC", "Run + Results", "Audit / Help",
 ])
 
-with tab_overview:
+with tab_start:
     _render_overview(SELECTED_RUN)
-with tab_entry:
+with tab_data:
     _render_data_entry_tab(SELECTED_RUN)
 with tab_map:
     _render_mapping_tab(SELECTED_RUN)
-with tab_run:
-    _render_run_workflow_tab(SELECTED_RUN)
-with tab_results:
-    _render_results_tab(SELECTED_RUN)
-with tab_phreeqc:
-    _render_phreeqc_tab()
-with tab_lit:
-    _render_literature_tab(SELECTED_RUN)
-with tab_tools:
-    _render_tools_tab()
-with tab_calc:
-    _render_calc_verification_tab(DEV_MODE)
-with tab_help:
-    _render_help_tab()
+with tab_run_results:
+    _render_run_and_results_tab(SELECTED_RUN)
+with tab_audit:
+    _render_audit_help_tab(DEV_MODE)
