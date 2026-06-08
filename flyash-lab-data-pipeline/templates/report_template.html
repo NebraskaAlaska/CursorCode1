@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    :root { --ink:#1f2933; --muted:#7b8794; --line:#e4e7eb; --accent:#2b6cb0;
+            --warn:#b7791f; --err:#c53030; --ok:#2f855a; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+           color: var(--ink); margin: 0; padding: 0 0 4rem; line-height: 1.5;
+           background: #f7fafc; }
+    header { background: var(--accent); color: #fff; padding: 1.6rem 2rem; }
+    header h1 { margin: 0; font-size: 1.5rem; }
+    header .sub { opacity: .9; font-size: .9rem; margin-top: .25rem; }
+    main { max-width: 1000px; margin: 1.5rem auto; padding: 0 1.5rem; }
+    section { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+              padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+    h2 { font-size: 1.15rem; margin: 0 0 .75rem; border-bottom: 2px solid var(--line);
+         padding-bottom: .35rem; }
+    h3 { font-size: 1rem; margin: 1rem 0 .4rem; }
+    .muted { color: var(--muted); }
+    .cards { display: flex; flex-wrap: wrap; gap: .75rem; }
+    .card { flex: 1 1 140px; background: #f0f4f8; border-radius: 6px; padding: .75rem 1rem; }
+    .card .n { font-size: 1.5rem; font-weight: 700; }
+    .card .l { font-size: .8rem; color: var(--muted); text-transform: uppercase;
+               letter-spacing: .03em; }
+    table.data-table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+    table.data-table th, table.data-table td { text-align: left; padding: .4rem .6rem;
+        border-bottom: 1px solid var(--line); }
+    table.data-table th { background: #edf2f7; }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+             font-size: .75rem; font-weight: 600; }
+    .badge.error { background: #fed7d7; color: var(--err); }
+    .badge.warning { background: #feebc8; color: var(--warn); }
+    .figure { margin: 1rem 0; }
+    ul.recs li { margin-bottom: .35rem; }
+    .assumption { font-size: .82rem; color: var(--muted); }
+    .banner { padding: .6rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: .9rem; }
+    .banner.err { background: #fed7d7; color: var(--err); }
+    .banner.ok { background: #c6f6d5; color: var(--ok); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{{ title }}</h1>
+    <div class="sub">
+      {% if meta.source_file %}Source: {{ meta.source_file }} · {% endif %}
+      {% if meta.generated_at %}Generated: {{ meta.generated_at }}{% endif %}
+    </div>
+  </header>
+
+  <main>
+    {% if has_errors %}
+      <div class="banner err">⚠ {{ summary.errors }} data error(s) detected — review the
+        Data Quality section before relying on rankings.</div>
+    {% else %}
+      <div class="banner ok">No blocking data errors detected.</div>
+    {% endif %}
+
+    <!-- Upload / dataset summary -->
+    <section>
+      <h2>1. Data upload summary</h2>
+      <div class="cards">
+        <div class="card"><div class="n">{{ n_samples }}</div><div class="l">Specimens</div></div>
+        <div class="card"><div class="n">{{ n_mixes }}</div><div class="l">Mix designs</div></div>
+        <div class="card"><div class="n">{{ summary.errors }}</div><div class="l">Errors</div></div>
+        <div class="card"><div class="n">{{ summary.warnings }}</div><div class="l">Warnings</div></div>
+      </div>
+      {% if status_counts %}
+        <h3>Specimen status</h3>
+        <p>
+          {% for status, count in status_counts.items() %}
+            <span class="badge warning" style="background:#e2e8f0;color:#2d3748;">
+              {{ status }}: {{ count }}</span>
+          {% endfor %}
+        </p>
+      {% endif %}
+    </section>
+
+    <!-- Data quality -->
+    <section>
+      <h2>2. Data quality warnings</h2>
+      {% if issues %}
+        <table class="data-table">
+          <thead><tr><th>Severity</th><th>Code</th><th>Row</th><th>Column</th><th>Message</th></tr></thead>
+          <tbody>
+          {% for it in issues %}
+            <tr>
+              <td><span class="badge {{ it.severity }}">{{ it.severity }}</span></td>
+              <td>{{ it.code }}</td>
+              <td>{{ it.row if it.row is not none else "—" }}</td>
+              <td>{{ it.column or "—" }}</td>
+              <td>{{ it.message }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">No data-quality issues found.</p>
+      {% endif %}
+    </section>
+
+    <!-- Best / risky mixes -->
+    <section>
+      <h2>3. Best-performing mixes</h2>
+      {{ best_html | safe }}
+      <h2 style="margin-top:1.5rem;">4. Risky / failed mixes</h2>
+      {{ risky_html | safe }}
+    </section>
+
+    <!-- Strength stats -->
+    <section>
+      <h2>5. Strength statistics (per mix &amp; age)</h2>
+      {{ stats_html | safe }}
+    </section>
+
+    <!-- Plots -->
+    <section>
+      <h2>6. Plots</h2>
+      {% for fig in figures %}
+        <div class="figure">
+          <h3>{{ fig.title }}</h3>
+          {{ fig.html | safe }}
+        </div>
+      {% endfor %}
+    </section>
+
+    <!-- Ranking -->
+    <section>
+      <h2>7. Reuse ranking</h2>
+      {{ ranking_html | safe }}
+      <p class="assumption">Scores (0–100) are computed from editable weighting
+        assumptions, not fixed standards.</p>
+    </section>
+
+    <!-- Recommendations -->
+    <section>
+      <h2>8. Recommended next experiments</h2>
+      <ul class="recs">
+        {% for rec in recommendations %}<li>{{ rec }}</li>{% endfor %}
+      </ul>
+    </section>
+
+    <!-- Assumptions -->
+    <section>
+      <h2>9. Assumptions used</h2>
+      <p class="assumption">The following CO₂/cost factors are editable assumptions, not
+        authoritative constants:</p>
+      <table class="data-table">
+        <tbody>
+          <tr><td>Cement CO₂ per kg</td><td>{{ factors.cement_co2_per_kg }} kg CO₂/kg</td></tr>
+          <tr><td>Fly ash CO₂ per kg</td><td>{{ factors.fly_ash_co2_per_kg }} kg CO₂/kg</td></tr>
+          <tr><td>Cement cost per kg</td><td>{{ factors.cement_cost_per_kg }} {{ factors.currency }}/kg</td></tr>
+          <tr><td>Fly ash cost per kg</td><td>{{ factors.fly_ash_cost_per_kg }} {{ factors.currency }}/kg</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
