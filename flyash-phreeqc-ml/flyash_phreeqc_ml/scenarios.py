@@ -241,15 +241,162 @@ def write_scenario_manifest(results_path: Path | None = None,
 
 
 # --------------------------------------------------------------------------- #
+# Solution descriptions — explain what sol1 / sol2 / sol3 represent
+# --------------------------------------------------------------------------- #
+SOLUTION_DESCRIPTION_COLUMNS = [
+    "source_file", "solution_number", "solution_label", "ph", "temp", "description",
+]
+
+
+def describe_solutions(input_solutions: pd.DataFrame) -> pd.DataFrame:
+    """One readable row per PHREEQC input solution (from parsed ``.pqi`` data).
+
+    Takes the long ``phreeqc_input_solutions`` frame (the ``pqi_parser`` output:
+    ``source_file, solution_number, solution_label, temp, ph, …``) and collapses it
+    to one row per ``(source_file, solution_number)`` with the label PHREEQC's input
+    actually gave that solution. These labels are generic (e.g. ``L-S solution 1``)
+    and are **not** time points or replicates unless the input defines them so —
+    that caveat is surfaced in the UI.
+    """
+    cols = SOLUTION_DESCRIPTION_COLUMNS
+    if input_solutions is None or input_solutions.empty:
+        return pd.DataFrame(columns=cols)
+    if "solution_number" not in input_solutions.columns:
+        return pd.DataFrame(columns=cols)
+
+    keep = [c for c in ["source_file", "solution_number", "solution_label", "ph", "temp"]
+            if c in input_solutions.columns]
+    uniq = input_solutions[keep].drop_duplicates(
+        subset=[c for c in ["source_file", "solution_number"] if c in keep]
+    ).reset_index(drop=True)
+
+    rows: list[dict] = []
+    for _, r in uniq.iterrows():
+        label = r.get("solution_label")
+        label = "" if (label is None or (isinstance(label, float) and math.isnan(label))) else str(label).strip()
+        num = r.get("solution_number", "")
+        desc = label if label else f"PHREEQC solution {num} (no label in the input file)"
+        rows.append({
+            "source_file": r.get("source_file", ""),
+            "solution_number": num,
+            "solution_label": label,
+            "ph": _to_float(r.get("ph")),
+            "temp": _to_float(r.get("temp")),
+            "description": desc,
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def load_solution_descriptions(input_solutions_path: Path | None = None) -> pd.DataFrame:
+    """Read ``phreeqc_input_solutions.csv`` and describe each solution.
+
+    Empty frame (with the right columns) if the parsed-input CSV does not exist yet.
+    """
+    path = input_solutions_path or (config.PROCESSED_DIR / config.PHREEQC_INPUT_SOLUTIONS_CSV)
+    if not Path(path).exists():
+        return pd.DataFrame(columns=SOLUTION_DESCRIPTION_COLUMNS)
+    return describe_solutions(pd.read_csv(path))
+
+
+# --------------------------------------------------------------------------- #
 # Feature 3 — rule-based scoring + suggestions
 # --------------------------------------------------------------------------- #
 def confidence_for(score: int) -> str:
-    """Map a rule-based score to high / medium / low confidence."""
+    """Map a rule-based score to high / medium / low confidence (before caps)."""
     if score >= HIGH_SCORE:
         return "high"
     if score >= MEDIUM_SCORE:
         return "medium"
     return "low"
+
+
+# Ordering so a cap can never *raise* confidence, only lower it.
+CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
+_CONDITION_CODE_RE = re.compile(r"(?<![A-Z])(OA|PF|GS)(?![A-Z])")
+
+
+def _min_confidence(a: str, b: str) -> str:
+    """The lower of two confidence labels."""
+    return a if CONFIDENCE_ORDER.get(a, 0) <= CONFIDENCE_ORDER.get(b, 0) else b
+
+
+def sample_condition_code(sample: dict) -> str | None:
+    """Experimental OA/PF/GS condition code, if the sample carries one.
+
+    Looks at an explicit ``condition_code`` / ``extra__condition_code`` column
+    first (the dissolution importer writes the latter), then falls back to the
+    ``sample_id`` and ``notes`` text (e.g. ``...-NaOH-OA-10min``).
+    """
+    for key in ("condition_code", "extra__condition_code"):
+        v = sample.get(key)
+        if v not in (None, "") and str(v).strip().upper() in ("OA", "PF", "GS"):
+            return str(v).strip().upper()
+    for key in ("sample_id", "notes"):
+        m = _CONDITION_CODE_RE.search(str(sample.get(key, "")).upper())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _metadata_alignment(sample: dict, scenario: dict) -> dict:
+    """Compare *experimental* vs *PHREEQC* metadata and decide a confidence cap.
+
+    The PHREEQC scenario manifest (built from ``phreeqc_results.csv`` + filenames)
+    does not carry ``time_min``, an OA/PF/GS ``condition_code`` or ``NaOH_M`` — those
+    are simply not in the PHREEQC files. So when the *experiment* specifies one of
+    them but PHREEQC does not, the match cannot be confirmed exactly: confidence is
+    capped at **medium**. High confidence therefore requires the experiment and
+    PHREEQC to actually align on these, not just share L/S + CO2 + batch state.
+    """
+    notes: list[str] = []
+    phreeqc_missing: list[str] = []
+    cap = "high"
+
+    exp_time = _to_float(sample.get("time_min"))
+    pheq_time = _to_float(scenario.get("time_min"))
+    if exp_time is not None and pheq_time is None:
+        notes.append(
+            "Experimental time is known, but the selected PHREEQC scenario does not specify time."
+        )
+        phreeqc_missing.append("time_min")
+        cap = "medium"
+
+    exp_code = sample_condition_code(sample)
+    pheq_code_raw = scenario.get("condition_code")
+    pheq_code = (str(pheq_code_raw).strip().upper()
+                 if pheq_code_raw not in (None, "") else None)
+    if exp_code and not pheq_code:
+        notes.append(
+            f"Experimental condition {exp_code} (OA/PF/GS) is known, but the PHREEQC "
+            "scenario does not specify a condition code."
+        )
+        phreeqc_missing.append("condition_code")
+        cap = "medium"
+
+    exp_naoh = _to_float(sample.get("NaOH_M"))
+    pheq_naoh = _to_float(scenario.get("NaOH_M"))
+    if exp_naoh is not None and pheq_naoh is None:
+        notes.append(
+            "Experimental NaOH molarity is known, but the PHREEQC scenario does not specify NaOH_M."
+        )
+        phreeqc_missing.append("NaOH_M")
+        cap = "medium"
+
+    experimental_known = {
+        "NaOH_M": exp_naoh is not None,
+        "time_min": exp_time is not None,
+        "condition_code": exp_code is not None,
+        "liquid_solid_ratio": _to_float(sample.get("liquid_solid_ratio")) is not None,
+        "CO2_condition": co2_family(sample.get("CO2_condition")) != UNKNOWN,
+        "temperature_C": _to_float(sample.get("temperature_C")) is not None,
+    }
+    return {
+        "cap": cap,
+        "metadata_notes": notes,
+        "experimental_known": experimental_known,
+        "phreeqc_missing": phreeqc_missing,
+        "experimental_condition_code": exp_code,
+    }
 
 
 def score_scenario(sample: dict, scenario: dict) -> dict:
@@ -321,13 +468,23 @@ def score_scenario(sample: dict, scenario: dict) -> dict:
     else:
         reason = "no comparable metadata"
 
+    # Cap confidence when the experiment specifies metadata PHREEQC cannot confirm
+    # (time / OA-PF-GS condition / NaOH_M). High needs both sides to align.
+    base_confidence = confidence_for(int(score))
+    align = _metadata_alignment(sample, scenario)
+    final_confidence = _min_confidence(base_confidence, align["cap"])
+
     return {
         "score": int(score),
-        "confidence": confidence_for(int(score)),
+        "confidence": final_confidence,
+        "base_confidence": base_confidence,
         "reason": reason,
         "matched_fields": matched,
         "mismatched_fields": mismatched,
         "missing_metadata": missing,
+        "metadata_notes": align["metadata_notes"],
+        "experimental_known": align["experimental_known"],
+        "phreeqc_missing": align["phreeqc_missing"],
     }
 
 

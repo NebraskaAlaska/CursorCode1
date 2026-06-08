@@ -704,6 +704,133 @@ def export_mapping_to_pipeline(run_name: str) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Condition-level mapping (replicate-aware) — condition_key -> PHREEQC record_key
+# --------------------------------------------------------------------------- #
+# Maps one experimental condition (all its replicate batches) to a PHREEQC
+# scenario; expanded to the per-sample mapping the pipeline already reads.
+CONDITION_MAPPING_COLUMNS = ["condition_key", "phreeqc_record_key"]
+CONDITION_MAPPING_FILENAME = "condition_phreeqc_map.csv"
+# Optional advanced map: which PHREEQC solution number each replicate id uses.
+REPLICATE_SOLUTION_COLUMNS = ["replicate_id", "solution_number"]
+REPLICATE_SOLUTION_FILENAME = "replicate_solution_map.csv"
+
+
+def condition_mapping_path(run_name: str) -> Path:
+    """Path to a lab-like run's condition→PHREEQC map (lab-like runs only)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_data_dir(run_name) / CONDITION_MAPPING_FILENAME
+
+
+def read_condition_mapping(run_name: str) -> pd.DataFrame:
+    """Read the run's condition→PHREEQC map (empty 2-col frame if not created)."""
+    path = condition_mapping_path(run_name)
+    if path.exists():
+        return pd.read_csv(path)
+    return pd.DataFrame(columns=CONDITION_MAPPING_COLUMNS)
+
+
+def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key: str) -> pd.DataFrame:
+    """Upsert one ``condition_key -> phreeqc_record_key`` link and save it."""
+    ck = str(condition_key).strip()
+    key = str(phreeqc_record_key).strip()
+    if not ck:
+        raise RunManagerError("condition_key must not be blank")
+    if not key:
+        raise RunManagerError("phreeqc_record_key must not be blank")
+    df = read_condition_mapping(run_name)
+    if "condition_key" in df.columns and not df.empty:
+        df = df[df["condition_key"].astype(str).str.strip() != ck]
+    new = pd.DataFrame([{"condition_key": ck, "phreeqc_record_key": key}],
+                       columns=CONDITION_MAPPING_COLUMNS)
+    out = pd.concat([df, new], ignore_index=True)[CONDITION_MAPPING_COLUMNS]
+    path = condition_mapping_path(run_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False)
+    return out
+
+
+def delete_condition_mapping_rows(run_name: str, row_indices) -> int:
+    """Delete condition-mapping rows by 0-based position. Returns the number removed."""
+    path = condition_mapping_path(run_name)
+    if not path.exists():
+        return 0
+    df = read_condition_mapping(run_name)
+    valid = sorted({int(i) for i in row_indices if 0 <= int(i) < len(df)})
+    if not valid:
+        return 0
+    kept = df.drop(df.index[valid]).reset_index(drop=True)
+    kept.to_csv(path, index=False)
+    return len(valid)
+
+
+def has_condition_mapping(run_name: str) -> bool:
+    """True if the run has at least one non-blank condition→PHREEQC link."""
+    df = read_condition_mapping(run_name)
+    if df.empty or "condition_key" not in df.columns:
+        return False
+    return bool(df["condition_key"].apply(lambda v: not _is_blank(v)).any())
+
+
+def read_replicate_solution_map(run_name: str) -> pd.DataFrame:
+    """Read the optional replicate_id→solution_number map (empty frame if none)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    path = run_data_dir(run_name) / REPLICATE_SOLUTION_FILENAME
+    if path.exists():
+        return pd.read_csv(path)
+    return pd.DataFrame(columns=REPLICATE_SOLUTION_COLUMNS)
+
+
+def add_replicate_solution(run_name: str, replicate_id: str, solution_number: str) -> pd.DataFrame:
+    """Upsert one ``replicate_id -> solution_number`` link (advanced, optional)."""
+    rid = str(replicate_id).strip().upper()
+    sol = str(solution_number).strip()
+    if not rid or not sol:
+        raise RunManagerError("replicate_id and solution_number must not be blank")
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    df = read_replicate_solution_map(run_name)
+    if "replicate_id" in df.columns and not df.empty:
+        df = df[df["replicate_id"].astype(str).str.strip().str.upper() != rid]
+    new = pd.DataFrame([{"replicate_id": rid, "solution_number": sol}],
+                       columns=REPLICATE_SOLUTION_COLUMNS)
+    out = pd.concat([df, new], ignore_index=True)[REPLICATE_SOLUTION_COLUMNS]
+    path = run_data_dir(run_name) / REPLICATE_SOLUTION_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False)
+    return out
+
+
+def apply_condition_mapping(run_name: str, *, use_replicate_solution: bool = False) -> Path:
+    """Expand the condition→PHREEQC map to the per-sample map the pipeline reads.
+
+    Every replicate row inherits its condition's mapping (or, when
+    ``use_replicate_solution`` and a replicate→solution map exists, each replicate
+    points at its own PHREEQC solution number). Writes the run's
+    ``sample_phreeqc_map.csv`` so :func:`export_mapping_to_pipeline` + step 05 work
+    unchanged. Raises if the run has no condition mapping yet.
+    """
+    from . import replicates  # local import keeps module import order simple
+
+    if not has_condition_mapping(run_name):
+        raise RunManagerError(
+            f"run {run_name!r} has no condition→PHREEQC mapping yet — add one first."
+        )
+    data = read_data_file(run_name)
+    cmap = read_condition_mapping(run_name)
+    if use_replicate_solution:
+        rs = read_replicate_solution_map(run_name)
+        rs_dict = {str(r["replicate_id"]).strip().upper(): r["solution_number"]
+                   for _, r in rs.iterrows()} if not rs.empty else {}
+        sample_map = replicates.expand_replicate_solution_mapping(data, cmap, rs_dict)
+    else:
+        sample_map = replicates.expand_condition_mapping(data, cmap)
+
+    path = mapping_path(run_name)  # the per-sample map step 05 reads
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sample_map.to_csv(path, index=False)
+    return path
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline bridge
 # --------------------------------------------------------------------------- #
 def export_lab_run_to_pipeline(run_name: str) -> Path:

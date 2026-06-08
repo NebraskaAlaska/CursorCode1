@@ -30,7 +30,9 @@ import streamlit as st  # noqa: E402
 
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
+from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
 from flyash_phreeqc_ml import import_mapping  # noqa: E402
+from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
@@ -256,7 +258,30 @@ def _import_render_report(report: dict) -> None:
 
 
 def _lab_data_import(run_name: str) -> None:
-    """Flexible CSV/Excel import into a lab run's experimental_release.csv.
+    """Data-tab import for a lab run — pick the import mode, then dispatch.
+
+    Two modes share this run's ``experimental_release.csv``:
+    a **generic** rectangular CSV/Excel importer, and a **special-case** parser for
+    the Class C fly ash dissolution workbook (stacked ICP OES element blocks + a
+    pH sheet). The generic importer is never removed.
+    """
+    st.markdown("**Upload experimental data file**")
+    mode = st.radio(
+        "Import mode",
+        ["Generic table (CSV / Excel)", "Class C fly ash dissolution workbook"],
+        key=f"lab_import_mode_{run_name}",
+        help="Use the dissolution-workbook parser for the multi-block lab workbook "
+             "(ICP OES element blocks + pH sheet); use the generic importer for a "
+             "normal single-table CSV/Excel.",
+    )
+    if mode.startswith("Class C"):
+        _dissolution_import(run_name)
+    else:
+        _generic_table_import(run_name)
+
+
+def _generic_table_import(run_name: str) -> None:
+    """Generic CSV/Excel import into a lab run's experimental_release.csv.
 
     Reads .csv/.xlsx/.xls, previews the raw file, lets the user pick the Excel
     sheet, suggests a column mapping onto the app schema, converts chemistry units
@@ -264,7 +289,6 @@ def _lab_data_import(run_name: str) -> None:
     confirmation. Acid (HCl) rows are never forced into NaOH_M. Only ever writes to
     this lab run's own ``data/experimental_release.csv``.
     """
-    st.markdown("**Upload experimental data file**")
     st.caption(
         "Accepts `.csv`, `.xlsx`, or `.xls`. Preview → pick sheet → map columns → "
         "check units → confirm before saving to this run's `experimental_release.csv` "
@@ -377,6 +401,139 @@ def _lab_data_import(run_name: str) -> None:
         if st.button("Save imported data to this run", key=f"lab_import_save_{run_name}",
                      disabled=not confirmed):
             _do_save("replace")
+
+
+def _save_transformed(run_name: str, transformed: pd.DataFrame, key_prefix: str) -> None:
+    """Confirm-gated replace/append save of a transformed frame (shared by importers)."""
+    confirmed = st.checkbox(
+        "I reviewed the imported data and understand these values will be saved to this "
+        "experiment run.", key=f"{key_prefix}_confirm_{run_name}",
+    )
+    existing = run_manager.read_data_file(run_name)
+
+    def _do_save(mode: str) -> None:
+        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode)
+        saved = run_manager.read_data_file(run_name)
+        _read_csv.clear()
+        st.success(f"Saved {len(transformed)} imported row(s) ({mode}) → "
+                   f"`{dest.relative_to(_PROJECT_ROOT)}`. Run now has {len(saved)} row(s).")
+        st.dataframe(saved, use_container_width=True, height=240)
+
+    if not existing.empty:
+        st.info(f"This run already has {len(existing)} row(s). Choose how to save:")
+        rc, ac = st.columns(2)
+        if rc.button("Replace current run data", key=f"{key_prefix}_replace_{run_name}",
+                     disabled=not confirmed):
+            _do_save("replace")
+        if ac.button("Append to current run data", key=f"{key_prefix}_append_{run_name}",
+                     disabled=not confirmed):
+            _do_save("append")
+    else:
+        if st.button("Save imported data to this run", key=f"{key_prefix}_save_{run_name}",
+                     disabled=not confirmed):
+            _do_save("replace")
+
+
+def _dissolution_import(run_name: str) -> None:
+    """Special-case importer for the Class C fly ash dissolution workbook.
+
+    Parses the stacked ICP OES element blocks + pH sheet via
+    :mod:`dissolution_workbook`, lets the user set shared metadata defaults and the
+    NaOH/HCl scope, shows a normalised preview with parse counts and warnings, and
+    saves (confirm-gated) into this lab run's ``experimental_release.csv``. The
+    generic importer remains available via the mode selector above.
+    """
+    st.caption(
+        "For the multi-block lab workbook: an **ICP OES** sheet (Calcium / Silicon / "
+        "Aluminum blocks, columns NaOH-OA/PF/GS, mmol/l + mg/L) and a **pH** sheet "
+        "(`0.5M NaOH-OA-10`-style rows). mmol/l is preferred; mg/L is converted to mM."
+    )
+    up = st.file_uploader(
+        "Upload dissolution workbook (.xlsx / .xls)", type=["xlsx", "xls"],
+        key=f"diss_up_{run_name}",
+    )
+    if up is None:
+        return
+
+    # Feature 6 — shared metadata the user sets once for every imported row.
+    st.markdown("**1 · Default metadata for all imported rows**")
+    st.caption("These are not in the workbook — set them once and they fill every row. "
+               "Rows are not rejected just because these are blank.")
+    d1, d2, d3 = st.columns(3)
+    defaults = {
+        "experiment_date": d1.text_input("experiment_date", key=f"diss_date_{run_name}"),
+        "temperature_C": d2.text_input("temperature_C", key=f"diss_temp_{run_name}"),
+        "liquid_solid_ratio": d3.text_input("liquid_solid_ratio", key=f"diss_ls_{run_name}"),
+        "CO2_condition": d1.selectbox("CO2_condition", _CO2_OPTIONS, key=f"diss_co2_{run_name}"),
+        "initial_pH": d2.text_input("initial_pH", key=f"diss_iph_{run_name}"),
+        "fly_ash_type": d3.text_input("fly_ash_type", value=dissolution_workbook.FLY_ASH_DEFAULT,
+                                      key=f"diss_fat_{run_name}"),
+    }
+
+    # Feature 10 — NaOH-only vs NaOH+HCl.
+    st.markdown("**2 · Rows to import**")
+    scope = st.radio(
+        "Scope", ["Import only NaOH rows", "Import NaOH + HCl rows"],
+        index=1, key=f"diss_scope_{run_name}",
+    )
+    include_hcl = scope.endswith("HCl rows")
+
+    try:
+        transformed, report = dissolution_workbook.normalize_dissolution_workbook(
+            io.BytesIO(up.getvalue()), defaults=defaults, include_hcl=include_hcl,
+            filename=up.name,
+        )
+    except dissolution_workbook.DissolutionWorkbookError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:  # pragma: no cover - UI guard
+        st.error(f"Could not parse workbook: {exc}")
+        return
+
+    if transformed.empty:
+        st.warning("No NaOH/HCl sample rows were parsed from the pH sheet — check the workbook "
+                   "matches the expected structure.")
+        return
+
+    # Feature 8 — normalised preview + counts.
+    st.markdown("**3 · Normalised preview (nothing is saved yet)**")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("NaOH rows", report["n_naoh"])
+    c2.metric("HCl rows", report["n_hcl"])
+    c3.metric("Rows with pH", report["n_with_ph"])
+    c4.metric("Rows with Ca/Si/Al", report["n_with_chem"])
+    c5.metric("Rows missing metadata", report["rows_missing_metadata"])
+
+    # Feature 9 — warnings.
+    for msg in report["warnings"]:
+        st.warning("⚠️ " + msg)
+
+    st.dataframe(transformed, use_container_width=True, height=300)
+
+    # Feature 8 — debug view: detected ICP tables + joined chemistry.
+    with st.expander("Debug — detected ICP mmol/l tables & joined chemistry", expanded=False):
+        debug = report.get("icp_debug", {})
+        if not debug:
+            st.info("No ICP chemistry was detected. Check the ICP OES sheet has element block "
+                    "labels (Calcium/Silicon/Aluminum), a `mg/L` and `mmol/l` header row, and "
+                    "`NaOH-OA/PF/GS` columns.")
+        else:
+            st.caption("Each table is the value used per (time, condition) — mmol/l preferred, "
+                       "mg/L converted to mM as a fallback.")
+            for col, label in (("Ca_mM", "Calcium"), ("Si_mM", "Silicon"), ("Al_mM", "Aluminum")):
+                if col in debug:
+                    st.markdown(f"**{label} → `{col}`**")
+                    st.dataframe(debug[col], use_container_width=True, height=180)
+        st.markdown("**Joined normalised rows (chemistry columns)**")
+        st.dataframe(
+            transformed[["sample_id", "time_min", "extra__condition_code", "final_pH",
+                         "Ca_mM", "Si_mM", "Al_mM"]],
+            use_container_width=True, height=240,
+        )
+
+    # Save (confirm-gated).
+    st.markdown("**4 · Save**")
+    _save_transformed(run_name, transformed, key_prefix="diss")
 
 
 def _lab_entry_form(run_name: str) -> None:
@@ -635,6 +792,28 @@ def _render_scenario_explorer(run_name: str, manifest: pd.DataFrame) -> None:
     st.dataframe(view[cols], use_container_width=True, height=280)
     st.caption(f"{len(view)} of {len(manifest)} scenarios shown.")
 
+    st.info(
+        "**sol1, sol2, sol3 are PHREEQC solution numbers / repeated solution outputs.** They "
+        "should not be interpreted as experimental time points unless the PHREEQC input "
+        "explicitly defines them that way. **In this project, sol1/sol2/sol3 should be treated "
+        "as replicate/batch outputs for the same broad scenario, not as 10/20/60 min time points.**"
+    )
+    st.caption("ℹ️ " + _OA_PF_GS_CAVEAT)
+    descriptions = scenarios.load_solution_descriptions()
+    with st.expander("What do sol1 / sol2 / sol3 represent? (from the PHREEQC input files)"):
+        if descriptions.empty:
+            st.caption(
+                "No parsed PHREEQC input solutions found yet (run Phase 1). PHREEQC `.pqi` "
+                "files label each `SOLUTION n`; those labels — not time or replicate — are "
+                "all the app can attribute to a solution number."
+            )
+        else:
+            st.caption(
+                "Parsed from the `.pqi` input files (`SOLUTION n <label>`). A blank/generic "
+                "label means the input did not describe that solution as a time point or replicate."
+            )
+            st.dataframe(descriptions, use_container_width=True, height=200)
+
 
 _ASSISTANT_META_FIELDS = [
     "NaOH_M", "time_min", "liquid_solid_ratio", "CO2_condition",
@@ -656,9 +835,17 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
     sample = sample_row.iloc[0].to_dict() if not sample_row.empty else {"sample_id": sel_sample}
 
     meta = {f: sample.get(f, "") for f in _ASSISTANT_META_FIELDS if f in sample}
+    exp_code = scenarios.sample_condition_code(sample)
+    if exp_code:
+        meta["condition_code"] = exp_code
     if meta:
-        st.markdown("**Sample metadata:**")
+        st.markdown("**Experimental metadata (known):**")
         st.dataframe(pd.DataFrame([meta]), use_container_width=True, height=80)
+        st.caption(
+            "PHREEQC scenarios know L/S, CO2, state, solution number and predicted "
+            "pH/Ca/Si/Al — but **not** experimental `time_min`, OA/PF/GS `condition_code` "
+            "or `NaOH_M`, so an exact time/condition match can't be confirmed (see notes below)."
+        )
 
     if manifest.empty:
         st.info("No PHREEQC scenarios available to suggest yet — run Phase 1 first.")
@@ -679,12 +866,19 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
         with st.container(border=True):
             st.markdown(f"**{sug['scenario_label']}** · score {sug['score']} · {badge} confidence")
             st.caption(f"`{sug['suggested_phreeqc_record_key']}`")
+            if sug.get("base_confidence") and sug["base_confidence"] != conf:
+                st.caption(
+                    f"Capped from {sug['base_confidence']} → {conf}: PHREEQC does not specify "
+                    f"{', '.join(sug.get('phreeqc_missing', [])) or 'some experimental metadata'}."
+                )
             st.markdown(
                 f"- **Reason:** {sug['reason']}\n"
                 f"- **Matched:** {', '.join(sug['matched_fields']) or '—'}\n"
                 f"- **Mismatched:** {', '.join(sug['mismatched_fields']) or '—'}\n"
-                f"- **Missing metadata:** {', '.join(sug['missing_metadata']) or '—'}"
+                f"- **Missing PHREEQC metadata:** {', '.join(sug.get('phreeqc_missing', [])) or '—'}"
             )
+            for note in sug.get("metadata_notes", []):
+                st.warning("ℹ️ " + note)
             if st.button("Use this mapping", key=f"assist_use_{run_name}_{i}"):
                 try:
                     run_manager.add_mapping(
@@ -699,17 +893,27 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
 
 def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
                        manifest: pd.DataFrame) -> None:
-    """Feature 6 — samples that would need a fresh PHREEQC simulation."""
-    needed = scenarios.samples_needing_simulation(data, mapping, manifest)
-    st.markdown("#### Samples needing new PHREEQC simulations")
-    if needed.empty:
-        st.success("Every sample has a confident, non-colliding PHREEQC mapping.")
-        return
-    st.caption(
-        "Flagged when a sample has no mapping, only a low-confidence match, or shares "
-        "its PHREEQC row with other samples."
-    )
-    st.dataframe(needed, use_container_width=True, height=240)
+    """Conditions (and samples) that would need a fresh PHREEQC simulation."""
+    cond_map = run_manager.read_condition_mapping(run_name)
+    conditions = replicates.conditions_needing_simulation(data, cond_map, manifest)
+    st.markdown("#### Conditions needing new PHREEQC simulations")
+    if conditions.empty:
+        st.success("Every experimental condition maps exactly to a PHREEQC scenario.")
+    else:
+        st.caption(
+            "Conditions whose mapping is missing, unsafe, or only scenario-level (PHREEQC "
+            "lacks exact time / OA-PF-GS / NaOH_M). Generate matching PHREEQC scenarios to "
+            "make these exact."
+        )
+        st.dataframe(conditions, use_container_width=True, height=240)
+
+    # Keep the older per-sample view available but out of the way.
+    with st.expander("Per-sample detail (no mapping / low confidence / collisions)"):
+        needed = scenarios.samples_needing_simulation(data, mapping, manifest)
+        if needed.empty:
+            st.success("Every sample has a confident, non-colliding PHREEQC mapping.")
+        else:
+            st.dataframe(needed, use_container_width=True, height=240)
 
 
 def _render_manual_mapping(run_name: str, phreeqc: pd.DataFrame,
@@ -757,6 +961,146 @@ def _render_manual_mapping(run_name: str, phreeqc: pd.DataFrame,
             st.error(str(exc))
 
 
+def _render_replicate_summary(data: pd.DataFrame) -> None:
+    """Feature 2 — replicate count + mean/std per experimental condition."""
+    st.markdown("#### Replicate summary (grouped by condition)")
+    st.caption(
+        "Rows are grouped by `condition_key` (leachant + molarity + OA/PF/GS + time + "
+        "L/S + CO2). `replicate_id` is read from the sample_id (R1/R2/R3, rep…, batch…). "
+        "std needs ≥2 replicates."
+    )
+    summary = replicates.replicate_summary(data)
+    if summary.empty:
+        st.info("No rows to summarise yet.")
+        return
+    st.dataframe(summary, use_container_width=True, height=220)
+    singles = summary[summary["number_of_replicates"] < 2]
+    if not singles.empty:
+        st.warning(f"⚠️ {len(singles)} condition(s) have a single replicate — no standard "
+                   "deviation can be estimated for them.")
+
+
+def _scenario_record_key_picker(run_name: str, manifest: pd.DataFrame, key: str) -> str | None:
+    """Selectbox over batch-first manifest scenarios -> a PHREEQC record_key."""
+    if manifest.empty:
+        st.info("No PHREEQC scenarios yet — run Phase 1 first.")
+        return None
+    view = manifest.copy()
+    view["_batch"] = view["state"].astype(str).str.lower().eq("batch")
+    view = view.sort_values("_batch", ascending=False)
+    keys = view["phreeqc_record_key"].astype(str).tolist()
+    labels = {
+        r["phreeqc_record_key"]: f"{r.get('scenario_label', '')}  ·  {r['phreeqc_record_key']}"
+        for _, r in view.iterrows()
+    }
+    return st.selectbox("PHREEQC scenario", keys, format_func=lambda k: labels.get(k, k), key=key)
+
+
+def _render_condition_mapping(run_name: str, data: pd.DataFrame, manifest: pd.DataFrame) -> None:
+    """Feature 3/4 — map a whole condition to a PHREEQC scenario (replicates inherit)."""
+    st.markdown("#### Condition-level mapping (recommended)")
+    st.caption(
+        "Map a whole **experimental condition** (all its replicate batches) to one PHREEQC "
+        "scenario, instead of mapping each sample_id. Every replicate inherits the mapping, "
+        "then **Apply** writes the per-sample map the comparison step reads."
+    )
+    summary = replicates.replicate_summary(data)
+    if summary.empty:
+        st.info("No conditions to map yet — enter data first.")
+        return
+
+    condition_keys = summary["condition_key"].tolist()
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        sel_condition = st.selectbox("condition_key", condition_keys, key=f"cond_sel_{run_name}")
+    with c2:
+        chosen_key = _scenario_record_key_picker(run_name, manifest, key=f"cond_scn_{run_name}")
+
+    if st.button("Map this condition → scenario", key=f"cond_map_{run_name}", type="primary"):
+        if not chosen_key:
+            st.warning("Pick a PHREEQC scenario first.")
+        else:
+            try:
+                run_manager.add_condition_mapping(run_name, sel_condition, chosen_key)
+                st.success(f"Mapped condition `{sel_condition}` → `{chosen_key}`.")
+                _read_csv.clear()
+                st.rerun()
+            except run_manager.RunManagerError as exc:
+                st.error(str(exc))
+
+    cond_map = run_manager.read_condition_mapping(run_name)
+    if not cond_map.empty:
+        st.markdown(f"**Condition mappings** ({len(cond_map)}):")
+        st.dataframe(cond_map, use_container_width=True, height=150)
+
+        use_rep_sol = False
+        with st.expander("Advanced replicate-to-PHREEQC solution mapping", expanded=False):
+            st.warning(
+                "⚠️ Only use this if sol1/sol2/sol3 represent **replicate batches**, not time "
+                "points or unrelated solutions."
+            )
+            st.caption("Map each replicate id to a PHREEQC solution number (e.g. R1→1, R2→2). "
+                       "Apply will then point each replicate at its own solution.")
+            rc1, rc2, rc3 = st.columns(3)
+            rep_in = rc1.text_input("replicate_id (e.g. R1)", key=f"repsol_rid_{run_name}")
+            sol_in = rc2.text_input("solution_number (e.g. 1)", key=f"repsol_sol_{run_name}")
+            if rc3.button("Add R→sol", key=f"repsol_add_{run_name}"):
+                try:
+                    run_manager.add_replicate_solution(run_name, rep_in, sol_in)
+                    _read_csv.clear()
+                    st.rerun()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
+            rs_map = run_manager.read_replicate_solution_map(run_name)
+            if not rs_map.empty:
+                st.dataframe(rs_map, use_container_width=True, height=120)
+            use_rep_sol = st.checkbox(
+                "Apply using replicate→solution mapping (instead of one scenario for all replicates)",
+                key=f"repsol_use_{run_name}",
+            )
+
+        if st.button("Apply condition mapping → per-sample map", key=f"cond_apply_{run_name}"):
+            try:
+                path = run_manager.apply_condition_mapping(run_name, use_replicate_solution=use_rep_sol)
+                n = len(run_manager.read_mapping(run_name))
+                st.success(f"Applied — {n} sample row(s) written to `{path.relative_to(_PROJECT_ROOT)}`.")
+                _read_csv.clear()
+                st.rerun()
+            except run_manager.RunManagerError as exc:
+                st.error(str(exc))
+
+        with st.expander("Delete condition mappings"):
+            to_del = st.multiselect(
+                "Rows to delete", options=list(range(len(cond_map))),
+                format_func=lambda i: f"{cond_map.iloc[i]['condition_key']} → "
+                                      f"{cond_map.iloc[i]['phreeqc_record_key']}",
+                key=f"cond_del_{run_name}",
+            )
+            if st.button("Delete selected condition mappings", key=f"cond_delbtn_{run_name}") and to_del:
+                run_manager.delete_condition_mapping_rows(run_name, to_del)
+                _read_csv.clear()
+                st.rerun()
+
+
+def _render_replicate_collision_warnings(data: pd.DataFrame, mapping: pd.DataFrame,
+                                         manifest: pd.DataFrame) -> None:
+    """Feature 7 — replicate-aware mapping safety warnings."""
+    warns = replicates.collision_report(data, mapping, manifest)
+    if not warns:
+        st.success("No replicate-aware mapping problems. (Replicates of one condition sharing a "
+                   "PHREEQC scenario is expected, not a collision.)")
+        return
+    # Keep the (often repeated) detail tidy for presentation.
+    st.warning(f"⚠️ {len(warns)} replicate-aware mapping warning(s) — expand for detail.")
+    with st.expander("Mapping warning detail"):
+        seen: set[str] = set()
+        for w in warns:
+            if w["message"] in seen:
+                continue
+            seen.add(w["message"])
+            st.markdown(f"- {w['message']}")
+
+
 def _render_mapping_section(run_name: str) -> None:
     """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
 
@@ -800,13 +1144,19 @@ def _render_mapping_section(run_name: str) -> None:
 
     _render_scenario_explorer(run_name, manifest)
     st.markdown("---")
-    _render_mapping_assistant(run_name, data, sample_ids, manifest)
+    _render_replicate_summary(data)
+    st.markdown("---")
+    _render_condition_mapping(run_name, data, manifest)
+    st.markdown("---")
+    with st.expander("Sample-level mapping assistant (per sample_id)", expanded=False):
+        _render_mapping_assistant(run_name, data, sample_ids, manifest)
 
     st.markdown("---")
     mapping = run_manager.read_mapping(run_name)
-    st.markdown(f"**Existing mappings** ({len(mapping)}):")
+    st.markdown(f"**Existing per-sample mappings** ({len(mapping)}):")
     st.dataframe(mapping, use_container_width=True, height=170)
     _render_mapping_quality(mapping)
+    _render_replicate_collision_warnings(data, mapping, manifest)
 
     st.markdown("---")
     _render_sim_needed(run_name, data, mapping, manifest)
@@ -1084,10 +1434,150 @@ def _script_button(label: str, script: str, result_label: str, key: str,
 
 
 # --------------------------------------------------------------------------- #
+# Presentation-status wording (validation workflow, not an overclaimed model)
+# --------------------------------------------------------------------------- #
+_PRELIMINARY_CAVEAT = (
+    "Current measured-vs-PHREEQC comparison should be treated as preliminary / workflow "
+    "check only unless mappings are exact."
+)
+_VALID_NOW = [
+    "Real Excel workbook import",
+    "pH extraction",
+    "Ca/Si/Al extraction",
+    "Data validation",
+    "Formula audit",
+    "PHREEQC parsing",
+    "Preliminary workflow comparison",
+]
+_NOT_VALID_YET = [
+    "Time-resolved PHREEQC validation",
+    "HCl comparison (until HCl PHREEQC scenarios are generated)",
+    "OA/PF/GS-specific interpretation (until their meanings are confirmed)",
+    "ML training",
+]
+_OA_PF_GS_CAVEAT = (
+    "OA, PF, and GS are preserved as experimental condition codes. Their physical or chemical "
+    "meaning still needs confirmation before using them as PHREEQC mapping criteria."
+)
+
+
+def _manifest_if_available() -> pd.DataFrame:
+    rp = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
+    if rp.exists():
+        return _scenario_manifest(str(rp), rp.stat().st_mtime)
+    return pd.DataFrame(columns=scenarios.MANIFEST_COLUMNS)
+
+
+def _render_mapping_status_definitions() -> None:
+    """Feature 2 — the four mapping statuses and what they mean."""
+    rows = [{"status": k, "meaning": v}
+            for k, v in replicates.MAPPING_STATUS_DEFINITIONS.items()]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=180, hide_index=True)
+
+
+def _render_valid_now_section() -> None:
+    """Feature 5 — what is scientifically valid now vs not fully valid yet."""
+    a, b = st.columns(2)
+    with a:
+        st.markdown("**✅ Valid now**")
+        st.markdown("\n".join(f"- {x}" for x in _VALID_NOW))
+    with b:
+        st.markdown("**🚧 Not fully valid yet**")
+        st.markdown("\n".join(f"- {x}" for x in _NOT_VALID_YET))
+
+
+def _rows_with_any_numeric(data: pd.DataFrame, cols: list[str]) -> int:
+    present = [c for c in cols if c in data.columns]
+    if not present or data.empty:
+        return 0
+    num = data[present].apply(pd.to_numeric, errors="coerce")
+    return int(num.notna().any(axis=1).sum())
+
+
+def _render_presentation_summary(selected_run: str | None) -> None:
+    """Feature 1 — a single honest status panel near the top of the Start tab."""
+    if not selected_run:
+        st.info("Select or create a run in the **Experiment runs** sidebar (left) for a summary.")
+        return
+    cfg = run_manager.load_run_config(selected_run)
+    rt = cfg.get("run_type")
+    lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES
+    data = run_manager.read_data_file(selected_run)
+
+    n_rows = len(data)
+    rows_with_ph = _rows_with_any_numeric(data, ["final_pH"])
+    rows_with_chem = _rows_with_any_numeric(data, ["Ca_mM", "Si_mM", "Al_mM"])
+
+    issues = (validate_experimental_df(data, source=selected_run)
+              if lab_like and not data.empty else [])
+    n_err = sum(1 for i in issues if i.get("severity") == "error")
+    n_warn = sum(1 for i in issues if i.get("severity") == "warning")
+
+    mapping = run_manager.read_mapping(selected_run) if lab_like else pd.DataFrame()
+    msum = run_manager.summarize_mapping(mapping)
+    manifest = _manifest_if_available()
+    status = (replicates.overall_mapping_status(data, mapping, manifest)
+              if lab_like else {"overall": "n/a", "all_exact": False,
+                                "counts": {}, "n_mapped": 0, "n_unmapped": 0})
+    comp_exists = (config.PROCESSED_DIR / config.COMPARISON_CSV).exists()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Dataset imported", "yes" if n_rows else "no")
+    m2.metric("Experimental rows", n_rows)
+    m3.metric("Rows with pH", rows_with_ph)
+    m4.metric("Rows with Ca/Si/Al", rows_with_chem)
+    n1, n2, n3, n4 = st.columns(4)
+    n1.metric("Validation errors", n_err)
+    n2.metric("Validation warnings", n_warn)
+    n3.metric("Mapped samples", msum["n_samples"])
+    n4.metric("Unique PHREEQC rows", msum["n_unique_rows"])
+
+    overall = status["overall"]
+    st.markdown(f"**Overall mapping status:** `{overall}`"
+                + ("" if not lab_like else
+                   f"  ·  exact: {status['counts'].get('exact', 0)}, "
+                   f"scenario-level: {status['counts'].get('scenario-level only', 0)}, "
+                   f"unsafe: {status['counts'].get('unsafe', 0)}, "
+                   f"needs new sim: {status['counts'].get('needs new PHREEQC simulation', 0)}"))
+    st.markdown(f"**Comparison status:** {'available (preliminary)' if comp_exists else 'not run yet'}")
+
+    # Recommended next *scientific* step.
+    if not n_rows:
+        nxt = "Import the dissolution workbook in the **Data** tab."
+    elif n_err:
+        nxt = f"Fix {n_err} validation error(s) in the **Data** tab before mapping."
+    elif lab_like and msum["n_samples"] == 0:
+        nxt = "Map conditions to PHREEQC scenarios in the **Match PHREEQC** tab."
+    elif status["counts"].get("unsafe", 0):
+        nxt = ("Resolve unsafe mapping(s) (e.g. HCl mapped to a NaOH/CO2 scenario) — generate "
+               "matching acid PHREEQC scenarios.")
+    elif lab_like and not status["all_exact"]:
+        nxt = ("Generate time- and condition-resolved PHREEQC scenarios so mappings can become "
+               "exact; the current comparison is a workflow check, not final validation.")
+    elif not comp_exists:
+        nxt = "Run the workflow in the **Run + Results** tab to generate the comparison."
+    else:
+        nxt = "Review the preliminary comparison in the **Run + Results** tab."
+    st.success(f"**Recommended next scientific step:** {nxt}")
+
+    if not (lab_like and status["all_exact"]):
+        st.warning("⚠️ " + _PRELIMINARY_CAVEAT)
+
+    with st.expander("Mapping status definitions"):
+        _render_mapping_status_definitions()
+    with st.expander("What is valid now vs not fully valid yet"):
+        _render_valid_now_section()
+
+
+# --------------------------------------------------------------------------- #
 # Tab renderers — each is a self-contained view; all reuse the helpers above.
 # --------------------------------------------------------------------------- #
 def _render_overview(selected_run: str | None) -> None:
     """Project status cards + selected-run summary + a recommended next step."""
+    st.subheader("Presentation summary")
+    _render_presentation_summary(selected_run)
+    st.divider()
+
     master_path = config.PROCESSED_DIR / config.MASTER_DATASET_CSV
     template_path = config.EXPERIMENTAL_ICP_DIR / config.EXPERIMENTAL_TEMPLATE_CSV
     measured = _load_measured_safe()
@@ -1418,6 +1908,82 @@ def _render_run_workflow_tab(selected_run: str | None) -> None:
                            "Sustainability score", "adv_sustain")
 
 
+def _render_condition_results(selected_run: str | None) -> None:
+    """Feature 6 — replicate-aware results: condition mean ± std vs PHREEQC."""
+    if not selected_run:
+        return
+    data = run_manager.read_data_file(selected_run)
+    if data.empty or "sample_id" not in data.columns:
+        return
+
+    st.markdown("#### Condition-level replicate comparison")
+    results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
+    if results_path.exists():
+        manifest = _scenario_manifest(str(results_path), results_path.stat().st_mtime)
+    else:
+        manifest = pd.DataFrame(columns=scenarios.MANIFEST_COLUMNS)
+    cond_map = run_manager.read_condition_mapping(selected_run)
+
+    mode = st.radio(
+        "Comparison mode", ["Replicate mean comparison", "Individual replicate comparison"],
+        key=f"cmp_mode_{selected_run}",
+        help="Default compares each condition's replicate mean ± std to PHREEQC; the other "
+             "compares each replicate row to its mapped PHREEQC solution.",
+    )
+
+    if mode.startswith("Replicate mean"):
+        comp = replicates.condition_mean_comparison(data, cond_map, manifest)
+        if comp.empty:
+            st.info("No conditions to compare yet.")
+            return
+        st.dataframe(comp, use_container_width=True, height=260)
+        n_lt2 = int((comp["n_replicates"] < 2).sum())
+        if n_lt2:
+            st.warning(f"⚠️ {n_lt2} condition(s) have fewer than 2 replicates — no standard "
+                       "deviation, so the mean is a single measurement.")
+        metric = st.selectbox("Metric to plot", replicates.VALUE_COLUMNS,
+                              key=f"cmp_metric_{selected_run}")
+        _render_condition_errorbar(comp, metric)
+        with st.expander("Advanced: individual replicate scatter"):
+            ind = replicates.individual_replicate_comparison(
+                data, run_manager.read_mapping(selected_run), manifest)
+            st.dataframe(ind, use_container_width=True, height=240)
+    else:
+        ind = replicates.individual_replicate_comparison(
+            data, run_manager.read_mapping(selected_run), manifest)
+        if ind.empty:
+            st.info("No replicate rows to compare yet.")
+            return
+        st.dataframe(ind, use_container_width=True, height=300)
+        st.caption("Each replicate vs its mapped PHREEQC solution (residual = measured − PHREEQC).")
+    st.markdown("---")
+
+
+def _render_condition_errorbar(comp: pd.DataFrame, metric: str) -> None:
+    """Measured mean ± std vs PHREEQC prediction, one point per condition."""
+    label = replicates.RESIDUAL_LABEL[metric]
+    sub = comp.dropna(subset=[f"mean_{metric}"]).reset_index(drop=True)
+    if sub.empty:
+        st.caption(f"No measured `{metric}` values to plot.")
+        return
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    x = list(range(len(sub)))
+    fig, ax = plt.subplots(figsize=(7, 3.6))
+    ax.errorbar(x, sub[f"mean_{metric}"], yerr=sub[f"std_{metric}"].fillna(0.0),
+                fmt="o", capsize=4, label="measured mean ± std")
+    pheq = pd.to_numeric(sub[f"phreeqc_{label}"], errors="coerce")
+    if pheq.notna().any():
+        ax.scatter(x, pheq, marker="x", color="red", s=60, label="PHREEQC")
+    ax.set_xticks(x)
+    ax.set_xticklabels(sub["condition_key"], rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel(metric)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
 def _render_results_tab(selected_run: str | None) -> None:
     # What's shown depends on run type, so a literature/synthetic run never displays
     # the lab measured-vs-PHREEQC residual as if it were its own result.
@@ -1446,6 +2012,18 @@ def _render_results_tab(selected_run: str | None) -> None:
         "Reads `data/processed/comparison_measured_vs_phreeqc.csv` plus the validation "
         "and sustainability tables in `outputs/tables/`."
     )
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
+        data = run_manager.read_data_file(selected_run)
+        status = replicates.overall_mapping_status(
+            data, run_manager.read_mapping(selected_run), _manifest_if_available())
+        if not status["all_exact"]:
+            st.warning(
+                "⚠️ Residual plots are currently a **workflow check, not final model "
+                "validation**, because one or more mappings are scenario-level, unsafe, or "
+                "missing exact PHREEQC metadata."
+            )
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
+        _render_condition_results(selected_run)
     _render_results_summary()
     _render_comparison_figures()
     st.info(
@@ -1701,6 +2279,14 @@ def _render_calc_verification_tab(dev_mode: bool) -> None:
 
 
 def _render_help_tab() -> None:
+    st.subheader("Validation status — what is valid now vs not yet")
+    _render_valid_now_section()
+    st.caption("ℹ️ " + _PRELIMINARY_CAVEAT)
+    st.caption("ℹ️ " + _OA_PF_GS_CAVEAT)
+    with st.expander("Mapping status definitions"):
+        _render_mapping_status_definitions()
+    st.divider()
+
     st.subheader("How this app works")
     st.markdown(
         "1. **Start** — create or open a run in the sidebar (a 'save file' for one "

@@ -116,26 +116,33 @@ streamlit run app.py
 **Developer explanation mode** toggle). The tabs follow the ingest → verify → map → run →
 interpret order:
 
-- **Start** — project + selected-run status (run type, data rows, mapped samples, unique
-  PHREEQC rows used), a one-line data-quality status, what's missing, a recommended next
-  action, and a workflow checklist (Data uploaded → Data checked → Mapping complete →
-  Workflow run → Results available).
-- **Data** — run-type-specific entry (lab measured-release form **plus an "Upload
-  experimental CSV"** uploader with required-column validation, replace/append, and
-  synthetic-data warnings; literature CSV upload + manual rows; or synthetic/demo form), plus
-  this run's table, row deletion, CSV/pipeline export, a basic validation summary (lab runs),
-  and the legacy global manual-entry form under a "not recommended" expander.
-- **Match PHREEQC** — guided sample → PHREEQC mapping (lab-like runs): a **PHREEQC Scenario
-  Explorer** (filterable table of PHREEQC rows described in plain terms), a **Mapping
-  Assistant** (pick a sample → top-3 rule-scored suggestions with confidence and a "Use this
-  mapping" button, plus a no-good-match warning), a mapping-quality summary that warns when
-  several samples share one PHREEQC row, a "samples needing new PHREEQC simulations" table,
-  and the original manual dropdown kept under an **"Advanced manual mapping"** expander.
-- **Run + Results** — combines workflow execution and results: the **"Run selected experiment
-  workflow"** button (with an "Advanced individual script controls" expander), then the
-  run-type-aware results — the measured-vs-PHREEQC summary, comparison/residual figures, an
-  interpretation note on coarse mapping, pH residual cards, and validation + sustainability
-  tables for a lab run; the benchmark summary for a literature run.
+- **Start** — a **Presentation summary** (dataset imported, rows, rows-with-pH, rows-with-Ca/Si/Al,
+  validation errors/warnings, mapped samples, unique PHREEQC rows, overall **mapping status**,
+  comparison status, and a recommended next *scientific* step), with the standing caveat that the
+  comparison is **preliminary / a workflow check unless mappings are exact**, plus expanders for the
+  mapping-status definitions and "valid now vs not fully valid yet"; then project + selected-run
+  status and the workflow checklist.
+- **Data** — run-type-specific entry. For lab runs the **"Upload experimental data file"** importer
+  has two modes: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet pick → fuzzy column mapping →
+  unit conversion mg/L·ppm·ppb→mM → leachant/provenance → pre-save validation → confirm-gated
+  replace/append) and a special-case **Class C fly ash dissolution-workbook** parser (stacked ICP OES
+  element blocks with mmol/l preferred, pH sheet, HCl kept acid-tagged, shared metadata defaults,
+  NaOH-only / NaOH+HCl scope, debug preview). Also literature CSV upload + manual rows, or
+  synthetic/demo form, plus this run's table, row deletion, CSV/pipeline export, a basic validation
+  summary, and the legacy global form under an expander.
+- **Match PHREEQC** — replicate-aware guided mapping (lab-like runs): a **PHREEQC Scenario Explorer**
+  (with the sol1/sol2/sol3 = replicate/batch-output explanation and the OA/PF/GS caveat), a
+  **replicate summary** grouped by `condition_key`, **condition-level mapping** (map a whole condition
+  → one scenario; replicates inherit it, then Apply writes the per-sample map) with an advanced
+  replicate→PHREEQC-solution expander, a replicate-aware collision check (same-condition replicates
+  are *not* a collision), a **"conditions needing new PHREEQC simulations"** table, and the
+  sample-level Mapping Assistant + manual dropdown kept under expanders.
+- **Run + Results** — workflow execution then run-type-aware results. For lab runs: a **comparison
+  mode** (default **replicate mean ± std** vs PHREEQC, with residuals and an n<2 warning; individual
+  replicate scatter as the advanced view) and a warning that residual plots are a **workflow check,
+  not final validation** whenever any mapping is not exact; plus the existing comparison/residual
+  figures, pH residual cards, and validation + sustainability tables; the benchmark summary for a
+  literature run.
 - **Audit / Help** — the Calculation Verification view (formula registry, per-row residual
   audit, calculators; see *Calculation verification* below), the PHREEQC raw outputs
   (processed-CSV previewer + a PHREEQC-**only** model-output figure viewer) under expanders,
