@@ -1,0 +1,6 @@
+sample_id,mix_id,specimen_id,test_id,curing_age_days,fly_ash_mass_g,cement_mass_g,water_mass_g,red_mud_mass_g,sand_mass_g,flow_mm,compressive_strength_MPa,leachate_pH,leachate_conductivity_uS_cm
+S001,MIX-A,MIX-A-01,T0001,28,300,700,400,0,2000,185,31.2,11.4,1200
+S002,MIX-A,MIX-A-02,T0002,28,300,700,400,0,2000,180,33.8,11.6,1250
+S003,MIX-B,MIX-B-01,T0003,28,500,500,420,0,2000,210,19.5,12.1,2100
+S004,MIX-B,MIX-B-02,T0004,28,500,500,420,0,2000,205,21.0,12.0,2050
+S005,MIX-C,MIX-C-01,T0005,28,150,800,380,50,2000,160,48.6,11.0,950

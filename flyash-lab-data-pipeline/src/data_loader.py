@@ -27,10 +27,25 @@ def _normalise_name(name: str) -> str:
     return cleaned
 
 
+# Map a case-insensitive normalised header back to its canonical mixed-case name
+# (e.g. "compressive_strength_mpa" -> "compressive_strength_MPa"). Expected columns
+# use mixed case for unit suffixes (MPa, pH, uS_cm); lowercasing alone would break
+# matching against the rest of the pipeline.
+_CANONICAL_BY_LOWER = {c.lower(): c for c in config.EXPECTED_COLUMNS}
+
+
 def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of ``df`` with normalised, de-duplicated column names."""
+    """Return a copy of ``df`` with normalised column names.
+
+    Headers are lower-cased and de-punctuated for forgiving matching, then mapped
+    back to the canonical mixed-case name where one exists, so that columns like
+    ``Compressive Strength (MPa)`` resolve to ``compressive_strength_MPa``.
+    """
     df = df.copy()
-    df.columns = [_normalise_name(c) for c in df.columns]
+    df.columns = [
+        _CANONICAL_BY_LOWER.get(_normalise_name(c), _normalise_name(c))
+        for c in df.columns
+    ]
     return df
 
 
