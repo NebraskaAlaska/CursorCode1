@@ -111,39 +111,38 @@ pip install -r requirements.txt   # includes streamlit
 streamlit run app.py
 ```
 
-**Layout.** The app is a wide **tabbed dashboard** driven by a run-management **sidebar**
-(select/create a run; see its name/type/folder/source; a run-type warning; and a
-**Developer explanation mode** toggle). The tabs are:
+**Layout.** The app is a wide **guided five-tab workflow** driven by a run-management
+**sidebar** (select/create a run; see its name/type/folder/source; a run-type warning; and a
+**Developer explanation mode** toggle). The tabs follow the ingest → verify → map → run →
+interpret order:
 
-- **Overview** — project + selected-run status, what's missing, a recommended next step.
-- **Data Entry** — run-type-specific entry (lab measured-release form **plus an "Upload
+- **Start** — project + selected-run status (run type, data rows, mapped samples, unique
+  PHREEQC rows used), a one-line data-quality status, what's missing, a recommended next
+  action, and a workflow checklist (Data uploaded → Data checked → Mapping complete →
+  Workflow run → Results available).
+- **Data** — run-type-specific entry (lab measured-release form **plus an "Upload
   experimental CSV"** uploader with required-column validation, replace/append, and
   synthetic-data warnings; literature CSV upload + manual rows; or synthetic/demo form), plus
-  this run's table, row deletion, and CSV/pipeline export.
-- **Mapping** — guided sample → PHREEQC mapping (lab-like runs): a **PHREEQC Scenario
+  this run's table, row deletion, CSV/pipeline export, a basic validation summary (lab runs),
+  and the legacy global manual-entry form under a "not recommended" expander.
+- **Match PHREEQC** — guided sample → PHREEQC mapping (lab-like runs): a **PHREEQC Scenario
   Explorer** (filterable table of PHREEQC rows described in plain terms), a **Mapping
   Assistant** (pick a sample → top-3 rule-scored suggestions with confidence and a "Use this
   mapping" button, plus a no-good-match warning), a mapping-quality summary that warns when
   several samples share one PHREEQC row, a "samples needing new PHREEQC simulations" table,
   and the original manual dropdown kept under an **"Advanced manual mapping"** expander.
-- **Run Workflow** — the **"Run selected experiment workflow"** button (below) + an
-  "Advanced individual script controls" expander.
-- **Results** — run-type-aware: the measured-vs-PHREEQC summary, comparison/residual
-  figures, an interpretation note on coarse mapping, pH residual cards, and validation +
-  sustainability tables for a lab run; the benchmark summary for a literature run.
-- **PHREEQC Outputs** — processed-CSV previewer + a PHREEQC-**only** model-output figure
-  viewer (the measured-vs-PHREEQC comparison plots live in **Results**).
-- **Literature Benchmark** — the literature table + comparability summary (literature runs).
-- **Tools** — **"Data Checks and Derived Metrics"**: the validate (07) and sustainability
-  (08) scripts and their output tables. The app no longer generates experiment plans (the 06
-  button was removed); the legacy global manual-entry form is tucked in a "not recommended"
-  expander.
-- **Calculation Verification** — formula registry, per-row residual audit, and calculators
-  (see *Calculation verification* below).
-- **Help / Safety** — workflow, run types, mapping, residuals, and limitations.
+- **Run + Results** — combines workflow execution and results: the **"Run selected experiment
+  workflow"** button (with an "Advanced individual script controls" expander), then the
+  run-type-aware results — the measured-vs-PHREEQC summary, comparison/residual figures, an
+  interpretation note on coarse mapping, pH residual cards, and validation + sustainability
+  tables for a lab run; the benchmark summary for a literature run.
+- **Audit / Help** — the Calculation Verification view (formula registry, per-row residual
+  audit, calculators; see *Calculation verification* below), the PHREEQC raw outputs
+  (processed-CSV previewer + a PHREEQC-**only** model-output figure viewer) under expanders,
+  and the Help / Safety reference (workflow, run types, mapping, residuals, limitations).
 
 **Running the workflow.** After entering data into a run, click the
-**"Run selected experiment workflow"** button in the **Run Workflow** tab. For a lab
+**"Run selected experiment workflow"** button in the **Run + Results** tab. For a lab
 run it exports the run's CSV (and mapping) to the pipeline and runs Phase 1, validation, the
 measured-vs-PHREEQC comparison, and the sustainability score in order — showing each
 command's output and stopping at the first failure. The individual step buttons remain
@@ -153,11 +152,12 @@ The app reuses package functions, changes no chemistry, and trains no model. The
 global entry form appends to
 `data/raw/experimental_icp/experimental_release_manual_entry.csv` (never overwritten — and
 gitignored); per-run entry writes into the selected run's own `experiments/<name>/data/`.
-See the **Help / Safety** tab for limitations.
+See the **Audit / Help** tab for limitations.
 
 ## Calculation verification / formula audit
 
-The **Calculation Verification** tab (backed by `flyash_phreeqc_ml/calculations.py`) makes
+The **Calculation Verification** view in the **Audit / Help** tab (backed by
+`flyash_phreeqc_ml/calculations.py`) makes
 the app's arithmetic transparent — what formulas are used, what inputs/units they assume,
 and whether stored values match a fresh recomputation. It shows:
 
@@ -227,7 +227,7 @@ it prints *"no measured/PHREEQC pairs to plot (mapping not set yet)"* and leaves
 a deliberate "not linked yet" state, not a wrong join.
 
 **How to map pH-only lab data.** Run Phase 1 first so `data/processed/phreeqc_results.csv`
-exists, then use the **Mapping** tab. The easiest path is the **Mapping Assistant**: pick a
+exists, then use the **Match PHREEQC** tab. The easiest path is the **Mapping Assistant**: pick a
 `sample_id` and it scores the PHREEQC scenarios with simple, transparent rules (favouring
 `batch` state and matching L/S and CO₂, penalising `initial` state and conflicts) and offers the
 top-3 with a **"Use this mapping"** button — so you don't have to know which `record_key` means
