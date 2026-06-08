@@ -171,3 +171,77 @@ def test_samples_needing_simulation_empty_inputs():
     out = scenarios.samples_needing_simulation(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
     assert out.empty
     assert list(out.columns) == scenarios._SIM_NEEDED_COLUMNS
+
+
+# --------------------------------------------------------------------------- #
+# Confidence caps when the experiment specifies metadata PHREEQC lacks
+# --------------------------------------------------------------------------- #
+def test_high_requires_both_sides_time_capped_to_medium():
+    # Perfect L/S + CO2 + batch + temp (score 9, base high) BUT the experiment
+    # specifies time and PHREEQC does not -> capped to medium.
+    res = scenarios.score_scenario(_sample(time_min=60), _scenario())
+    assert res["score"] == 9
+    assert res["base_confidence"] == "high"
+    assert res["confidence"] == "medium"
+    assert "time_min" in res["phreeqc_missing"]
+    assert any("Experimental time is known, but the selected PHREEQC scenario does not "
+               "specify time." == n for n in res["metadata_notes"])
+
+
+def test_condition_code_known_caps_to_medium():
+    res = scenarios.score_scenario(_sample(sample_id="0.5M-NaOH-OA-10min"), _scenario())
+    assert res["base_confidence"] == "high"
+    assert res["confidence"] == "medium"
+    assert "condition_code" in res["phreeqc_missing"]
+    assert any("OA" in n and "condition code" in n for n in res["metadata_notes"])
+
+
+def test_naoh_known_caps_to_medium():
+    res = scenarios.score_scenario(_sample(NaOH_M=0.5), _scenario())
+    assert res["confidence"] == "medium"
+    assert "NaOH_M" in res["phreeqc_missing"]
+
+
+def test_no_cap_when_experiment_lacks_time_and_condition():
+    # The original "perfect match" sample (no time/condition/NaOH) stays high.
+    res = scenarios.score_scenario(_sample(), _scenario())
+    assert res["confidence"] == "high"
+    assert res["metadata_notes"] == []
+
+
+def test_cap_never_raises_low_to_medium():
+    res = scenarios.score_scenario(
+        _sample(time_min=60), _scenario(state="initial", ls=20.0, co2="sealed"))
+    assert res["confidence"] == "low"   # cap only lowers; a low match stays low
+
+
+def test_sample_condition_code_sources():
+    assert scenarios.sample_condition_code({"extra__condition_code": "PF"}) == "PF"
+    assert scenarios.sample_condition_code({"sample_id": "0.5M-NaOH-GS-20min"}) == "GS"
+    assert scenarios.sample_condition_code({"notes": "condition_code=OA; foo"}) == "OA"
+    assert scenarios.sample_condition_code({"sample_id": "plain_sample"}) is None
+
+
+# --------------------------------------------------------------------------- #
+# Solution descriptions (explain sol1 / sol2 / sol3)
+# --------------------------------------------------------------------------- #
+def test_describe_solutions_one_row_per_solution():
+    long = pd.DataFrame([
+        {"source_file": "L-S_5.pqi", "solution_number": 1, "solution_label": None,
+         "temp": 25.0, "ph": 13.1, "element": "Na", "concentration": 1.0},
+        {"source_file": "L-S_5.pqi", "solution_number": 1, "solution_label": None,
+         "temp": 25.0, "ph": 13.1, "element": "Si", "concentration": 0.5},
+        {"source_file": "rev.pqi", "solution_number": 2, "solution_label": "L-S solution 2",
+         "temp": 25.0, "ph": 12.9, "element": "Na", "concentration": 1.0},
+    ])
+    desc = scenarios.describe_solutions(long)
+    assert list(desc.columns) == scenarios.SOLUTION_DESCRIPTION_COLUMNS
+    assert len(desc) == 2  # one row per (file, solution_number)
+    labelled = desc[desc["solution_number"] == 2].iloc[0]
+    assert labelled["description"] == "L-S solution 2"
+    unlabelled = desc[desc["source_file"] == "L-S_5.pqi"].iloc[0]
+    assert "no label" in unlabelled["description"]
+
+
+def test_describe_solutions_empty():
+    assert scenarios.describe_solutions(pd.DataFrame()).empty

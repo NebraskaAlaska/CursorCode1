@@ -47,6 +47,22 @@ experiment — **not** a blind replacement for the chemistry.
   Calculation Verification + Help folded into Audit / Help; the old Tools/Literature tabs absorbed
   into Data / Run + Results). Start adds a data-quality line, a richer recommended-next-action, and a
   workflow checklist.
+- **Flexible + dissolution-workbook import** (ingest, no chemistry/ML). The Data tab's lab uploader
+  is now two modes (`_lab_data_import`): a **generic** `.csv`/`.xlsx`/`.xls` importer
+  (`import_mapping.py` — sheet pick, fuzzy column mapping, mg/L·ppm·ppb→mM, leachant/provenance,
+  pre-save validation, confirm-gated replace/append) and a special-case **Class C fly ash
+  dissolution-workbook** parser (`dissolution_workbook.py` — horizontal ICP OES element blocks with
+  mmol/l preferred, pH read from the pH column, HCl kept acid-tagged), validated against the real
+  file. Both keep unknown columns and write through `run_manager.save_lab_dataframe`.
+- **Replicate-aware mapping + presentation status** (no chemistry/ML). `replicates.py` treats PHREEQC
+  `sol1/sol2/sol3` as replicate/batch outputs of one condition, not time points: `condition_key`
+  grouping, replicate ids, mean±std summaries, **condition-level mapping** (replicates inherit one
+  link, expanded to the per-sample map; storage in `run_manager`), an optional replicate→solution
+  path, replicate-aware collision rules, and condition mean / individual comparison modes. Layered on
+  top, a **mapping-status** classifier (`exact` / `scenario-level only` / `unsafe` / `needs new
+  PHREEQC simulation`) drives the Start **Presentation summary**, the Run + Results "workflow check,
+  not final validation" warning, and the "conditions needing new PHREEQC simulations" table — framing
+  the comparison as a **preliminary validation workflow**, not an overclaimed model.
 
 Phase 3 (ML) is not started.
 
@@ -209,11 +225,92 @@ modules together and own all file I/O paths.
   and metadata `infer`-red from the source filename only where safe (`L-S_5`→L/S 5; `atmCO2`→
   `atm_CO2`; `lowCO2`→`low_CO2`; `noCO2`→`sealed`; else `unknown`, with `metadata_quality`
   good/partial/unknown). `score_scenario` applies **hand-written** rules (+3 batch / −4 initial /
-  +3 L/S match / +2 compatible CO₂ / +1 temp match-or-unknown / −2 major conflict) and
-  `confidence_for` bands them high/medium/low (`HIGH_SCORE=7`, `MEDIUM_SCORE=4`); `suggest_mappings`
-  returns the top-N scenarios for a sample, and `samples_needing_simulation` flags samples that are
-  unmapped, only low-confidence, or sharing a PHREEQC row (collision). Covered by
-  `tests/test_scenarios.py`.
+  +3 L/S match / +2 compatible CO₂ / +1 temp match-or-unknown / −2 major conflict); `confidence_for`
+  bands the raw score high/medium/low (`HIGH_SCORE=7`, `MEDIUM_SCORE=4`), but `_metadata_alignment`
+  then **caps** confidence to *medium* whenever the experiment specifies metadata the PHREEQC
+  manifest lacks — `time_min`, an OA/PF/GS `condition_code` (`sample_condition_code` reads
+  `extra__condition_code`/`sample_id`/`notes`), or `NaOH_M` — so **high requires both sides to
+  align**, not just L/S + CO₂ + batch. The cap returns `base_confidence`, `phreeqc_missing`, and
+  human `metadata_notes` (e.g. "Experimental time is known, but the selected PHREEQC scenario does
+  not specify time.") that the Match PHREEQC tab shows per suggestion. `suggest_mappings` returns the
+  top-N scenarios, `samples_needing_simulation` flags unmapped/low-confidence/colliding samples, and
+  `describe_solutions` / `load_solution_descriptions` summarise each `.pqi` `SOLUTION n` label so the
+  app can explain that **sol1/sol2/sol3 are PHREEQC solution numbers, not time points or replicates**
+  unless the input defines them so. Covered by `tests/test_scenarios.py`.
+
+- **`import_mapping.py`** — flexible experimental-file import (ingest helper, no chemistry, no ML).
+  Pure functions the Data-tab lab uploader wires to widgets: `file_kind` / `list_excel_sheets` /
+  `read_tabular` read `.csv`/`.xlsx`/`.xls` (one Excel sheet at a time); `suggest_column_mapping`
+  maps uploaded headers onto the release schema (`MAPPING_TARGETS` = `EXPERIMENTAL_RELEASE_COLUMNS`
+  + optional `leachant`/`acid_M`) via **hand-written** `COLUMN_SYNONYMS` (two passes — exact name
+  wins over alias, one source column used once); `convert_concentration` / `convert_series_to_mM`
+  convert mg/L·ppm·ppb → mM reusing `calculations.ATOMIC_MASSES` (`mM = mg/L / atomic_mass`,
+  ppb = µg/L; Sc/REE stay ppb). `build_schema_frame` produces a schema-aligned frame: chemistry
+  unit-converted, `leachant`/`acid_M` filled (acid rows — `is_acid_leachant` — get `NaOH_M` blanked
+  + an `ACID_IMPORT_NOTE`, never forced into `NaOH_M`), provenance (`PROVENANCE_COLUMNS`:
+  file/sheet/row/timestamp/warning/units) and unknown columns (`extra__` prefix) appended so
+  nothing is dropped silently. `summarize_import` is the pre-save report (missing required, pH
+  outside 0–14, blank/duplicate sample_ids, no-measured-value rows, converted columns, row
+  classification pH-only/chemistry-present/incomplete). The extra columns ride through
+  `run_manager.save_lab_dataframe` (which keeps non-canonical columns after the schema), so the
+  existing pipeline is unaffected. Covered by `tests/test_import_mapping.py`.
+
+- **`dissolution_workbook.py`** — special-case parser for the Class C fly ash **dissolution
+  workbook** (ingest helper, no chemistry, no ML), an *additional* Data-tab import mode beside the
+  generic `import_mapping` one (never a replacement). The workbook is non-rectangular. The **ICP OES**
+  sheet lays unit groups out **horizontally**: a single top row holds `mg/L` and `mmol/l`, each
+  anchoring a group of condition columns (`NaOH-OA/PF/GS`); each element block (Calcium/Silicon/
+  Aluminum) then has one shared header row spanning *both* unit groups, with reaction-time rows. The
+  **pH** sheet has a `Sample | Time (min) | pH` label list (incl. HCl rows) plus a NaOH pH matrix.
+  Parsing is **marker-based**, not fixed cell coordinates (`ELEMENT_TO_COLUMN`, `_match_unit`,
+  `CONDITION_RE`, `LABEL_RE`): `_unit_column_map` assigns each column to its unit group from the
+  global unit row; `parse_icp_sheet` reads each block long, picks each cell's unit by column, and
+  **prefers `mmol/l`** (converting `mg/L`→mM via `import_mapping.convert_concentration` only as a
+  fallback); `parse_ph_sheet` reads pH from the **pH header column** (not the Time column) for
+  explicit labels, plus a NaOH pH-matrix pass for matrix-only times (e.g. 20 min). `"-"`/blank cells
+  are treated as **missing, never 0**. `normalize_dissolution_workbook` joins chemistry onto NaOH pH
+  rows by `(condition_code, time_min)`, keeps **HCl rows pH-only + acid-tagged** (`NaOH_M` blank,
+  `acid_M` set, `ACID_IMPORT_NOTE`), fills operator-supplied metadata from a `defaults` dict
+  (`DEFAULT_FILL_FIELDS`; `fly_ash_type` defaults `Class C fly ash`), and honours an `include_hcl`
+  scope. It returns `(schema_df, report)` where `report` has parse counts
+  (NaOH/HCl/with-pH/with-chem/missing-metadata), warnings (Fe/Na/K/Sc/REE absent; OA/PF/GS meanings
+  unknown; HCl ≠ NaOH PHREEQC), and `icp_debug` (per-element time×condition pivots for the app's
+  debug view, via `icp_debug_pivots`). OA/PF/GS are preserved in `sample_id`, `notes`, and an
+  `extra__condition_code` column. Reuses `import_mapping`'s leachant/provenance columns so saved rows
+  match a generic import. Validated against the real workbook layout and a synthetic fixture in
+  `tests/test_dissolution_workbook.py`; the marker constants (sheet/element/unit/condition labels)
+  are the tuning points if another workbook differs.
+
+- **`replicates.py`** — replicate-aware mapping layer (no chemistry, no ML). In this project PHREEQC
+  `sol1/sol2/sol3` are **replicate batches of one experimental condition**, not time points, so a
+  measured row is *(condition, replicate batch)* rather than a sample mapped straight to a solution
+  number. `condition_key` collapses leachant + molarity (`acid_M` for acids) + OA/PF/GS code + time +
+  L/S + CO2 + temp into one stable grouping key (e.g. `NaOH0.5M_OA_10min_LS5_open`); `replicate_id` /
+  `parse_replicate_id` read `R1/rep2/batch3` from the sample_id (`infer_replicate_ids` fills blanks by
+  order **with a warning**); `replicate_summary` reports count + mean ± std (ddof=1, NaN for a single
+  replicate) of pH/Ca/Si/Al per condition. `expand_condition_mapping` turns one `condition_key →
+  record_key` link into the per-sample map the pipeline reads (all replicates inherit it);
+  `replicate_record_key` / `expand_replicate_solution_mapping` are the optional advanced path where
+  each replicate points at its own `solN`. `condition_mean_comparison` (mean ± std vs PHREEQC,
+  `residual = mean − PHREEQC`, n<2 flag) and `individual_replicate_comparison` are the two results
+  modes. `collision_report` is replicate-aware: same-condition replicates sharing a PHREEQC scenario
+  is **expected** (not flagged); it warns only on **different** condition_keys sharing a scenario,
+  acid→NaOH mappings, and (via `scenarios._metadata_alignment`) time/condition metadata PHREEQC
+  can't confirm. Storage lives in `run_manager` (`condition_phreeqc_map.csv`,
+  `replicate_solution_map.csv`; `add_condition_mapping` / `apply_condition_mapping` expand to the
+  run's `sample_phreeqc_map.csv`). Covered by `tests/test_replicates.py`. Surfaced in the Match
+  PHREEQC tab (replicate summary + condition-level mapping + advanced replicate→solution expander +
+  replicate-aware collision warnings) and Run + Results (comparison-mode radio + condition mean±std
+  error-bar plot + individual-replicate scatter). For **presentation honesty**, `mapping_status`
+  classifies a sample→scenario link as `exact` / `scenario-level only` / `unsafe` / `needs new
+  PHREEQC simulation` (`MAPPING_STATUS_DEFINITIONS`), `overall_mapping_status` aggregates it (with
+  `all_exact`), and `conditions_needing_simulation` is the presentation table
+  (`CONDITIONS_NEEDED_COLUMNS`). The Start tab's **Presentation summary** (`_render_presentation_summary`)
+  surfaces dataset/validation/mapping counts, overall mapping + comparison status, a recommended next
+  *scientific* step, and the standing caveat that the comparison is **preliminary / a workflow check
+  unless mappings are exact**; the same valid-now / not-yet wording and status definitions appear in
+  Audit / Help, and Run + Results shows the "residual plots are a workflow check, not final
+  validation" warning whenever any mapping is not exact.
 
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
   wide-layout **guided five-tab workflow** driven by a run-management **sidebar** (run selector +
@@ -225,9 +322,14 @@ modules together and own all file I/O paths.
      missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run
      / ICP-missing / mock-data cases), and a **workflow checklist** (Data uploaded → Data checked →
      Mapping complete → Workflow run → Results available).
-  2. **Data** (`_render_data_entry_tab`) — run-type specific: lab measured-release form **plus an
-     "Upload experimental CSV"** uploader (required-column validation, replace/append, synthetic-data
-     warnings), literature CSV upload + manual rows, or synthetic/demo form — plus this run's table,
+  2. **Data** (`_render_data_entry_tab`) — run-type specific: lab measured-release form **plus a
+     two-mode "Upload experimental data file"** importer (`_lab_data_import` mode radio):
+     **Generic table** (`_generic_table_import`, `.csv`/`.xlsx`/`.xls` via `import_mapping`: raw
+     preview → Excel sheet pick → column mapping → unit conversion → leachant/provenance → pre-save
+     validation → confirm-gated replace/append) **or Class C fly ash dissolution workbook**
+     (`_dissolution_import` via `dissolution_workbook`: shared metadata defaults → NaOH-only/NaOH+HCl
+     scope → marker-based parse → normalised preview with parse counts + warnings → confirm-gated
+     save) — literature CSV upload + manual rows, or synthetic/demo form — plus this run's table,
      row deletion, CSV/pipeline export, a **basic validation summary** (error/warning counts via the
      07 validator, lab runs), and the **legacy global manual-entry form** under a "not recommended"
      expander.
