@@ -22,11 +22,28 @@ import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from ..config import RESIDUAL_ELEMENTS  # noqa: E402
+from .. import replicates  # noqa: E402  (mapping-status constants)
 
 # (measured_col, phreeqc_col, residual_col, nice label)
 _ANALYTES = [(f"{el}_mM", f"phreeqc_{el}_mM", f"residual_{el}", f"{el} (mM)")
              for el in RESIDUAL_ELEMENTS]
 _ANALYTES.append(("final_pH", "phreeqc_pH", "residual_pH", "pH"))
+
+# Marker/colour per mapping status, so a scatter visually distinguishes how trust-
+# worthy each plotted point is. Unsafe is red (only ever shown when toggled in).
+_STATUS_STYLE = {
+    replicates.MAPPING_STATUS_EXACT: {"marker": "o", "color": "#4878CF", "label": "exact"},
+    replicates.MAPPING_STATUS_SCENARIO: {"marker": "s", "color": "#EE854A",
+                                         "label": "scenario-level only"},
+    replicates.MAPPING_STATUS_UNSAFE: {"marker": "^", "color": "#D62728", "label": "unsafe"},
+    replicates.MAPPING_STATUS_NEEDS_NEW: {"marker": "x", "color": "#7F7F7F",
+                                          "label": "needs new simulation"},
+}
+_DEFAULT_STYLE = {"marker": "o", "color": "#4878CF", "label": "mapped"}
+
+
+def _style_for(status) -> dict:
+    return _STATUS_STYLE.get(status, _DEFAULT_STYLE)
 
 
 def _has_pairs(comparison: pd.DataFrame, measured_col: str, phreeqc_col: str) -> bool:
@@ -36,11 +53,54 @@ def _has_pairs(comparison: pd.DataFrame, measured_col: str, phreeqc_col: str) ->
     return bool((comparison[measured_col].notna() & comparison[phreeqc_col].notna()).any())
 
 
+def comparison_scatter_figure(plotted: pd.DataFrame, variable: str):
+    """Live measured-vs-model scatter for one variable, styled by mapping status.
+
+    ``plotted`` is the ``inclusion["plotted"]`` frame (``measured``, ``predicted``,
+    ``mapping_status``, ``sample_id``). Points are styled by status (unsafe in red),
+    with a 1:1 reference line and a status legend. Returns a matplotlib Figure for the
+    app to render; does not write to disk. The *filtering* of which rows appear here is
+    decided by :func:`compare.inclusion.comparison_inclusion`, never re-derived.
+    """
+    fig, ax = plt.subplots(figsize=(6.0, 5.0))
+    if plotted is None or plotted.empty:
+        ax.text(0.5, 0.5, "No rows plotted for this variable.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    for status, grp in plotted.groupby("mapping_status"):
+        style = _style_for(status)
+        ax.scatter(grp["predicted"], grp["measured"], marker=style["marker"],
+                   color=style["color"], edgecolor="black", linewidth=0.4,
+                   label=style["label"], zorder=3)
+
+    both = pd.concat([plotted["measured"], plotted["predicted"]]).dropna()
+    if not both.empty:
+        lo, hi = float(both.min()), float(both.max())
+        pad = (hi - lo) * 0.05 or 1.0
+        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad],
+                color="grey", linestyle="--", linewidth=1, label="1:1")
+    ax.set_xlabel(f"model (PHREEQC) {variable}")
+    ax.set_ylabel(f"measured {variable}")
+    ax.set_title(f"{variable} — measured vs model")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, title="mapping status")
+    fig.tight_layout()
+    return fig
+
+
 def make_comparison_plots(
     comparison: pd.DataFrame,
     figures_dir: str | Path,
+    statuses: dict | None = None,
 ) -> list[Path]:
-    """Create measured-vs-PHREEQC figures. Returns [] if nothing is plottable."""
+    """Create measured-vs-PHREEQC figures. Returns [] if nothing is plottable.
+
+    ``statuses`` (optional) maps ``sample_id -> mapping_status``; when given, the
+    scatter points are styled/coloured by status with a status legend (exact vs
+    scenario-level vs unsafe). When omitted the plots look exactly as before, so the
+    ``scripts/05`` CLI path is unchanged.
+    """
     figures_dir = Path(figures_dir)
     written: list[Path] = []
 
@@ -55,6 +115,9 @@ def make_comparison_plots(
 
     figures_dir.mkdir(parents=True, exist_ok=True)
     labels = comparison.get("sample_id", pd.Series(range(len(comparison)))).astype(str)
+    # Per-row status (aligned to comparison rows) when a status map is supplied.
+    row_status = ([statuses.get(s) for s in labels.tolist()]
+                  if statuses else [None] * len(labels))
 
     # --- 1) Scatter measured vs PHREEQC, with 1:1 line -------------------- #
     n = len(plottable)
@@ -65,7 +128,17 @@ def make_comparison_plots(
         ax = axes[idx // ncols][idx % ncols]
         m = comparison[mcol].astype(float)
         p = comparison[pcol].astype(float)
-        ax.scatter(p, m, color="#4878CF", edgecolor="black", linewidth=0.4, zorder=3)
+        if statuses:
+            seen: set = set()
+            for status in dict.fromkeys(row_status):  # stable unique order
+                mask = [rs == status for rs in row_status]
+                style = _style_for(status)
+                lab = style["label"] if style["label"] not in seen else None
+                seen.add(style["label"])
+                ax.scatter(p[mask], m[mask], marker=style["marker"], color=style["color"],
+                           edgecolor="black", linewidth=0.4, label=lab, zorder=3)
+        else:
+            ax.scatter(p, m, color="#4878CF", edgecolor="black", linewidth=0.4, zorder=3)
         # 1:1 reference line spanning the data range.
         both = pd.concat([m, p]).dropna()
         if not both.empty:

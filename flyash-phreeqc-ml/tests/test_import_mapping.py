@@ -223,3 +223,39 @@ def test_summarize_import_counts_rows_with_no_measured_values():
     report = im.summarize_import(out)
     assert report["rows_no_measured_values"] == 1
     assert report["classifications"].get("incomplete") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Legacy CO2 vocabulary migration (cup covers)
+# --------------------------------------------------------------------------- #
+def test_legacy_co2_open_maps_to_oa():
+    raw = pd.DataFrame({"sample_id": ["S1"], "CO2": ["open"]})
+    out = im.build_schema_frame(
+        raw, {"sample_id": "sample_id", "CO2_condition": "CO2"}, {},
+        import_timestamp="2026-06-08T00:00:00",
+    )
+    assert out.loc[0, "CO2_condition"] == "OA"
+    assert im.CO2_OPEN_TO_OA_NOTE in out.loc[0, "import_warning"]
+
+
+def test_legacy_co2_sealed_is_flagged_not_mapped():
+    # 'sealed' is ambiguous (PF vs GS unknown): never auto-mapped — left as-is + flagged.
+    raw = pd.DataFrame({"sample_id": ["S1"], "CO2": ["sealed"]})
+    out = im.build_schema_frame(
+        raw, {"sample_id": "sample_id", "CO2_condition": "CO2"}, {},
+        import_timestamp="2026-06-08T00:00:00",
+    )
+    assert out.loc[0, "CO2_condition"] == "sealed"        # not silently mapped to PF/GS
+    assert im.CO2_SEALED_AMBIGUOUS_NOTE in out.loc[0, "import_warning"]
+    report = im.summarize_import(out)
+    assert report["co2_unresolved"] == 1                  # surfaced for the user to resolve
+
+
+def test_cup_cover_co2_values_pass_through():
+    raw = pd.DataFrame({"sample_id": ["S1", "S2"], "CO2": ["PF", "GS"]})
+    out = im.build_schema_frame(
+        raw, {"sample_id": "sample_id", "CO2_condition": "CO2"}, {},
+        import_timestamp="2026-06-08T00:00:00",
+    )
+    assert list(out["CO2_condition"]) == ["PF", "GS"]
+    assert im.summarize_import(out)["co2_unresolved"] == 0

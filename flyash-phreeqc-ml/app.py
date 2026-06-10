@@ -32,6 +32,8 @@ from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
 from flyash_phreeqc_ml import import_mapping  # noqa: E402
+from flyash_phreeqc_ml import mapping_table  # noqa: E402
+from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
@@ -40,6 +42,14 @@ from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
     load_experimental_release,
 )
+from flyash_phreeqc_ml.compare import comparison_inclusion  # noqa: E402
+from flyash_phreeqc_ml.compare import inclusion as compare_inclusion  # noqa: E402
+from flyash_phreeqc_ml.viz import compare_plots  # noqa: E402
+from flyash_phreeqc_ml.viz import measured_overview  # noqa: E402
+
+# Active model profile — its display name drives generic UI strings ("needs new
+# {MODEL_NAME} simulation"). PHREEQC for this project; swappable via ModelProfile.
+MODEL_NAME = profiles.PHREEQC_PROFILE.name
 
 # The form appends here. Kept out of git (see .gitignore) so manually-entered
 # measured data is never committed by accident.
@@ -63,10 +73,13 @@ _YESNO_OPTIONS = ["", "yes", "no"]
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _run_script(relative_path: str) -> subprocess.CompletedProcess:
-    """Run a project script with the current interpreter, capturing output."""
+def _run_script(relative_path: str, *args: str) -> subprocess.CompletedProcess:
+    """Run a project script with the current interpreter, capturing output.
+
+    Extra ``*args`` are passed through on the command line (e.g. ``--run NAME``).
+    """
     return subprocess.run(
-        [sys.executable, relative_path],
+        [sys.executable, relative_path, *args],
         cwd=str(_PROJECT_ROOT),
         capture_output=True,
         text=True,
@@ -670,23 +683,26 @@ def _run_lab_workflow(run_name: str) -> None:
         st.success(f"Sample→PHREEQC mapping exported to `{map_dest.relative_to(_PROJECT_ROOT)}`.")
     else:
         st.warning(
-            "No sample-to-PHREEQC mapping found. The workflow can still run, but "
-            "measured-vs-PHREEQC residuals will not be calculated. Add a mapping in "
+            "No measured-data → model mapping found. The workflow can still run, but "
+            "measured-vs-model residuals will not be calculated. Add a mapping in "
             "the **Match PHREEQC** tab."
         )
 
-    # Steps 2..N — run each script, halting on the first failure.
+    # Steps 2..N — run each script, halting on the first failure. The comparison
+    # step gets ``--run`` so it also writes this run's own outputs + provenance
+    # stamp under experiments/<run>/outputs/ (what the Results tab reads).
     steps = [
-        ("Phase 1 pipeline", "scripts/run_phase1.py"),
-        ("Validate experimental data", "scripts/07_validate_experimental_data.py"),
-        ("Compare measured vs PHREEQC", "scripts/05_compare_experimental.py"),
-        ("Sustainability score", "scripts/08_sustainability_score.py"),
+        ("Phase 1 pipeline", "scripts/run_phase1.py", ()),
+        ("Validate experimental data", "scripts/07_validate_experimental_data.py", ()),
+        ("Compare measured vs PHREEQC", "scripts/05_compare_experimental.py",
+         ("--run", run_name)),
+        ("Sustainability score", "scripts/08_sustainability_score.py", ()),
     ]
-    for i, (label, script) in enumerate(steps, start=2):
+    for i, (label, script, args) in enumerate(steps, start=2):
         st.markdown(f"**Step {i} — {label}**")
-        st.code(f"python {script}", language="bash")
+        st.code(" ".join(["python", script, *args]), language="bash")
         with st.spinner(f"Running {label}…"):
-            proc = _run_script(script)
+            proc = _run_script(script, *args)
         _show_process_result(label, proc)
         if proc.returncode != 0:
             st.error(f"⛔ Workflow stopped at step {i} ({label}) — see stderr above.")
@@ -695,6 +711,8 @@ def _run_lab_workflow(run_name: str) -> None:
     st.success("✅ Workflow complete — all steps succeeded.")
     st.info(
         "Outputs written to:\n"
+        f"- `experiments/{run_manager.safe_run_name(run_name)}/outputs/` — this run's "
+        "comparison + figures (provenance-stamped)\n"
         "- `data/processed/` — parsed tables, master dataset, comparison\n"
         "- `outputs/tables/` — validation report, sustainability score\n"
         "- `reports/figures/` — plots"
@@ -711,19 +729,19 @@ def _render_mapping_quality(mapping: pd.DataFrame) -> None:
     st.markdown("**Mapping quality**")
     m1, m2 = st.columns(2)
     m1.metric("Mapped samples", summary["n_samples"])
-    m2.metric("Unique PHREEQC rows used", summary["n_unique_rows"])
+    m2.metric("Unique model results used", summary["n_unique_rows"])
 
     if summary["samples_per_row"]:
         per_row = pd.DataFrame(
-            [{"phreeqc_record_key": k, "samples_mapped": v}
+            [{"model_result": k, "samples_mapped": v}
              for k, v in summary["samples_per_row"].items()]
         )
-        st.caption("Samples per PHREEQC row:")
+        st.caption("Samples per model result:")
         st.dataframe(per_row, use_container_width=True, height=170)
 
     if summary["has_collisions"]:
         st.warning(
-            "Multiple samples are mapped to the same PHREEQC row. Scatter plots may "
+            "Multiple samples are mapped to the same model result. Scatter plots may "
             "appear as vertical lines because the model prediction is identical for "
             "those samples.\n\n"
             "Your graph may form a vertical line because several samples share the "
@@ -731,7 +749,7 @@ def _render_mapping_quality(mapping: pd.DataFrame) -> None:
         )
     if summary["n_samples"] > summary["n_unique_rows"]:
         st.warning(
-            "There are more samples than distinct PHREEQC rows, so the comparison may "
+            "There are more samples than distinct model results, so the comparison may "
             "not represent distinct model conditions."
         )
 
@@ -798,7 +816,6 @@ def _render_scenario_explorer(run_name: str, manifest: pd.DataFrame) -> None:
         "explicitly defines them that way. **In this project, sol1/sol2/sol3 should be treated "
         "as replicate/batch outputs for the same broad scenario, not as 10/20/60 min time points.**"
     )
-    st.caption("ℹ️ " + _OA_PF_GS_CAVEAT)
     descriptions = scenarios.load_solution_descriptions()
     with st.expander("What do sol1 / sol2 / sol3 represent? (from the PHREEQC input files)"):
         if descriptions.empty:
@@ -838,13 +855,16 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
     exp_code = scenarios.sample_condition_code(sample)
     if exp_code:
         meta["condition_code"] = exp_code
+        meta["cover_condition"] = scenarios.cover_condition(exp_code) or ""
+        meta["CO2_exposure_level"] = scenarios.co2_exposure_level(exp_code) or ""
     if meta:
-        st.markdown("**Experimental metadata (known):**")
+        st.markdown("**Measured metadata (known):**")
         st.dataframe(pd.DataFrame([meta]), use_container_width=True, height=80)
         st.caption(
-            "PHREEQC scenarios know L/S, CO2, state, solution number and predicted "
-            "pH/Ca/Si/Al — but **not** experimental `time_min`, OA/PF/GS `condition_code` "
-            "or `NaOH_M`, so an exact time/condition match can't be confirmed (see notes below)."
+            "The model (currently PHREEQC) knows L/S, CO2, state, solution number and "
+            "predicted pH/Ca/Si/Al — but often **not** fine-grained measured metadata such "
+            "as exact time, condition code, or concentration, so an exact match can't always "
+            "be confirmed (see notes below)."
         )
 
     if manifest.empty:
@@ -892,20 +912,25 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
 
 
 def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
-                       manifest: pd.DataFrame) -> None:
-    """Conditions (and samples) that would need a fresh PHREEQC simulation."""
-    cond_map = run_manager.read_condition_mapping(run_name)
-    conditions = replicates.conditions_needing_simulation(data, cond_map, manifest)
-    st.markdown("#### Conditions needing new PHREEQC simulations")
-    if conditions.empty:
-        st.success("Every experimental condition maps exactly to a PHREEQC scenario.")
+                       manifest: pd.DataFrame, table: pd.DataFrame) -> None:
+    """Conditions whose best candidate is *needs new simulation*.
+
+    Driven from the **same** suggestion ``table`` shown above, so the count here
+    always agrees with the table's status column.
+    """
+    st.markdown(f"#### Conditions needing new {MODEL_NAME} simulations")
+    needs_new = mapping_table.needs_new_simulation(table)
+    st.caption(
+        "Conditions with no usable model/simulation candidate (status **needs new "
+        f"simulation** in the suggestion table). Generate matching {MODEL_NAME} scenarios for "
+        "these. Conditions that are *scenario-level only* or *unsafe* appear in the table "
+        "above with that status, not here."
+    )
+    if needs_new.empty:
+        st.success("Every measured condition has at least one candidate model scenario.")
     else:
-        st.caption(
-            "Conditions whose mapping is missing, unsafe, or only scenario-level (PHREEQC "
-            "lacks exact time / OA-PF-GS / NaOH_M). Generate matching PHREEQC scenarios to "
-            "make these exact."
-        )
-        st.dataframe(conditions, use_container_width=True, height=240)
+        st.dataframe(needs_new[["condition_key", "n_replicates", "confidence", "reason"]],
+                     use_container_width=True, height=240)
 
     # Keep the older per-sample view available but out of the way.
     with st.expander("Per-sample detail (no mapping / low confidence / collisions)"):
@@ -993,17 +1018,401 @@ def _scenario_record_key_picker(run_name: str, manifest: pd.DataFrame, key: str)
         r["phreeqc_record_key"]: f"{r.get('scenario_label', '')}  ·  {r['phreeqc_record_key']}"
         for _, r in view.iterrows()
     }
-    return st.selectbox("PHREEQC scenario", keys, format_func=lambda k: labels.get(k, k), key=key)
+    return st.selectbox("Model / simulation result", keys,
+                        format_func=lambda k: labels.get(k, k), key=key,
+                        help="Currently PHREEQC scenario rows. Each label includes its "
+                             "PHREEQC file/source and solution number.")
+
+
+# Status → (emoji, Streamlit alert level) for the simple mapping-status line.
+_MAPPING_STATUS_BADGE = {
+    replicates.MAPPING_STATUS_EXACT: ("✅", "success"),
+    replicates.MAPPING_STATUS_SCENARIO: ("🟡", "warning"),
+    replicates.MAPPING_STATUS_UNSAFE: ("🔴", "error"),
+    replicates.MAPPING_STATUS_NEEDS_NEW: ("⚠️", "warning"),
+}
+
+
+def _manifest_row(manifest: pd.DataFrame, record_key: str | None) -> dict | None:
+    """The manifest row for a PHREEQC ``record_key`` as a dict (or ``None``)."""
+    if not record_key or manifest.empty or "phreeqc_record_key" not in manifest.columns:
+        return None
+    hit = manifest[manifest["phreeqc_record_key"].astype(str) == str(record_key)]
+    return hit.iloc[0].to_dict() if not hit.empty else None
+
+
+def _condition_representative_sample(data: pd.DataFrame, condition_key: str) -> dict:
+    """First measured row belonging to ``condition_key`` (for metadata/status)."""
+    ann = replicates.annotate(data)
+    sub = ann[ann[replicates.CONDITION_KEY_COLUMN].astype(str) == str(condition_key)]
+    return sub.iloc[0].to_dict() if not sub.empty else {}
+
+
+# Project-specific (fly ash) explanation — only shown when the dataset actually
+# uses OA/PF/GS condition codes, so the app stays generic for other experiments.
+def _condition_code_descriptions_md(codes) -> str:
+    """Markdown describing the given condition codes, sourced from the config dict.
+
+    ``config.CONDITION_CODE_DESCRIPTIONS`` is the single source of truth — the UI
+    never hard-codes the wording or the not-confirmed-sealed caution.
+    """
+    lines = []
+    for code in sorted(codes):
+        info = config.CONDITION_CODE_DESCRIPTIONS.get(str(code).strip().upper())
+        if not info:
+            continue
+        caution = f" — ⚠️ {info['caution']}" if info.get("caution") else ""
+        lines.append(f"- **{code} = {info['label']}**: {info['description']}{caution}")
+    return "\n".join(lines)
+
+
+def _dataset_condition_codes(data: pd.DataFrame) -> set[str]:
+    """OA/PF/GS codes actually present in this run's measured rows (may be empty)."""
+    codes: set[str] = set()
+    if data is None or data.empty:
+        return codes
+    for _, r in data.iterrows():
+        code = scenarios.sample_condition_code(r.to_dict())
+        if code:
+            codes.add(code)
+    return codes
+
+
+def _render_condition_code_help(data: pd.DataFrame) -> None:
+    """Show the cup-cover condition descriptions *only* if this dataset uses the codes."""
+    codes = _dataset_condition_codes(data)
+    if not codes:
+        return
+    with st.expander(f"What do the condition codes ({', '.join(sorted(codes))}) mean? (this dataset)"):
+        st.markdown(_condition_code_descriptions_md(codes))
+        st.caption("CO₂-exposure cup covers. Source: config.CONDITION_CODE_DESCRIPTIONS.")
+
+
+def _render_mapping_status_line(sample: dict, scenario: dict | None) -> str:
+    """Show the four-state mapping status as a compact, color-coded line."""
+    status = replicates.mapping_status(sample, scenario)
+    emoji, _ = _MAPPING_STATUS_BADGE.get(status, ("•", "info"))
+    st.markdown(f"**Mapping status:** {emoji} {status}")
+    st.caption(replicates.MAPPING_STATUS_DEFINITIONS.get(status, ""))
+    return status
+
+
+# Generic validation-metadata columns surfaced when present (project-agnostic).
+_GENERIC_META_FIELDS = [
+    "leachant", "acid_M", "NaOH_M", "time_min", "liquid_solid_ratio",
+    "temperature_C", "CO2_condition",
+]
+
+
+def _is_present(v) -> bool:
+    """True if a cell value is a real, non-blank entry."""
+    return v not in (None, "") and str(v).strip().lower() != "nan"
+
+
+def _render_advanced_validation_metadata(sample: dict, scenario: dict | None) -> None:
+    """Expander body — measured-side metadata (dynamic) + model-side PHREEQC metadata.
+
+    Metadata is never discarded (it stays on every saved row); this view only
+    *surfaces* whatever columns the current dataset actually has, so the app does
+    not assume every experiment carries OA/PF/GS, CO₂ cover, or leachant fields.
+    """
+    # --- Measured-side metadata, shown dynamically ---
+    derived: dict = {}
+    exp_code = scenarios.sample_condition_code(sample)
+    if exp_code:  # project-specific (fly ash) derived fields, only when codes exist
+        derived["condition_code"] = exp_code
+        derived["cover_condition"] = scenarios.cover_condition(exp_code) or "—"
+        derived["CO2_exposure_level"] = scenarios.co2_exposure_level(exp_code) or "—"
+    for f in _GENERIC_META_FIELDS:
+        if _is_present(sample.get(f)):
+            derived[f] = sample.get(f)
+    # any other non-canonical metadata the importer preserved (extra__* columns)
+    for k, v in sample.items():
+        if str(k).startswith("extra__") and _is_present(v) and k not in (
+                "extra__condition_code", "extra__cover_condition", "extra__CO2_exposure_level"):
+            derived[k] = v
+
+    if exp_code:
+        st.caption(
+            "Condition codes, cover type and CO₂ exposure are **auto-derived** from the "
+            "sample/condition name for this dataset — no manual selection needed."
+        )
+    else:
+        st.caption("Validation metadata available for this dataset (varies by experiment).")
+    if derived:
+        st.dataframe(pd.DataFrame([derived]), use_container_width=True, height=80)
+    else:
+        st.info("No extra validation metadata columns found for this record.")
+    # Cup-cover description + not-confirmed-sealed caution, from config (single source).
+    if exp_code and str(exp_code).upper() in config.CONDITION_CODE_DESCRIPTIONS:
+        st.markdown(_condition_code_descriptions_md({exp_code}))
+
+    if not scenario:
+        st.info("Pick a model / simulation result above to see matched / missing / conflicting fields.")
+        return
+
+    # --- Model-side metadata (currently PHREEQC) ---
+    st.markdown("**Model prediction source (PHREEQC)**")
+    pheq_source = {
+        "file/source": scenario.get("source_file", "—"),
+        "solution number": scenario.get("solution_number", "—"),
+        "state": scenario.get("state", "—"),
+        "scenario": scenario.get("scenario_label", "—"),
+    }
+    st.dataframe(pd.DataFrame([pheq_source]), use_container_width=True, height=80)
+
+    pheq_fields = ["liquid_solid_ratio", "CO2_condition", "time_min",
+                   "condition_code", "NaOH_M", "temperature_C"]
+    avail = {f: ("present" if _is_present(scenario.get(f)) else "not specified")
+             for f in pheq_fields}
+    st.markdown("**Model metadata availability**")
+    st.dataframe(pd.DataFrame([avail]), use_container_width=True, height=80)
+
+    score = scenarios.score_scenario(sample, scenario)
+    st.markdown(
+        f"- **Matched fields:** {', '.join(score['matched_fields']) or '—'}\n"
+        f"- **Missing model fields:** {', '.join(score.get('phreeqc_missing', [])) or '—'}\n"
+        f"- **Conflicting fields:** {', '.join(score['mismatched_fields']) or '—'}"
+    )
+    for note in score.get("metadata_notes", []):
+        st.caption("ℹ️ " + note)
+
+
+# Status → a badged display string for the table's status column / detail headers.
+def _status_badge(status: str) -> str:
+    emoji = _MAPPING_STATUS_BADGE.get(status, ("•", "info"))[0]
+    return f"{emoji} {status}"
+
+
+def _map_flash(run_name: str, level: str, msg: str) -> None:
+    """Queue a message that should survive the post-accept rerun (shown atop the table)."""
+    st.session_state.setdefault(f"map_flash_{run_name}", []).append((level, msg))
+
+
+def _render_map_flash(run_name: str) -> None:
+    for level, msg in st.session_state.pop(f"map_flash_{run_name}", []):
+        getattr(st, level, st.info)(msg)
+
+
+# Metadata fields compared side-by-side in the row-detail alignment table.
+_ALIGNMENT_FIELDS = ["liquid_solid_ratio", "CO2_condition", "temperature_C",
+                     "time_min", "NaOH_M"]
+
+
+def _fmt_meta(value) -> str:
+    return str(value) if _is_present(value) else "—"
+
+
+def _alignment_value_table(sample: dict, scenario: dict) -> pd.DataFrame:
+    """Measured vs model values for each comparison field (both sides, with values)."""
+    rows = [{"field": f, "measured": _fmt_meta(sample.get(f)),
+             "model (PHREEQC)": _fmt_meta(scenario.get(f))} for f in _ALIGNMENT_FIELDS]
+    rows.append({
+        "field": "condition_code",
+        "measured": scenarios.sample_condition_code(sample) or "—",
+        "model (PHREEQC)": _fmt_meta(scenario.get("condition_code")),
+    })
+    return pd.DataFrame(rows)
+
+
+def _accept_condition_mappings(run_name: str, rows: list[dict], *,
+                               override: bool = False) -> int:
+    """Save the chosen suggestion rows as condition mappings, then apply to per-sample.
+
+    Each row needs a ``condition_key`` + ``phreeqc_record_key``. ``override=True`` tags
+    the saved mapping (used for the confirmed unsafe manual-override path). Replicates
+    inherit the link via :func:`run_manager.apply_condition_mapping`.
+    """
+    accepted = 0
+    for row in rows:
+        ck = str(row.get("condition_key", "")).strip()
+        key = str(row.get("phreeqc_record_key", "")).strip()
+        if not ck or not key:
+            continue
+        status = row.get("mapping_status", "")
+        note = (f"override of {status} mapping" if override
+                else f"accepted from suggestion table ({status})")
+        try:
+            run_manager.add_condition_mapping(run_name, ck, key, notes=note, override=override)
+            accepted += 1
+        except run_manager.RunManagerError as exc:
+            st.error(f"{ck}: {exc}")
+    if accepted:
+        try:
+            run_manager.apply_condition_mapping(run_name)
+        except run_manager.RunManagerError as exc:
+            st.error(str(exc))
+    return accepted
+
+
+# Columns shown in the editable suggestion table (status is badged for display).
+_SUGGESTION_DISPLAY_COLUMNS = [
+    "accept", "condition_key", "n_replicates", "scenario_label",
+    "phreeqc_record_key", "status", "score", "confidence", "already_mapped", "reason",
+]
+
+
+def _runner_up_delta(best_score: int, candidate: dict) -> str:
+    """One-line 'lost N points: …' for a runner-up, generated from its trace."""
+    lost = int(best_score) - int(candidate.get("score") or 0)
+    # Prefer the explicit conflicts; fall back to the model-missing metadata.
+    why = list(candidate.get("mismatched_fields") or [])
+    if not why:
+        why = [f"model lacks {m}" for m in candidate.get("phreeqc_missing", [])]
+    detail = "; ".join(why) if why else "lower-scoring metadata match"
+    if lost <= 0:
+        return f"tied with best · {detail}"
+    return f"lost {lost} point(s) vs best: {detail}"
+
+
+def _render_condition_detail(run_name: str, data: pd.DataFrame, manifest: pd.DataFrame,
+                             condition_key: str) -> None:
+    """Row-level detail: structured alignment + runner-up candidates + score breakdown."""
+    sample, candidates = mapping_table.condition_candidates(data, condition_key, manifest, top_n=3)
+    # Cup-cover condition description (with the not-confirmed-sealed caution), from
+    # config — shown only when this condition actually carries an OA/PF/GS code.
+    _det_code = scenarios.sample_condition_code(sample)
+    if _det_code and str(_det_code).upper() in config.CONDITION_CODE_DESCRIPTIONS:
+        st.caption(_condition_code_descriptions_md({_det_code}))
+    if not candidates:
+        st.info("No model/simulation candidate exists for this condition — it needs a new simulation.")
+        return
+    best_score = candidates[0].get("score") or 0
+    for i, c in enumerate(candidates):
+        scenario = mapping_table._manifest_row(manifest, c["suggested_phreeqc_record_key"])
+        status = replicates.mapping_status(sample, scenario)
+        header = "Best candidate" if i == 0 else f"Runner-up {i}"
+        with st.container(border=True):
+            st.markdown(
+                f"**{header}: {c.get('scenario_label', '') or '—'}**  ·  score "
+                f"{c['score']}  ·  {c['confidence']} confidence  ·  {_status_badge(status)}"
+            )
+            st.caption(f"`{c['suggested_phreeqc_record_key']}`")
+            # Runner-up one-line delta vs the best candidate (generated from the trace).
+            if i > 0:
+                st.caption("↳ " + _runner_up_delta(best_score, c))
+            if c.get("confidence_explanation"):
+                st.caption(f"Confidence: {c['confidence_explanation']}")
+
+            st.caption("Field alignment (measured vs model, with values):")
+            st.dataframe(_alignment_value_table(sample, scenario or {}),
+                         use_container_width=True, hide_index=True, height=250)
+            st.markdown(
+                f"- **Matched:** {', '.join(c['matched_fields']) or '—'}\n"
+                f"- **Missing model fields:** {', '.join(c.get('phreeqc_missing', [])) or '—'}\n"
+                f"- **Conflicting (both values):** {', '.join(c['mismatched_fields']) or '—'}"
+            )
+            breakdown = c.get("score_breakdown", [])
+            if breakdown:
+                st.caption("Score breakdown (which rule added/subtracted points):")
+                st.dataframe(pd.DataFrame(breakdown), use_container_width=True,
+                             hide_index=True, height=min(40 + 35 * len(breakdown), 220))
+            for note in c.get("metadata_notes", []):
+                st.caption("ℹ️ " + note)
+
+
+def _render_suggestion_table(run_name: str, data: pd.DataFrame, manifest: pd.DataFrame,
+                             table: pd.DataFrame) -> None:
+    """Automatic-first suggestion table (no button) + review detail + accept actions."""
+    _render_map_flash(run_name)
+    st.markdown("#### Suggested mappings")
+    st.caption(
+        "One row per measured condition, generated automatically with transparent "
+        "rule-based scoring (no ML). Replicates of a condition are mapped together. "
+        "Tick **accept** then **Accept selected**; **Accept all exact** bulk-accepts only "
+        "exact matches. Unsafe rows cannot be accepted here — use Manual override below."
+    )
+    if table.empty:
+        st.info("No measured data groups to map yet.")
+        return
+
+    EXACT = replicates.MAPPING_STATUS_EXACT
+    UNSAFE = replicates.MAPPING_STATUS_UNSAFE
+    NEEDS_NEW = replicates.MAPPING_STATUS_NEEDS_NEW
+
+    disp = table.copy()
+    # Pre-tick exact, not-yet-mapped rows; never pre-tick unsafe/needs-new.
+    disp.insert(0, "accept", [
+        (r["mapping_status"] == EXACT and not bool(r["already_mapped"]))
+        for _, r in disp.iterrows()
+    ])
+    disp["status"] = disp["mapping_status"].map(_status_badge)
+    edited = st.data_editor(
+        disp[_SUGGESTION_DISPLAY_COLUMNS],
+        column_config={
+            "accept": st.column_config.CheckboxColumn("accept", help="Tick to accept this mapping"),
+            "reason": st.column_config.TextColumn("reason", width="large"),
+        },
+        disabled=[c for c in _SUGGESTION_DISPLAY_COLUMNS if c != "accept"],
+        hide_index=True, use_container_width=True, height=320,
+        key=f"sug_editor_{run_name}",
+    )
+
+    # Re-attach the raw status to each row (the editor only edits `accept`).
+    records = table.to_dict("records")
+    for rec, acc in zip(records, edited["accept"].tolist()):
+        rec["accept"] = bool(acc)
+
+    a1, a2, a3 = st.columns(3)
+    if a1.button("✅ Accept all exact suggestions", key=f"acc_exact_{run_name}"):
+        rows = mapping_table.exact_suggestions(table).to_dict("records")
+        n = _accept_condition_mappings(run_name, rows)
+        _map_flash(run_name, "success", f"Accepted {n} exact mapping(s).")
+        _read_csv.clear()
+        st.rerun()
+    if a2.button("✅ Accept selected", key=f"acc_sel_{run_name}"):
+        selected = [r for r in records if r["accept"]]
+        acceptable = [r for r in selected
+                      if r["mapping_status"] in mapping_table.SELECTABLE_STATUSES
+                      and str(r["phreeqc_record_key"]).strip()]
+        unsafe_sel = [r for r in selected if r["mapping_status"] == UNSAFE]
+        new_sel = [r for r in selected if r["mapping_status"] == NEEDS_NEW]
+        n = _accept_condition_mappings(run_name, acceptable)
+        _map_flash(run_name, "success", f"Accepted {n} selected mapping(s).")
+        if any(r["mapping_status"] == replicates.MAPPING_STATUS_SCENARIO for r in acceptable):
+            _map_flash(run_name, "info",
+                       "Some accepted mappings are **scenario-level only** — comparison graphs "
+                       "for them are a preliminary / workflow check, not final validation.")
+        if unsafe_sel:
+            _map_flash(run_name, "error",
+                       f"{len(unsafe_sel)} **unsafe** row(s) were NOT accepted. Unsafe mappings "
+                       "(e.g. acid leachant on a NaOH/CO₂ scenario) can only be saved via "
+                       "**Manual override / advanced mapping**, where a confirmation is required "
+                       "and the mapping is tagged `override=true`.")
+        if new_sel:
+            _map_flash(run_name, "warning",
+                       f"{len(new_sel)} row(s) are **needs new simulation** — no candidate to accept.")
+        _read_csv.clear()
+        st.rerun()
+    if a3.button("➡️ Export mapping to pipeline", key=f"exp_sug_{run_name}"):
+        try:
+            dest = run_manager.export_mapping_to_pipeline(run_name)
+            _map_flash(run_name, "success",
+                       f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 reads it.")
+            _read_csv.clear()
+        except run_manager.RunManagerError as exc:
+            _map_flash(run_name, "error", str(exc))
+        st.rerun()
+
+    st.markdown("**Inspect a condition** — alignment, runner-up candidates & score breakdown")
+    sel = st.selectbox("Condition to inspect", table["condition_key"].astype(str).tolist(),
+                       key=f"detail_sel_{run_name}")
+    _render_condition_detail(run_name, data, manifest, sel)
+
+
+def _render_saved_condition_mappings(run_name: str) -> None:
+    """Review of accepted/saved condition mappings (+ advanced apply/delete)."""
+    cond_map = run_manager.read_condition_mapping(run_name)
+    st.markdown(f"**Accepted / saved mappings** ({len(cond_map)})")
+    if cond_map.empty:
+        st.caption("No mappings accepted yet — use auto-suggest above, or manual override below.")
+        return
+    st.dataframe(cond_map, use_container_width=True, height=150)
+    _render_condition_mapping_advanced(run_name, cond_map)
 
 
 def _render_condition_mapping(run_name: str, data: pd.DataFrame, manifest: pd.DataFrame) -> None:
-    """Feature 3/4 — map a whole condition to a PHREEQC scenario (replicates inherit)."""
-    st.markdown("#### Condition-level mapping (recommended)")
-    st.caption(
-        "Map a whole **experimental condition** (all its replicate batches) to one PHREEQC "
-        "scenario, instead of mapping each sample_id. Every replicate inherits the mapping, "
-        "then **Apply** writes the per-sample map the comparison step reads."
-    )
+    """Manual override view: condition + scenario + status + notes + save/apply."""
     summary = replicates.replicate_summary(data)
     if summary.empty:
         st.info("No conditions to map yet — enter data first.")
@@ -1012,54 +1421,95 @@ def _render_condition_mapping(run_name: str, data: pd.DataFrame, manifest: pd.Da
     condition_keys = summary["condition_key"].tolist()
     c1, c2 = st.columns([2, 3])
     with c1:
-        sel_condition = st.selectbox("condition_key", condition_keys, key=f"cond_sel_{run_name}")
+        sel_condition = st.selectbox("Measured data group", condition_keys,
+                                     key=f"cond_sel_{run_name}",
+                                     help="A group of measured records sharing one experimental "
+                                          "condition (its replicates are mapped together).")
     with c2:
         chosen_key = _scenario_record_key_picker(run_name, manifest, key=f"cond_scn_{run_name}")
 
-    if st.button("Map this condition → scenario", key=f"cond_map_{run_name}", type="primary"):
+    sample = _condition_representative_sample(data, sel_condition)
+    scenario = _manifest_row(manifest, chosen_key)
+    status = _render_mapping_status_line(sample, scenario)
+
+    notes = st.text_input(
+        "Notes (optional)", key=f"cond_notes_{run_name}",
+        help="Free-text validation context. Stored with the mapping; never sent to "
+             "the comparison step.",
+    )
+
+    # Unsafe mappings can ONLY be saved here, and only with explicit confirmation;
+    # the saved mapping is tagged override=true in the condition-mapping CSV.
+    is_unsafe = (status == replicates.MAPPING_STATUS_UNSAFE)
+    override_confirm = False
+    if is_unsafe:
+        st.error(
+            "This mapping is **unsafe** — a known metadata conflict (e.g. an acid leachant "
+            "mapped to a NaOH/CO₂ scenario, or opposite CO₂ families). It cannot be accepted "
+            "from the suggestion table; saving it here records `override=true`."
+        )
+        override_confirm = st.checkbox(
+            "I understand this mapping is unsafe and want to override and save it anyway.",
+            key=f"cond_override_{run_name}",
+        )
+
+    if st.button("Save mapping", key=f"cond_map_{run_name}", type="primary"):
         if not chosen_key:
-            st.warning("Pick a PHREEQC scenario first.")
+            st.warning("Pick a model / simulation result first.")
+        elif is_unsafe and not override_confirm:
+            st.warning("Tick the override confirmation to save an unsafe mapping.")
         else:
             try:
-                run_manager.add_condition_mapping(run_name, sel_condition, chosen_key)
-                st.success(f"Mapped condition `{sel_condition}` → `{chosen_key}`.")
+                run_manager.add_condition_mapping(
+                    run_name, sel_condition, chosen_key, notes=notes, override=is_unsafe)
+                run_manager.apply_condition_mapping(run_name)
+                n = len(run_manager.read_mapping(run_name))
+                st.success(
+                    f"Saved & applied — condition `{sel_condition}` → `{chosen_key}` "
+                    f"({n} sample row(s) mapped)."
+                    + (" Tagged `override=true`." if is_unsafe else "")
+                )
+                if status != replicates.MAPPING_STATUS_EXACT:
+                    st.info(
+                        "This mapping is not *exact*, so any comparison graph is a "
+                        "**preliminary / workflow check only**."
+                    )
                 _read_csv.clear()
                 st.rerun()
             except run_manager.RunManagerError as exc:
                 st.error(str(exc))
 
-    cond_map = run_manager.read_condition_mapping(run_name)
-    if not cond_map.empty:
-        st.markdown(f"**Condition mappings** ({len(cond_map)}):")
-        st.dataframe(cond_map, use_container_width=True, height=150)
+    with st.expander("Advanced validation metadata"):
+        _render_advanced_validation_metadata(sample, scenario)
 
-        use_rep_sol = False
-        with st.expander("Advanced replicate-to-PHREEQC solution mapping", expanded=False):
-            st.warning(
-                "⚠️ Only use this if sol1/sol2/sol3 represent **replicate batches**, not time "
-                "points or unrelated solutions."
-            )
-            st.caption("Map each replicate id to a PHREEQC solution number (e.g. R1→1, R2→2). "
-                       "Apply will then point each replicate at its own solution.")
-            rc1, rc2, rc3 = st.columns(3)
-            rep_in = rc1.text_input("replicate_id (e.g. R1)", key=f"repsol_rid_{run_name}")
-            sol_in = rc2.text_input("solution_number (e.g. 1)", key=f"repsol_sol_{run_name}")
-            if rc3.button("Add R→sol", key=f"repsol_add_{run_name}"):
-                try:
-                    run_manager.add_replicate_solution(run_name, rep_in, sol_in)
-                    _read_csv.clear()
-                    st.rerun()
-                except run_manager.RunManagerError as exc:
-                    st.error(str(exc))
-            rs_map = run_manager.read_replicate_solution_map(run_name)
-            if not rs_map.empty:
-                st.dataframe(rs_map, use_container_width=True, height=120)
-            use_rep_sol = st.checkbox(
-                "Apply using replicate→solution mapping (instead of one scenario for all replicates)",
-                key=f"repsol_use_{run_name}",
-            )
 
-        if st.button("Apply condition mapping → per-sample map", key=f"cond_apply_{run_name}"):
+def _render_condition_mapping_advanced(run_name: str, cond_map: pd.DataFrame) -> None:
+    """Advanced apply-options (replicate→solution) + delete, kept out of the main view."""
+    with st.expander("Advanced apply options & replicate→solution mapping"):
+        st.warning(
+            "⚠️ Only use replicate→solution mapping if sol1/sol2/sol3 represent **replicate "
+            "batches**, not time points or unrelated solutions."
+        )
+        st.caption("Map each replicate id to a PHREEQC solution number (e.g. R1→1, R2→2), "
+                   "then re-apply to point each replicate at its own solution.")
+        rc1, rc2, rc3 = st.columns(3)
+        rep_in = rc1.text_input("replicate_id (e.g. R1)", key=f"repsol_rid_{run_name}")
+        sol_in = rc2.text_input("solution_number (e.g. 1)", key=f"repsol_sol_{run_name}")
+        if rc3.button("Add R→sol", key=f"repsol_add_{run_name}"):
+            try:
+                run_manager.add_replicate_solution(run_name, rep_in, sol_in)
+                _read_csv.clear()
+                st.rerun()
+            except run_manager.RunManagerError as exc:
+                st.error(str(exc))
+        rs_map = run_manager.read_replicate_solution_map(run_name)
+        if not rs_map.empty:
+            st.dataframe(rs_map, use_container_width=True, height=120)
+        use_rep_sol = st.checkbox(
+            "Re-apply using replicate→solution mapping (instead of one scenario for all replicates)",
+            key=f"repsol_use_{run_name}",
+        )
+        if st.button("Re-apply condition mapping → per-sample map", key=f"cond_apply_{run_name}"):
             try:
                 path = run_manager.apply_condition_mapping(run_name, use_replicate_solution=use_rep_sol)
                 n = len(run_manager.read_mapping(run_name))
@@ -1069,17 +1519,17 @@ def _render_condition_mapping(run_name: str, data: pd.DataFrame, manifest: pd.Da
             except run_manager.RunManagerError as exc:
                 st.error(str(exc))
 
-        with st.expander("Delete condition mappings"):
-            to_del = st.multiselect(
-                "Rows to delete", options=list(range(len(cond_map))),
-                format_func=lambda i: f"{cond_map.iloc[i]['condition_key']} → "
-                                      f"{cond_map.iloc[i]['phreeqc_record_key']}",
-                key=f"cond_del_{run_name}",
-            )
-            if st.button("Delete selected condition mappings", key=f"cond_delbtn_{run_name}") and to_del:
-                run_manager.delete_condition_mapping_rows(run_name, to_del)
-                _read_csv.clear()
-                st.rerun()
+    with st.expander("Delete condition mappings"):
+        to_del = st.multiselect(
+            "Rows to delete", options=list(range(len(cond_map))),
+            format_func=lambda i: f"{cond_map.iloc[i]['condition_key']} → "
+                                  f"{cond_map.iloc[i]['phreeqc_record_key']}",
+            key=f"cond_del_{run_name}",
+        )
+        if st.button("Delete selected condition mappings", key=f"cond_delbtn_{run_name}") and to_del:
+            run_manager.delete_condition_mapping_rows(run_name, to_del)
+            _read_csv.clear()
+            st.rerun()
 
 
 def _render_replicate_collision_warnings(data: pd.DataFrame, mapping: pd.DataFrame,
@@ -1102,21 +1552,24 @@ def _render_replicate_collision_warnings(data: pd.DataFrame, mapping: pd.DataFra
 
 
 def _render_mapping_section(run_name: str) -> None:
-    """Sample_id -> PHREEQC record_key mapping UI for a lab-like run.
+    """Measured-data → model-prediction mapping UI for a lab-like run.
 
-    Assistant-driven: a scenario explorer + rule-based suggestions guide the user,
-    with the original manual dropdown kept under an advanced expander. Saves to the
-    run's own ``data/sample_phreeqc_map.csv`` and can export a copy to the pipeline.
+    Automatic-first: a single suggestion table is generated as soon as run data +
+    model results exist (no button). Workflow order: **suggestion table → accept →
+    existing mappings → conditions needing simulation → advanced tools**. Manual
+    dropdown mapping, the scenario explorer and the per-sample assistant are kept
+    under expanders. Saves to the run's own ``data/sample_phreeqc_map.csv``.
     """
     st.markdown("---")
-    st.subheader("Sample → PHREEQC mapping")
+    st.subheader("Match measured data to model predictions")
     st.caption(
-        "Link each measured sample to the PHREEQC result row for the same chemistry. "
-        "The comparison step needs this to compute pH residuals now (and Ca/Si/Al/Fe "
-        "residuals later, once ICP data exist)."
+        "Automatic-first: a **suggestion table** is built as soon as data + model results "
+        "exist — review, accept, then graph. Transparent rule-based scoring (no ML); "
+        "manual mapping, scenario explorer and per-sample assistant are under advanced."
     )
 
     data = run_manager.read_data_file(run_name)
+
     sample_ids: list[str] = []
     if "sample_id" in data.columns:
         for s in data["sample_id"].astype(str).map(str.strip).tolist():
@@ -1124,15 +1577,33 @@ def _render_mapping_section(run_name: str) -> None:
                 sample_ids.append(s)
     sample_ids = list(dict.fromkeys(sample_ids))  # unique, order-preserving
 
+    # Item 1 — no measured data: a clear message, and no stale suggestions/state.
     if not sample_ids:
-        st.info("No `sample_id` rows in this run yet — enter data first.")
+        for k in (f"map_flash_{run_name}", f"sug_editor_{run_name}", f"detail_sel_{run_name}"):
+            st.session_state.pop(k, None)
+        st.info(
+            "No measured data found for this run. Upload or import a dataset in the "
+            "**Data** tab first."
+        )
         return
+
+    graph_note = (
+        "Graphs only require measured values, model-predicted values, and a saved "
+        "mapping between them. Extra metadata is retained for scientific validation "
+        "and interpretation."
+    )
+    if _dataset_condition_codes(data):
+        graph_note += (
+            "\n\nFor this dataset, OA/PF/GS and CO₂ exposure are treated as "
+            "validation metadata."
+        )
+    st.info(graph_note)
 
     results_path = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
     if not results_path.exists():
         st.info(
             "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(the Run + Results tab) to generate PHREEQC results."
+            "(the Run + Results tab) to generate model (PHREEQC) results."
         )
         return
     phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
@@ -1141,31 +1612,65 @@ def _render_mapping_section(run_name: str) -> None:
         return
 
     manifest = _scenario_manifest(str(results_path), results_path.stat().st_mtime)
-
-    _render_scenario_explorer(run_name, manifest)
-    st.markdown("---")
-    _render_replicate_summary(data)
-    st.markdown("---")
-    _render_condition_mapping(run_name, data, manifest)
-    st.markdown("---")
-    with st.expander("Sample-level mapping assistant (per sample_id)", expanded=False):
-        _render_mapping_assistant(run_name, data, sample_ids, manifest)
-
-    st.markdown("---")
     mapping = run_manager.read_mapping(run_name)
-    st.markdown(f"**Existing per-sample mappings** ({len(mapping)}):")
-    st.dataframe(mapping, use_container_width=True, height=170)
-    _render_mapping_quality(mapping)
-    _render_replicate_collision_warnings(data, mapping, manifest)
+    cond_map = run_manager.read_condition_mapping(run_name)
 
+    # Build the suggestion table ONCE; the table view and the "needs new simulation"
+    # section are both driven from it, so their counts always agree.
+    table = mapping_table.build_suggestion_table(data, manifest, cond_map)
+
+    # ---- 1) Suggestion table (auto-generated) + accept actions ----
+    _render_suggestion_table(run_name, data, manifest, table)
+
+    # ---- 2) Existing/accepted mappings + overall status ----
     st.markdown("---")
-    _render_sim_needed(run_name, data, mapping, manifest)
+    _render_saved_condition_mappings(run_name)
+    overall = replicates.overall_mapping_status(data, mapping, manifest)
+    if not mapping.empty:
+        line = " · ".join(f"{k}: {v}" for k, v in overall.get("counts", {}).items())
+        if overall.get("all_exact"):
+            st.success(f"Overall mapping status: **{overall.get('overall')}** — {line}")
+        else:
+            st.warning(
+                f"Overall mapping status: **{overall.get('overall')}** — {line}. "
+                "Comparison graphs are a **preliminary / workflow check only** until "
+                "mappings are exact."
+            )
 
-    with st.expander("Advanced manual mapping", expanded=False):
+    # ---- 3) Conditions needing new simulations (same table source) ----
+    st.markdown("---")
+    _render_sim_needed(run_name, data, mapping, manifest, table)
+
+    _render_condition_code_help(data)
+
+    # ---- 4) Advanced tools (all functionality kept, just demoted) ----
+    with st.expander("Manual override / advanced mapping"):
+        st.caption(
+            "Pick a measured data group and model result by hand if a suggestion is wrong. "
+            "**Unsafe** mappings can only be saved here, with a confirmation that records "
+            "`override=true`."
+        )
+        _render_condition_mapping(run_name, data, manifest)
+        st.markdown("---")
+        st.markdown("**Per-sample manual mapping**")
         _render_manual_mapping(run_name, phreeqc, sample_ids)
 
-    if not mapping.empty:
-        with st.expander("🗑️ Delete mappings"):
+    with st.expander("Validation context: replicate summary & mapping warnings"):
+        _render_replicate_summary(data)
+        st.markdown("---")
+        _render_mapping_quality(mapping)
+        _render_replicate_collision_warnings(data, mapping, manifest)
+
+    with st.expander("Explore PHREEQC scenarios"):
+        _render_scenario_explorer(run_name, manifest)
+
+    with st.expander("Per-sample assistant (advanced)"):
+        _render_mapping_assistant(run_name, data, sample_ids, manifest)
+
+    with st.expander("Per-sample mappings: view, delete & export to pipeline"):
+        st.markdown(f"**Existing per-sample mappings** ({len(mapping)}):")
+        st.dataframe(mapping, use_container_width=True, height=170)
+        if not mapping.empty:
             def _map_label(i: int) -> str:
                 r = mapping.iloc[i]
                 return f"Row {i} — {r.get('sample_id', '')} → {r.get('phreeqc_record_key', '')}"
@@ -1187,16 +1692,16 @@ def _render_mapping_section(run_name: str) -> None:
                     st.success(f"Deleted {n} mapping row(s).")
                     st.rerun()
 
-        if st.button("➡️ Export mapping to pipeline", key=f"map_export_{run_name}"):
-            try:
-                dest = run_manager.export_mapping_to_pipeline(run_name)
-                st.success(
-                    f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 "
-                    "will use it to compute residuals."
-                )
-                _read_csv.clear()
-            except run_manager.RunManagerError as exc:
-                st.error(str(exc))
+            if st.button("➡️ Export mapping to pipeline", key=f"map_export_{run_name}"):
+                try:
+                    dest = run_manager.export_mapping_to_pipeline(run_name)
+                    st.success(
+                        f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 "
+                        "will use it to compute residuals."
+                    )
+                    _read_csv.clear()
+                except run_manager.RunManagerError as exc:
+                    st.error(str(exc))
 
 
 # --------------------------------------------------------------------------- #
@@ -1239,26 +1744,73 @@ def _looks_like_run_test(data: pd.DataFrame) -> bool:
     return bool(sids.str.contains("TEST|SYNTH|DEMO|MOCK", na=False, regex=True).any())
 
 
-def _comparison_has_residuals() -> bool:
-    """True if the comparison CSV exists and has at least one numeric residual."""
-    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
-    if not comp_path.exists():
+def _run_comparison_path(run_name: str | None) -> Path | None:
+    """The selected run's per-run comparison CSV path, or None.
+
+    Returns None when no run is selected or the run is not lab-like (so a
+    literature/synthetic run can never surface another run's comparison).
+    """
+    if not run_name:
+        return None
+    try:
+        return run_manager.comparison_path(run_name)
+    except run_manager.RunManagerError:  # non-lab run_type, or no config
+        return None
+
+
+def _run_comparison_figures_dir(run_name: str | None) -> Path | None:
+    """The selected run's per-run comparison figures directory, or None."""
+    if not run_name:
+        return None
+    try:
+        return run_manager.comparison_figures_dir(run_name)
+    except run_manager.RunManagerError:
+        return None
+
+
+def _render_stale_results_warning(run_name: str) -> None:
+    """Prominent banner when a run's stored comparison no longer matches its inputs."""
+    if not run_manager.has_comparison(run_name):
+        return
+    current, reasons = run_manager.comparison_is_current(run_name)
+    if current:
+        return
+    st.warning(
+        "⚠️ **These results were generated from older data/mappings for this run — "
+        "re-run the workflow.** What changed:\n\n"
+        + "\n".join(f"- {r}" for r in reasons)
+    )
+
+
+def _comparison_has_residuals(run_name: str | None) -> bool:
+    """True if the run's comparison CSV exists and has at least one numeric residual."""
+    comp_path = _run_comparison_path(run_name)
+    if comp_path is None or not comp_path.exists():
         return False
     comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
     return any(_has_numeric(comp, f"residual_{el}")
                for el in ["pH", "Ca", "Si", "Al", "Fe"])
 
 
-def _render_results_summary() -> None:
-    """Honest, presentation-friendly summary of the latest comparison run."""
-    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
-    if not comp_path.exists():
+def _render_results_summary(run_name: str | None) -> None:
+    """Honest, presentation-friendly summary of this run's comparison."""
+    if not run_name:
+        st.info("Select a lab run in the **Experiment runs** sidebar (left) to see its results.")
+        return
+    comp_path = _run_comparison_path(run_name)
+    if comp_path is None:
         st.info(
-            "No comparison results yet. Run the workflow (above) for a lab run "
-            "that has a sample→PHREEQC mapping to generate "
-            "`data/processed/comparison_measured_vs_phreeqc.csv`."
+            "The selected run is not a lab run, so it has no measured-vs-model comparison."
         )
         return
+    if not comp_path.exists():
+        st.info(
+            "No comparison results yet for this run. Run the workflow (above) for a lab run "
+            "that has a measured-data → model mapping to generate this run's comparison."
+        )
+        return
+
+    _render_stale_results_warning(run_name)
 
     comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
     n_rows = len(comp)
@@ -1308,14 +1860,14 @@ def _render_results_summary() -> None:
         resid = pd.to_numeric(pd.Series([row.get("residual_pH")]), errors="coerce").iloc[0]
         p1, p2, p3 = st.columns(3)
         p1.metric("Measured pH", f"{meas:.2f}" if pd.notna(meas) else "—")
-        p2.metric("PHREEQC pH", f"{pred:.2f}" if pd.notna(pred) else "—")
-        p3.metric("Residual pH (measured − PHREEQC)", f"{resid:+.2f}" if pd.notna(resid) else "—")
+        p2.metric("Model pH", f"{pred:.2f}" if pd.notna(pred) else "—")
+        p3.metric("Residual pH (measured − model)", f"{resid:+.2f}" if pd.notna(resid) else "—")
 
     # Comparison table preview — only columns that exist.
     present = [(src, disp) for src, disp in _COMPARISON_PREVIEW_SPEC if src in comp.columns]
     if present:
         preview = comp[[src for src, _ in present]].rename(columns=dict(present))
-        st.markdown("**Comparison table** (measured vs PHREEQC, existing columns only):")
+        st.markdown("**Comparison table** (measured vs model, existing columns only):")
         st.dataframe(preview, use_container_width=True, height=200)
 
 
@@ -1344,13 +1896,8 @@ def _render_literature_summary(run_name: str) -> None:
     elif present:
         st.markdown("**Literature benchmark summary** (existing columns only):")
         st.dataframe(lit[present], use_container_width=True, height=200)
-
-    # The lab comparison belongs to a *different* run — keep it collapsed and labelled.
-    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
-    if comp_path.exists():
-        with st.expander("Latest lab comparison from previous run", expanded=False):
-            st.warning("This does not belong to the selected literature benchmark run.")
-            _render_results_summary()
+    # No lab-comparison read-out here: comparisons are per-run (stored under the lab
+    # run's own outputs/), so a literature run never displays another run's results.
 
 
 # Comparison figures get specific captions; everything else is a PHREEQC-only plot.
@@ -1358,20 +1905,22 @@ _FIGURE_CAPTIONS = {
     "measured_vs_phreeqc.png": (
         "This plot compares measured values against PHREEQC predictions. Points on "
         "the dashed 1:1 line would indicate perfect agreement. Points far from the "
-        "line indicate model/experiment mismatch or incorrect mapping."
+        "line indicate model/experiment mismatch or incorrect mapping. Proximity to "
+        "the 1:1 line indicates agreement only if the mapping is scientifically valid."
     ),
     "residuals_by_sample.png": (
         "This plot shows measured − PHREEQC. Positive values mean the measured value "
-        "is higher than the PHREEQC prediction."
+        "is higher than the PHREEQC prediction. Near-zero residuals indicate agreement "
+        "only if the mapping is scientifically valid."
     ),
 }
 _COMPARISON_FIGURES = set(_FIGURE_CAPTIONS)
 
 
-def _single_sample_comparison() -> bool:
-    """True if the comparison has exactly one mapped sample (plots aren't a trend)."""
-    comp_path = config.PROCESSED_DIR / config.COMPARISON_CSV
-    if not comp_path.exists():
+def _single_sample_comparison(run_name: str | None) -> bool:
+    """True if the run's comparison has exactly one mapped sample (not a trend)."""
+    comp_path = _run_comparison_path(run_name)
+    if comp_path is None or not comp_path.exists():
         return False
     comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
     if "phreeqc_record_key" not in comp.columns:
@@ -1381,19 +1930,17 @@ def _single_sample_comparison() -> bool:
     return int(mapped) == 1
 
 
-def _render_comparison_figures() -> None:
-    """Measured-vs-PHREEQC + residual plots. Belongs with the lab comparison
-    (Results tab), not the PHREEQC-only model outputs."""
-    pngs = [p for d in _figure_dirs() if d.exists() for p in sorted(d.glob("*.png"))]
-    comparison = [p for p in pngs if p.name in _COMPARISON_FIGURES]
+def _render_comparison_figures(run_name: str | None) -> None:
+    """Measured-vs-PHREEQC + residual plots for the selected run (per-run figures)."""
+    fig_dir = _run_comparison_figures_dir(run_name)
+    if fig_dir is None or not fig_dir.exists():
+        return
+    comparison = [p for p in sorted(fig_dir.glob("*.png")) if p.name in _COMPARISON_FIGURES]
     if not comparison:
         return
-    st.subheader("Measured vs PHREEQC")
-    if _single_sample_comparison():
-        st.warning(
-            "This is a single-sample comparison, not a trend. It only checks one "
-            "mapped condition."
-        )
+    st.subheader("Measured vs PHREEQC (residual figures)")
+    # The single-sample caveat is folded into the validity line of the inclusion
+    # section above, so it is not repeated here.
     for png in comparison:
         st.image(str(png), use_container_width=True)
         st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
@@ -1437,7 +1984,7 @@ def _script_button(label: str, script: str, result_label: str, key: str,
 # Presentation-status wording (validation workflow, not an overclaimed model)
 # --------------------------------------------------------------------------- #
 _PRELIMINARY_CAVEAT = (
-    "Current measured-vs-PHREEQC comparison should be treated as preliminary / workflow "
+    "Current measured-vs-model comparison should be treated as preliminary / workflow "
     "check only unless mappings are exact."
 )
 _VALID_NOW = [
@@ -1452,12 +1999,16 @@ _VALID_NOW = [
 _NOT_VALID_YET = [
     "Time-resolved PHREEQC validation",
     "HCl comparison (until HCl PHREEQC scenarios are generated)",
-    "OA/PF/GS-specific interpretation (until their meanings are confirmed)",
+    "CO₂-resolved PHREEQC validation of OA vs PF/GS cover conditions",
     "ML training",
 ]
 _OA_PF_GS_CAVEAT = (
-    "OA, PF, and GS are preserved as experimental condition codes. Their physical or chemical "
-    "meaning still needs confirmation before using them as PHREEQC mapping criteria."
+    "OA, PF, and GS represent CO₂ exposure / cup-cover conditions: OA = open air, "
+    "PF = plastic flap cover, GS = glass cover. OA is directly exposed to atmospheric CO₂; "
+    "PF and GS are covered conditions that likely reduce CO₂ exchange. They are kept as "
+    "distinct experimental conditions because cover material and CO₂ exposure can affect pH "
+    "and carbonate formation. Do not treat PF or GS as fully sealed unless airtight sealing "
+    "is confirmed."
 )
 
 
@@ -1519,7 +2070,7 @@ def _render_presentation_summary(selected_run: str | None) -> None:
     status = (replicates.overall_mapping_status(data, mapping, manifest)
               if lab_like else {"overall": "n/a", "all_exact": False,
                                 "counts": {}, "n_mapped": 0, "n_unmapped": 0})
-    comp_exists = (config.PROCESSED_DIR / config.COMPARISON_CSV).exists()
+    comp_exists = lab_like and run_manager.has_comparison(selected_run)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Dataset imported", "yes" if n_rows else "no")
@@ -1530,15 +2081,16 @@ def _render_presentation_summary(selected_run: str | None) -> None:
     n1.metric("Validation errors", n_err)
     n2.metric("Validation warnings", n_warn)
     n3.metric("Mapped samples", msum["n_samples"])
-    n4.metric("Unique PHREEQC rows", msum["n_unique_rows"])
+    n4.metric("Unique model results", msum["n_unique_rows"])
 
     overall = status["overall"]
+    _counts = status["counts"]
     st.markdown(f"**Overall mapping status:** `{overall}`"
                 + ("" if not lab_like else
-                   f"  ·  exact: {status['counts'].get('exact', 0)}, "
-                   f"scenario-level: {status['counts'].get('scenario-level only', 0)}, "
-                   f"unsafe: {status['counts'].get('unsafe', 0)}, "
-                   f"needs new sim: {status['counts'].get('needs new PHREEQC simulation', 0)}"))
+                   f"  ·  exact: {_counts.get(replicates.MAPPING_STATUS_EXACT, 0)}, "
+                   f"scenario-level: {_counts.get(replicates.MAPPING_STATUS_SCENARIO, 0)}, "
+                   f"unsafe: {_counts.get(replicates.MAPPING_STATUS_UNSAFE, 0)}, "
+                   f"needs new sim: {_counts.get(replicates.MAPPING_STATUS_NEEDS_NEW, 0)}"))
     st.markdown(f"**Comparison status:** {'available (preliminary)' if comp_exists else 'not run yet'}")
 
     # Recommended next *scientific* step.
@@ -1547,7 +2099,7 @@ def _render_presentation_summary(selected_run: str | None) -> None:
     elif n_err:
         nxt = f"Fix {n_err} validation error(s) in the **Data** tab before mapping."
     elif lab_like and msum["n_samples"] == 0:
-        nxt = "Map conditions to PHREEQC scenarios in the **Match PHREEQC** tab."
+        nxt = "Map conditions to model scenarios in the **Match PHREEQC** tab."
     elif status["counts"].get("unsafe", 0):
         nxt = ("Resolve unsafe mapping(s) (e.g. HCl mapped to a NaOH/CO2 scenario) — generate "
                "matching acid PHREEQC scenarios.")
@@ -1616,14 +2168,14 @@ def _render_overview(selected_run: str | None) -> None:
     )
     icp_present = lab_like and any(_has_numeric(data, c) for c in _ICP_MEASURED_COLS)
     is_mock = _looks_like_run_test(data)
-    comp_exists = (config.PROCESSED_DIR / config.COMPARISON_CSV).exists()
+    comp_exists = lab_like and run_manager.has_comparison(selected_run)
 
     st.markdown(f"**`{selected_run}`**")
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Run type", rt)
     s2.metric("Data rows", len(data))
     s3.metric("Mapped samples", map_summary["n_samples"] if lab_like else "n/a")
-    s4.metric("Unique PHREEQC rows used",
+    s4.metric("Unique model results used",
               map_summary["n_unique_rows"] if lab_like else "n/a")
     st.caption(f"📁 {run_manager.run_dir(selected_run).relative_to(_PROJECT_ROOT)} · source `{cfg.get('data_source')}`")
 
@@ -1665,7 +2217,7 @@ def _render_overview(selected_run: str | None) -> None:
     elif rt == "synthetic_demo":
         nxt = "This is a synthetic/demo run — for testing only, not scientific output."
     elif lab_like and not has_map:
-        nxt = "Map samples to PHREEQC scenarios in the **Match PHREEQC** tab."
+        nxt = "Map samples to model scenarios in the **Match PHREEQC** tab."
     elif lab_like and map_summary["has_collisions"]:
         nxt = ("Review mapping in the **Match PHREEQC** tab; several samples share one "
                "PHREEQC row, so graphs may be misleading.")
@@ -1684,7 +2236,7 @@ def _render_overview(selected_run: str | None) -> None:
     data_checked = (config.TABLES_DIR / config.EXPERIMENTAL_VALIDATION_REPORT_CSV).exists()
     mapping_complete = lab_like and has_map
     workflow_run = comp_exists
-    results_available = comp_exists and _comparison_has_residuals()
+    results_available = comp_exists and _comparison_has_residuals(selected_run)
 
     def _check(done: bool, label: str) -> str:
         return f"{'✅' if done else '⬜'} {label}"
@@ -1984,6 +2536,182 @@ def _render_condition_errorbar(comp: pd.DataFrame, metric: str) -> None:
     plt.close(fig)
 
 
+def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
+    """Matplotlib plot for the measured-data overview (points colored by condition)."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    plot = ov["plot"]
+    tcol = measured_overview.TIME_COLUMN
+    conditions = sorted(plot["condition_key"].astype(str).unique())
+    cmap = plt.get_cmap("tab10" if len(conditions) <= 10 else "tab20")
+    color = {c: cmap(i % cmap.N) for i, c in enumerate(conditions)}
+    stats = {str(r["condition_key"]): r for _, r in ov["group_stats"].iterrows()}
+
+    fig, ax = plt.subplots(figsize=(7.5, 4))
+    use_time = ov["has_time"] and tcol in plot.columns and plot[tcol].notna().any()
+
+    if use_time:
+        for c in conditions:
+            sub = plot[plot["condition_key"].astype(str) == c]
+            ax.scatter(pd.to_numeric(sub[tcol], errors="coerce"), sub["value"],
+                       color=color[c], label=c, edgecolor="black", linewidth=0.3, zorder=3)
+            if overlay and c in stats:
+                xt = pd.to_numeric(sub[tcol], errors="coerce").mean()
+                g = stats[c]
+                ax.errorbar(xt, g["mean"], yerr=(0.0 if pd.isna(g["std"]) else g["std"]),
+                            fmt="_", color=color[c], capsize=4, elinewidth=1.6, zorder=2)
+        ax.set_xlabel(tcol)
+    else:
+        pos = {c: i for i, c in enumerate(conditions)}
+        for c in conditions:
+            sub = plot[plot["condition_key"].astype(str) == c]
+            ax.scatter([pos[c]] * len(sub), sub["value"], color=color[c], label=c,
+                       edgecolor="black", linewidth=0.3, zorder=3)
+            if overlay and c in stats:
+                g = stats[c]
+                ax.errorbar(pos[c], g["mean"], yerr=(0.0 if pd.isna(g["std"]) else g["std"]),
+                            fmt="_", color="black", capsize=5, elinewidth=1.6, zorder=2)
+        ax.set_xticks(range(len(conditions)))
+        ax.set_xticklabels(conditions, rotation=45, ha="right", fontsize=7)
+
+    ax.set_ylabel(variable)
+    ax.set_title(f"{variable} — measured data only")
+    if len(conditions) <= 12:
+        ax.legend(fontsize=7, title="condition", loc="best")
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def _render_measured_overview(selected_run: str) -> None:
+    """First plot family — measured data only, from the run's own rows.
+
+    Renders fully without a sample→PHREEQC mapping and without
+    ``data/processed/phreeqc_results.csv`` (it reads nothing but the run's data).
+    """
+    st.markdown("#### Measured data overview")
+    st.caption("Measured data only — no model comparison.")
+
+    data = run_manager.read_data_file(selected_run)
+    variables = measured_overview.available_variables(data)
+    if not variables:
+        st.info(
+            "No numeric measured variables in this run yet — enter pH or ICP values in "
+            "the **Data** tab to see the overview."
+        )
+        return
+
+    c1, c2 = st.columns([3, 2])
+    variable = c1.selectbox("Measured variable", variables, key=f"overview_var_{selected_run}")
+    overlay = c2.checkbox("Overlay condition mean ± std", value=True,
+                          key=f"overview_overlay_{selected_run}")
+
+    ov = measured_overview.prepare_overview(data, variable)
+    rep_counts = ov["replicate_counts"]
+    rc_txt = ", ".join(f"{k}: {v}" for k, v in sorted(rep_counts.items())) if rep_counts else "—"
+    st.markdown(
+        f"- **Rows shown:** {ov['n_shown']}  ·  **Distinct conditions:** {ov['n_conditions']}  "
+        f"·  **Rows excluded:** {ov['n_excluded']}"
+    )
+    st.caption(f"Replicate counts per condition — {rc_txt}")
+
+    if ov["n_excluded"]:
+        with st.expander(f"Excluded rows ({ov['n_excluded']}) — blank or non-numeric values"):
+            st.dataframe(ov["excluded"], use_container_width=True, height=200)
+
+    if ov["plot"].empty:
+        st.info(f"No numeric `{variable}` values to plot.")
+        return
+    _render_overview_plot(ov, variable, overlay)
+
+
+def _inclusion_variables(comp: pd.DataFrame) -> list[str]:
+    """Variables with a measured column (numeric) + a model-prediction column."""
+    out = []
+    for v, (mcol, pcol) in compare_inclusion.VARIABLE_SPEC.items():
+        if mcol in comp.columns and pcol in comp.columns and _has_numeric(comp, mcol):
+            out.append(v)
+    return out
+
+
+# Counts panel: (dict key, label) — built entirely from the inclusion dict.
+_INCLUSION_METRICS = [
+    ("measured_rows_available", "Measured rows"),
+    ("rows_with_mapping", "With mapping"),
+    ("rows_prediction_available", "Prediction available"),
+    ("rows_plotted", "Plotted"),
+    ("unique_predictions_used", "Unique predictions"),
+    ("unmapped_rows", "Unmapped"),
+]
+
+
+def _render_comparison_inclusion(selected_run: str) -> None:
+    """Explicit inclusion view: counts, exclusion reasons, status-aware scatter, validity.
+
+    All filtering comes from the single `compare.comparison_inclusion` function — this
+    renderer only displays its output (the plots never re-derive the filter).
+    """
+    comp_path = _run_comparison_path(selected_run)
+    if comp_path is None or not comp_path.exists():
+        return  # the results summary already explains "no comparison yet"
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    variables = _inclusion_variables(comp)
+    if not variables:
+        return  # nothing comparable; residual figures / summary cover the messaging
+
+    st.markdown("#### Model comparison — inclusion")
+    data = run_manager.read_data_file(selected_run)
+    mapping = run_manager.read_mapping(selected_run)
+    manifest = _manifest_if_available()
+
+    c1, c2 = st.columns([3, 2])
+    variable = c1.selectbox("Variable", variables, key=f"incl_var_{selected_run}")
+    include_unsafe = c2.checkbox(
+        "Advanced: include unsafe mappings (flagged red)", value=False,
+        key=f"incl_unsafe_{selected_run}",
+        help="Unsafe mappings are excluded from the comparison by default. Toggling this "
+             "plots them flagged in red — they are known metadata conflicts, not valid "
+             "model comparisons.",
+    )
+
+    inc = comparison_inclusion(data, mapping, comp, variable,
+                               manifest=manifest, include_unsafe=include_unsafe)
+
+    # Counts panel — straight from the inclusion dict (consistent with the table).
+    cols = st.columns(len(_INCLUSION_METRICS))
+    for col, (key, label) in zip(cols, _INCLUSION_METRICS):
+        col.metric(label, inc[key])
+
+    if include_unsafe and inc["n_unsafe_plotted"]:
+        st.error(
+            f"⚠️ {inc['n_unsafe_plotted']} unsafe mapping(s) are plotted (red) — known "
+            "metadata conflicts, shown for inspection only, not valid model comparison."
+        )
+
+    with st.expander(f"Rows excluded from model comparison ({inc['n_total'] - inc['rows_plotted']})"):
+        st.caption("Each excluded row has exactly one reason; plotted + excluded = all rows.")
+        if inc["excluded"].empty:
+            st.success("No rows excluded — every measured row is plotted.")
+        else:
+            st.dataframe(inc["excluded"], use_container_width=True, height=240)
+            rc = pd.DataFrame([{"reason": k, "rows": v} for k, v in inc["reason_counts"].items()])
+            st.dataframe(rc, use_container_width=True, hide_index=True, height=180)
+
+    if not inc["plotted"].empty:
+        st.pyplot(compare_plots.comparison_scatter_figure(inc["plotted"], variable))
+
+    if inc["collapse_warning"]:
+        st.warning(
+            "🔁 " + inc["collapse_message"]
+            + " See the **Match PHREEQC** tab → *Conditions needing new PHREEQC "
+            "simulations* for the list."
+        )
+
+    # One overall validity line, chosen by the documented rules. Only `valid` implies
+    # the model was validated.
+    getattr(st, inc["validity_severity"], st.info)(f"**{inc['validity'].upper()}** — {inc['validity_message']}")
+
+
 def _render_results_tab(selected_run: str | None) -> None:
     # What's shown depends on run type, so a literature/synthetic run never displays
     # the lab measured-vs-PHREEQC residual as if it were its own result.
@@ -2001,31 +2729,43 @@ def _render_results_tab(selected_run: str | None) -> None:
         return
 
     # lab_experiment / plastic_composite, or no run selected.
-    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
-        st.markdown("**Latest lab-experiment PHREEQC comparison.**")
-    else:
-        st.write(
-            "Latest PHREEQC comparison from the lab pipeline. Select a run in the "
-            "sidebar for run-specific context."
-        )
-    st.caption(
-        "Reads `data/processed/comparison_measured_vs_phreeqc.csv` plus the validation "
-        "and sustainability tables in `outputs/tables/`."
-    )
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
+        st.markdown(f"**`{selected_run}` — measured-vs-model comparison.**")
+    elif not selected_run:
+        st.info("No run selected. Select a lab run in the sidebar to see its comparison.")
+        return
+    else:
+        st.write("This run type has no measured-vs-model comparison.")
+    st.caption(
+        "Reads this run's own outputs (`experiments/<run>/outputs/`), stamped with "
+        "provenance, plus the validation and sustainability tables in `outputs/tables/`."
+    )
+
+    # First plot family — measured data only, before/without any model comparison.
+    # Renders even when phreeqc_results.csv is missing and no mappings exist.
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
+        _render_measured_overview(selected_run)
+        st.divider()
+
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
+        _render_stale_results_warning(selected_run)
         data = run_manager.read_data_file(selected_run)
         status = replicates.overall_mapping_status(
             data, run_manager.read_mapping(selected_run), _manifest_if_available())
         if not status["all_exact"]:
             st.warning(
-                "⚠️ Residual plots are currently a **workflow check, not final model "
-                "validation**, because one or more mappings are scenario-level, unsafe, or "
-                "missing exact PHREEQC metadata."
+                "⚠️ **Preliminary / workflow check only.** The graphs below are not final "
+                "model validation, because one or more mappings are scenario-level, unsafe, "
+                "or missing exact PHREEQC metadata. Plotting is still allowed for inspection."
             )
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
         _render_condition_results(selected_run)
-    _render_results_summary()
-    _render_comparison_figures()
+    _render_results_summary(selected_run)
+    # Explicit inclusion panel (counts + exclusions + status-aware scatter + validity),
+    # above the residual figures.
+    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
+        _render_comparison_inclusion(selected_run)
+    _render_comparison_figures(selected_run)
     st.info(
         "📈 **Interpreting the plots:** if measured values vary while PHREEQC "
         "predictions stay constant, this usually means the mapping is too coarse or "
@@ -2279,10 +3019,20 @@ def _render_calc_verification_tab(dev_mode: bool) -> None:
 
 
 def _render_help_tab() -> None:
+    st.subheader("Design note — a generic validation workflow")
+    st.info(
+        "The app is designed around a generic validation workflow: **measured data → "
+        "model prediction → mapping → residuals → validation status**. PHREEQC and the "
+        "fly ash metadata (OA/PF/GS, CO₂ cover) are the current project implementation, "
+        "not a hard limit of the system — the same workflow applies to other experiments "
+        "and other models."
+    )
+    st.divider()
+
     st.subheader("Validation status — what is valid now vs not yet")
     _render_valid_now_section()
     st.caption("ℹ️ " + _PRELIMINARY_CAVEAT)
-    st.caption("ℹ️ " + _OA_PF_GS_CAVEAT)
+    st.caption("ℹ️ **Project-specific:** " + _OA_PF_GS_CAVEAT)
     with st.expander("Mapping status definitions"):
         _render_mapping_status_definitions()
     st.divider()

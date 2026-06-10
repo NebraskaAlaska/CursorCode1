@@ -60,15 +60,138 @@ experiment — **not** a blind replacement for the chemistry.
   link, expanded to the per-sample map; storage in `run_manager`), an optional replicate→solution
   path, replicate-aware collision rules, and condition mean / individual comparison modes. Layered on
   top, a **mapping-status** classifier (`exact` / `scenario-level only` / `unsafe` / `needs new
-  PHREEQC simulation`) drives the Start **Presentation summary**, the Run + Results "workflow check,
+  simulation`) drives the Start **Presentation summary**, the Run + Results "workflow check,
   not final validation" warning, and the "conditions needing new PHREEQC simulations" table — framing
   the comparison as a **preliminary validation workflow**, not an overclaimed model.
 
-Phase 3 (ML) is not started.
+- **OA/PF/GS cover conditions known** (metadata semantics, no chemistry/ML). OA/PF/GS are now
+  documented cup-cover / CO₂-exposure conditions — **OA = open air** (atmospheric CO₂),
+  **PF = plastic flap cover**, **GS = glass cover** (PF/GS covered, reduced exchange, *not* sealed
+  unless airtight-confirmed). `scenarios.cover_condition` / `co2_exposure_level` map a code to
+  `open_air`/`plastic_flap`/`glass_cover` and `open`/`reduced`/`reduced`; the dissolution importer
+  emits derived `extra__cover_condition` / `extra__CO2_exposure_level` columns and **warns** when a
+  shared `CO2_condition=open` default lands on covered PF/GS rows (so "open" default ≠ "PF/GS are
+  open-air"). Mapping still treats OA/PF/GS as distinct conditions (`condition_key`). The wording is
+  kept **project-specific**: the explanation only surfaces for datasets that actually contain those
+  codes.
+- **Generic Match-tab presentation** (UI wording, no chemistry/ML). The Match PHREEQC tab's core
+  interface is worded **experiment-agnostically** — "Match measured data to model predictions",
+  selectors **Measured data group** + **Model / simulation result**, generic mapping-status
+  definitions (`MAPPING_STATUS_DEFINITIONS` in `replicates.py`) — so the app reads as a generic
+  *measured data → model prediction → mapping → residuals → validation status* workflow. PHREEQC and
+  the fly ash OA/PF/GS / CO₂-cover metadata are kept as the **current project implementation**:
+  PHREEQC file/source/solution number live in the **Advanced validation metadata** expander (now
+  rendered **dynamically** from whatever metadata columns the dataset actually has), and the OA/PF/GS
+  explanation only appears when the loaded run's rows actually carry those codes
+  (`_dataset_condition_codes`). A design note in Audit / Help states PHREEQC + fly ash metadata are
+  the implementation, not a hard limit. No backend metadata, status logic, or warnings were removed.
+
+- **Automatic-first Match tab** (UI flow, no chemistry/ML). The Match tab is now
+  **auto-detect → auto-suggest → review → accept → graph** rather than dropdown-first.
+  `_extract_measured_records` auto-detects measured records (sample_id, measured group / condition
+  key, time, populated measured variables, units, notes — only from columns the dataset has);
+  `_build_auto_suggestions` produces one suggestion per measured data group via the **transparent
+  rule-based** `scenarios.suggest_mappings` (no opaque ML), each row carrying measured_record /
+  model_prediction_record / status / confidence / matched / missing / conflicting fields and a
+  "why was this suggested" explanation. The suggestion table is an editable `st.data_editor` with an
+  **accept** checkbox; buttons **Accept all high-confidence** / **Accept selected** / **Clear
+  suggested** / **Export mapping** (`_accept_condition_mappings` upserts via `add_condition_mapping`
+  then `apply_condition_mapping`). When a run has no measured rows the tab shows "No measured data
+  found for this run…" and clears stale per-run suggestion state instead of showing dropdowns. The
+  former dropdown mapping (condition + per-sample) is preserved under a **Manual override / advanced
+  mapping** expander. Graphs still need only measured + model-predicted values + a saved mapping.
+
+- **Consolidated suggestion-table Match tab** (UI/consolidation, no chemistry/ML, no scoring
+  change). The Match tab is driven by **one** auto-generated suggestion table (new
+  `mapping_table.build_suggestion_table` — one row per `condition_key`: best candidate scenario,
+  `mapping_status`, score, confidence, reason, `already_mapped`). It renders at the top with no
+  button as soon as run data + `phreeqc_results.csv` exist; the status column is badged. Row detail
+  (a per-condition selector) shows the field-by-field measured-vs-model alignment, runner-up
+  candidates, and a structured **score breakdown** (`scenarios.score_scenario` now also returns
+  `score_breakdown` — additive, the point values are unchanged). Accept actions: **Accept all
+  exact** (bulk, exact-only), per-row **accept** checkboxes + **Accept selected** (exact +
+  scenario-level, with a caution); **unsafe** rows cannot be accepted from the table — they route to
+  the **Manual override / advanced mapping** expander, which requires a confirmation checkbox and
+  tags the saved mapping `override=true` (new `override` column in the condition map; never reaches
+  the per-sample map). The **conditions-needing-simulation** section is driven from the *same* table
+  so counts always agree. The scenario explorer and per-sample assistant are demoted to
+  **Explore PHREEQC scenarios** / **Per-sample assistant (advanced)** expanders (all functionality
+  kept). Covered by `tests/test_suggestion_table.py`.
+
+- **Explicit comparison inclusion** (presentation honesty, no chemistry/ML). The Results-tab model
+  comparison is now explicit about *what is plotted and why the rest is excluded*. One pure function
+  `compare/inclusion.py :: comparison_inclusion` is the **only** inclusion logic (the plots consume
+  its output): per selected variable it partitions rows into plotted vs excluded-with-one-reason,
+  joins mapping statuses, plots `exact`/`scenario-level` by default (unsafe excluded unless an
+  advanced toggle flags them red), warns on scenario-level **collapse** (many rows → few model
+  predictions), and ends with one **validity** line (`valid` only when all plotted mappings are exact
+  and ≥ `min_valid_rows` — the single case that implies validation). The app's Run + Results tab shows
+  a counts `st.metric` panel, an "Rows excluded from model comparison" expander, a status-styled
+  measured-vs-model scatter (`viz/compare_plots.comparison_scatter_figure`), the collapse warning, and
+  the validity line; residual-figure captions carry the `measured − PHREEQC` sign convention + "near-
+  zero residuals indicate agreement only if the mapping is scientifically valid." Rules in
+  `docs/comparison_inclusion.md`. `scripts/05` CLI behavior is unchanged.
+
+- **CO₂ cup-cover vocabulary (corrected)** (scientific matching change). `CO2_condition` now uses the
+  cup-cover vocabulary — **OA/PF/GS** (experiment) + **atm_CO2/low_CO2/no_CO2** (model) + `unknown`
+  (`config.CO2_CONDITION_ALLOWED`, with `config.CONDITION_CODE_DESCRIPTIONS` as the single source for
+  descriptions + the not-confirmed-sealed caution the UI reads). `scenarios.co2_family` now returns
+  **atmospheric** / **reduced** families (never "sealed"); the cover cap in `_metadata_alignment` was
+  restricted to PF/GS so **OA can reach `exact`** against an atmospheric scenario while **PF/GS cap at
+  `scenario-level only`** until a model scenario explicitly represents the cover (`replicates.mapping_status`).
+  The dissolution importer writes the cover code into `CO2_condition` per row; the generic importer
+  maps legacy `open`→`OA` and **flags** legacy `sealed`; `replicates.condition_key` no longer
+  duplicates the cover; the plan generator's cover-control set is `{OA,PF,GS}`. See the CO₂-condition
+  key-convention below.
+
+- **Dataset/model profile layer** (generalization, additive, no chemistry/ML). `profiles.py`
+  introduces `DatasetProfile` + `ModelProfile` (fly-ash / PHREEQC instances referencing `config.py`)
+  threaded through the existing seams with a fly-ash default — so the same condition-grouping →
+  suggestion-table → mapping-status → inclusion → measured-overview chain runs for another dataset by
+  passing a different profile, with **zero behaviour change** for fly ash. app.py UI strings take the
+  model name from `ModelProfile`, and a generic-wording pass moved non-mechanics captions to
+  "model"/"measured data" (PHREEQC stays in the scenario explorer, per-sample assistant, advanced
+  metadata, the Audit/Help PHREEQC-outputs viewer, parser/script messages, and the Match **PHREEQC**
+  tab name). See the **`profiles.py`** architecture bullet. Package not renamed; `config.py` public
+  constants unchanged.
+
+The app's current direction continues this generalization + presentation arc (generic
+terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
+structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
+below. Phase 3 (ML) is not started.
 
 > **Two different `experiments/`.** `flyash_phreeqc_ml/experiments/` is the *Python package*
 > (planning + QA/QC). The repo-root `experiments/` is the *data folder* of run save-files
 > (gitignored except its `README.md`). Don't confuse them.
+
+## Direction: generalization + presentation (current phase)
+
+The app is being steered toward a **generic measured-data → model-prediction → mapping →
+residuals → validation-status** workflow, with PHREEQC and fly ash as the *current
+implementation*, not a hard limit. Follow these rules when writing new code/UI:
+
+- **Generic terminology going forward.** New UI strings and new code use generic terms: *measured
+  data*, *measured record/group*, *model prediction*, *simulation output*, *mapping status*,
+  *residual*, *validation status*. PHREEQC-specific wording stays in the parsers, model-specific
+  modules, and advanced/metadata expanders. Don't mass-rename existing code yet — but don't add new
+  fly-ash/PHREEQC wording to generic workflow code either.
+- **Cup-cover condition semantics (fly ash dataset).** Condition codes are CO₂-exposure cup covers:
+  **OA = open air** (direct atmospheric CO₂ exposure), **PF = plastic flap cover**, **GS = glass
+  cover**. PF and GS likely reduce CO₂ exchange but must **never** be described as "sealed" unless
+  airtight sealing is experimentally confirmed. This is **dataset-specific metadata**, not universal
+  app logic.
+- **Two plot families, never mixed.** (a) *Measured-data overview* — all measured rows for a
+  variable, labeled "Measured data only — no model comparison", renders even with zero model output.
+  (b) *Model comparison* — only rows with a measured value **+** a saved mapping **+** a model
+  prediction; always shown with row counts and an **excluded-rows table with per-row reasons**.
+- **Per-run results.** Comparison outputs and figures belong to a run (`experiments/<run>/outputs/`),
+  stamped with provenance. The Results tab must **never** display a comparison generated from a
+  different run's data.
+- **Residual convention everywhere:** `residual = measured − model predicted`. Positive = measured
+  higher than model. Near-zero = better agreement **only if the mapping is scientifically valid**.
+- **Mapping statuses are canonical:** `exact`, `scenario-level only`, `unsafe`, `needs new
+  simulation` (generic name; the UI may append the model name from context). Every suggestion must
+  expose **structured matched / missing / conflicting fields**, not just a prose reason.
 
 ## Working rules (project-specific)
 
@@ -96,6 +219,15 @@ Phase 3 (ML) is not started.
   **only** `experiments/README.md` is tracked. Run data (lab, literature, synthetic) and
   generated outputs stay out of git unless explicitly approved.
 - **Run `pytest` before committing** any code change, and keep code modular, simple, and tested.
+- **End-to-end workflow lock.** `tests/test_e2e_workflow.py` drives the full pipeline through
+  `run_manager` directly (no Streamlit): create run → save synthetic measured data (4 conditions
+  covering all four mapping statuses) → suggestion table → accept rules (bulk-exact + selected
+  scenario-level; unsafe refused) → expand condition mapping → per-run comparison (the Prompt-1
+  `comparison_path` + `write_comparison_meta` path) → `comparison_is_current` → `comparison_inclusion`
+  (counts / exclusion reasons / residual signs / collapse / validity=preliminary) → mutate the data
+  CSV and assert freshness flips; plus an alternate-profile unit pass. Keep it green and fast (no
+  network; synthetic phreeqc_results frame) — it is the regression guard against silent pipeline
+  breakage.
 
 ### Git layout (important)
 
@@ -144,6 +276,27 @@ modules together and own all file I/O paths.
   phases, and the molality→mM factor live here. The shipped template CSV, the parser, and the
   tests all derive from this list — change the schema here, not in three places.
 
+- **`profiles.py`** — the **generalization layer** (additive; pure, no chemistry/ML). Two frozen
+  dataclasses describe a dataset + model so the same code can serve more than fly ash + PHREEQC
+  **without renaming the package**: `DatasetProfile` (id/time/replicate columns, condition column +
+  code dict, variable columns + units, overview variables, `important_fields` + `tolerances` for
+  grouping/mapping, `comparison_variable_spec`, and a `grouping` flag) and `ModelProfile` (model
+  `name` used in UI strings, prediction metadata fields, parser entry point). `FLY_ASH_PROFILE` /
+  `PHREEQC_PROFILE` are populated **by reference** from `config.py` (still the single source of truth)
+  — incl. the OA/PF/GS cover dict from `config.CONDITION_CODE_DESCRIPTIONS`. Profiles are threaded
+  through the existing seams with a **fly-ash default**, so all current behaviour is unchanged:
+  `replicates.condition_key`/`annotate`/`replicate_summary`/`mapping_status` (fly-ash bespoke key when
+  `grouping=="fly_ash"`, else a generic `important_fields` key), `scenarios.sample_condition_code` /
+  `_metadata_alignment` / `score_scenario` / `suggest_mappings` (condition vocab from the profile),
+  `mapping_table.build_suggestion_table`/`condition_candidates`, `compare.inclusion.comparison_inclusion`
+  (variable spec from `profile.comparison_variable_spec`; `inclusion.VARIABLE_SPEC` now references the
+  profile), and `viz/measured_overview` (overview variables + time column from the profile). A second
+  synthetic profile drives the whole chain in `tests/test_profiles.py`. **Seams not yet threaded**
+  (noted for a future prompt): `overall_mapping_status` / `conditions_needing_simulation` /
+  `condition_mean_comparison` and the per-sample `id_column` still assume the fly-ash default; the
+  `mapping_status` acid/CO₂ conflict checks are fly-ash-specific (they simply no-op when those columns
+  are absent).
+
 - **`parsers/`** turn raw files into tidy DataFrames:
   - `pqo_parser.py` is the core. PHREEQC `.pqo` output is verbose text; the parser walks it
     line-by-line tracking `(simulation, state, solution)` context, where `state` is `initial`
@@ -165,8 +318,36 @@ modules together and own all file I/O paths.
   `sample_id → record_key` mapping (`data/raw/experimental_icp/sample_phreeqc_map.csv`); with no
   mapping, predictions/residuals stay NaN rather than mis-joining (a deliberate, visible state).
 
-- **`viz/`** — `plots.py` (Phase 1 exploratory) and `compare_plots.py` (Phase 2), the latter
-  only emitting figures when measured/PHREEQC pairs exist.
+- **`compare/inclusion.py`** — the **single** comparison-inclusion function (pure, no Streamlit).
+  `comparison_inclusion(data, mapping, comparison_df, variable, *, manifest, include_unsafe,
+  min_valid_rows)` classifies every comparison row, for the selected `variable` (`VARIABLE_SPEC`:
+  final_pH/Ca/Si/Al/Fe), as **plotted** or **excluded with exactly one reason** in priority order
+  (`no saved mapping` → `mapping is unsafe (excluded by default)` → `model prediction missing this
+  variable` → `measured value missing/non-numeric`), so plotted ∪ excluded partitions the rows and
+  the counts always add up. It joins the four `replicates.mapping_status` values onto rows, plots
+  only `exact`/`scenario-level` by default (unsafe only when `include_unsafe`, then `flagged`),
+  flags the **scenario-level collapse** (unique predictions / plotted ≤ 0.5 or any prediction reused
+  ≥ 3×), and picks **one** overall `validity` (`valid` / `preliminary` / `single-sample` / `unsafe`
+  / `needs new simulations` / `nothing to compare`) — only `valid` implies the model was validated.
+  Rules documented in `docs/comparison_inclusion.md`. The plots **consume this output, never
+  re-derive filters.** Covered by `tests/test_inclusion.py`.
+
+- **`viz/`** — `plots.py` (Phase 1 exploratory) and `compare_plots.py` (Phase 2, the
+  *model-comparison* plot family — only emits figures when measured/PHREEQC pairs exist;
+  `make_comparison_plots(..., statuses=None)` styles scatter points by mapping status with a legend
+  when a `sample_id → status` map is given, default `None` = unchanged so the `scripts/05` CLI is
+  untouched; `comparison_scatter_figure(plotted, variable)` returns a live status-styled
+  measured-vs-model figure for the app, consuming `inclusion["plotted"]`), plus
+  `measured_overview.py` — the **measured-data-only** plot family (pure, no Streamlit/matplotlib).
+  `available_variables(data)` lists `final_pH` + ICP columns that actually carry numeric data (never
+  empty columns); `prepare_overview(data, variable)` returns a tidy plot frame (`sample_id,
+  condition_key, replicate_id, value`, + `time_min` when a numeric time exists), an `excluded` table
+  (blank / non-numeric values, with reasons — counts add up: `n_shown + n_excluded == rows`), and
+  per-condition `group_stats` (mean ± std, ddof=1, NaN for a single replicate), reusing
+  `replicates.annotate`. It needs **only the run's own data** — no mapping, no `phreeqc_results.csv`.
+  The app renders it as a "Measured data overview — *measured data only, no model comparison*" section
+  at the top of Run + Results (matplotlib, points colored by condition, time-or-condition x-axis,
+  optional mean±std overlay). Covered by `tests/test_measured_overview.py`.
 
 - **`experiments/`** (pre-data planning + QA/QC; no ML) — three independent helpers, all deriving
   their schema from `config`:
@@ -203,7 +384,17 @@ modules together and own all file I/O paths.
   `experiments/<run>/data/sample_phreeqc_map.csv`, `export_mapping_to_pipeline` copies it to
   `data/raw/experimental_icp/sample_phreeqc_map.csv` for step 05, and `summarize_mapping` (pure)
   reports samples / unique PHREEQC rows / samples-per-row + collisions for the mapping-quality
-  warnings.
+  warnings. **Per-run comparison artifacts + provenance** (lab-like runs only): `comparison_path` /
+  `comparison_figures_dir` / `comparison_meta_path` point at `experiments/<run>/outputs/`
+  (`comparison_measured_vs_phreeqc.csv`, `figures/`, `comparison_meta.json`) so one run's results can
+  never display in another run's Results tab. `write_comparison_meta` stamps the run name/type, a
+  timestamp, and **sha256+size fingerprints** of the three inputs (the run's data CSV, its
+  `sample_phreeqc_map.csv`, and the shared `data/processed/phreeqc_results.csv`);
+  `comparison_is_current(run)` re-checks those fingerprints and returns `(bool, stale_reasons)` so the
+  app flags "results from older data/mappings — re-run". `scripts/05_compare_experimental.py --run
+  <name>` (passed by the app's `_run_lab_workflow`) writes these per-run outputs + the stamp **in
+  addition to** the global `data/processed/` + `reports/figures/` path, which still works standalone
+  for the CLI-only pipeline.
 
 - **`calculations.py`** — calculation transparency + audit (no chemistry, no ML). Pure arithmetic
   that documents and **re-derives the downstream math** the app applies on top of PHREEQC output:
@@ -232,7 +423,16 @@ modules together and own all file I/O paths.
   `extra__condition_code`/`sample_id`/`notes`), or `NaOH_M` — so **high requires both sides to
   align**, not just L/S + CO₂ + batch. The cap returns `base_confidence`, `phreeqc_missing`, and
   human `metadata_notes` (e.g. "Experimental time is known, but the selected PHREEQC scenario does
-  not specify time.") that the Match PHREEQC tab shows per suggestion. `suggest_mappings` returns the
+  not specify time.") that the Match PHREEQC tab shows per suggestion. `score_scenario` returns a
+  machine-readable **decision `trace`** — one entry per rule that fired
+  (`{field, sample_value, scenario_value, outcome: matched|missing|conflict|normalized, points, note}`,
+  incl. fuzzy normalizations like HCl→acid and CO₂ family grouping, and 0-point metadata-quality cap
+  entries). The flat `reason`, the `matched_fields`/`mismatched_fields`/`missing_metadata` lists, the
+  `score_breakdown` (`{rule, delta}`) and the `confidence_explanation` ("score 9 of max 9 → high;
+  capped to medium because …") are all **derived from the trace** (one code path; `score` always equals
+  the sum of trace `points`) — so the UI explanation is generated, not re-derived. **Scoring weights
+  unchanged** — this was pure restructuring. Methodology write-up for scientists in
+  `docs/mapping_rules.md`. `suggest_mappings` returns the
   top-N scenarios, `samples_needing_simulation` flags unmapped/low-confidence/colliding samples, and
   `describe_solutions` / `load_solution_descriptions` summarise each `.pqi` `SOLUTION n` label so the
   app can explain that **sol1/sol2/sol3 are PHREEQC solution numbers, not time points or replicates**
@@ -273,10 +473,12 @@ modules together and own all file I/O paths.
   `acid_M` set, `ACID_IMPORT_NOTE`), fills operator-supplied metadata from a `defaults` dict
   (`DEFAULT_FILL_FIELDS`; `fly_ash_type` defaults `Class C fly ash`), and honours an `include_hcl`
   scope. It returns `(schema_df, report)` where `report` has parse counts
-  (NaOH/HCl/with-pH/with-chem/missing-metadata), warnings (Fe/Na/K/Sc/REE absent; OA/PF/GS meanings
-  unknown; HCl ≠ NaOH PHREEQC), and `icp_debug` (per-element time×condition pivots for the app's
-  debug view, via `icp_debug_pivots`). OA/PF/GS are preserved in `sample_id`, `notes`, and an
-  `extra__condition_code` column. Reuses `import_mapping`'s leachant/provenance columns so saved rows
+  (NaOH/HCl/with-pH/with-chem/missing-metadata), warnings (Fe/Na/K/Sc/REE absent; OA/PF/GS are
+  cup-cover/CO₂ conditions — OA open air, PF plastic flap, GS glass cover, PF/GS not sealed unless
+  confirmed; HCl ≠ NaOH PHREEQC), and `icp_debug` (per-element time×condition pivots for the app's
+  debug view, via `icp_debug_pivots`). OA/PF/GS are preserved in `sample_id`, `notes`, an
+  `extra__condition_code` column, and optional derived `extra__cover_condition` /
+  `extra__CO2_exposure_level` columns (from `scenarios.cover_condition` / `scenarios.co2_exposure_level`). Reuses `import_mapping`'s leachant/provenance columns so saved rows
   match a generic import. Validated against the real workbook layout and a synthetic fixture in
   `tests/test_dissolution_workbook.py`; the marker constants (sheet/element/unit/condition labels)
   are the tuning points if another workbook differs.
@@ -297,13 +499,17 @@ modules together and own all file I/O paths.
   is **expected** (not flagged); it warns only on **different** condition_keys sharing a scenario,
   acid→NaOH mappings, and (via `scenarios._metadata_alignment`) time/condition metadata PHREEQC
   can't confirm. Storage lives in `run_manager` (`condition_phreeqc_map.csv`,
-  `replicate_solution_map.csv`; `add_condition_mapping` / `apply_condition_mapping` expand to the
+  `replicate_solution_map.csv`; `add_condition_mapping(..., notes="", override=False)` upserts
+  optional free-text `notes` + a boolean `override` column (`override=true` marks a deliberately-saved
+  unsafe mapping from the manual-override path) — both back-compat on read, both stay in the condition
+  map and never reach the 2-column per-sample map; `apply_condition_mapping` expands to the
   run's `sample_phreeqc_map.csv`). Covered by `tests/test_replicates.py`. Surfaced in the Match
   PHREEQC tab (replicate summary + condition-level mapping + advanced replicate→solution expander +
   replicate-aware collision warnings) and Run + Results (comparison-mode radio + condition mean±std
   error-bar plot + individual-replicate scatter). For **presentation honesty**, `mapping_status`
   classifies a sample→scenario link as `exact` / `scenario-level only` / `unsafe` / `needs new
-  PHREEQC simulation` (`MAPPING_STATUS_DEFINITIONS`), `overall_mapping_status` aggregates it (with
+  simulation` (`MAPPING_STATUS_DEFINITIONS`, worded generically as measured-data↔model-prediction),
+  `overall_mapping_status` aggregates it (with
   `all_exact`), and `conditions_needing_simulation` is the presentation table
   (`CONDITIONS_NEEDED_COLUMNS`). The Start tab's **Presentation summary** (`_render_presentation_summary`)
   surfaces dataset/validation/mapping counts, overall mapping + comparison status, a recommended next
@@ -311,6 +517,19 @@ modules together and own all file I/O paths.
   unless mappings are exact**; the same valid-now / not-yet wording and status definitions appear in
   Audit / Help, and Run + Results shows the "residual plots are a workflow check, not final
   validation" warning whenever any mapping is not exact.
+
+- **`mapping_table.py`** — consolidated suggestion table (no chemistry, no ML; bridges
+  `replicates` + `scenarios`, so it lives in its own module to avoid the `scenarios`↔`replicates`
+  import cycle). `build_suggestion_table(data, manifest, existing_mapping)` groups measured rows by
+  `replicates.condition_key` (mapping stays condition-level with replicate inheritance), scores each
+  condition's representative row via `scenarios.suggest_mappings`, classifies the best candidate with
+  `replicates.mapping_status`, and returns one row per condition (`SUGGESTION_TABLE_COLUMNS`:
+  condition_key, n_replicates, scenario_label, phreeqc_record_key, mapping_status, score, confidence,
+  reason, already_mapped). `exact_suggestions` (bulk-accept filter — `BULK_ACCEPT_STATUS` = exact),
+  `SELECTABLE_STATUSES` (exact + scenario-level; **unsafe excluded**), `needs_new_simulation` (drives
+  the conditions-needing-simulation section from the same table), and `condition_candidates` (the
+  representative sample + top-N scored candidates, each with `score_breakdown`, for the row-detail
+  view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
   wide-layout **guided five-tab workflow** driven by a run-management **sidebar** (run selector +
@@ -367,10 +586,20 @@ modules together and own all file I/O paths.
   experiment measures).
 - Phase 2 is built to be a no-op until data lands: `run_phase1.py` is untouched by Phase 2, and
   step 05 detects a blank template and exits cleanly. Keep this separation when extending.
-- `config.CO2_CONDITION_ALLOWED` (`open`/`sealed`/`low_CO2`/`atm_CO2`/`unknown`) is the accepted
-  CO₂ vocabulary; the validator errors on anything else, so the plan generator, the Streamlit
-  dropdown (which derives its options from this list), and any sample entry must use these exact
-  labels. There is no separate "none/atmospheric/elevated" set — those older labels were removed.
+- **CO₂ condition = cup-cover vocabulary.** `config.CO2_CONDITION_ALLOWED` =
+  `["OA","PF","GS","atm_CO2","low_CO2","no_CO2","unknown"]`. CO₂ exposure is controlled by the cup
+  cover — **OA** = open air (atmospheric CO₂), **PF** = plastic flap cover, **GS** = glass cover;
+  PF/GS likely reduce CO₂ exchange but are **not confirmed airtight — never called "sealed"** in
+  code/UI/plots/docs. `atm_CO2`/`low_CO2`/`no_CO2` are the *model-side* (PHREEQC scenario) labels.
+  The validator errors on anything else; the plan generator, the Streamlit dropdown (derived from
+  this list) and sample entry use these exact labels. `config.CONDITION_CODE_DESCRIPTIONS` is the
+  single source of truth for the human descriptions + the not-confirmed-sealed caution (the UI reads
+  it). The legacy `open`/`sealed` labels were removed: importers map legacy `open`→`OA` (with a note)
+  and **flag** legacy `sealed` for the user to resolve (PF vs GS is not knowable — never auto-mapped).
+  `co2_family` classifies two families — **atmospheric** (OA, atm_CO2) and **reduced** (PF, GS,
+  low_CO2, no_CO2). For matching, **OA can reach `exact`** against an atmospheric model scenario, but
+  **PF/GS cap at `scenario-level only`** (reduced but unconfirmed) until a model scenario explicitly
+  carries that cover code; cross-family (OA↔reduced, PF/GS↔atmospheric) is `unsafe`.
 - **Fe is often unpredicted.** The CEMDATA18 runs may omit `mol_Fe`, so `phreeqc_Fe_mM` and
   `residual_Fe` can be entirely NaN. Step 05 prints an explicit WARNING when Fe is *measured* but
   PHREEQC has no Fe prediction — this is "unavailable", not "PHREEQC predicts zero Fe". The scenario

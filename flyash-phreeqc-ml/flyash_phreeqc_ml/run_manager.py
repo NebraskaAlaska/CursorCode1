@@ -34,6 +34,7 @@ dependency.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -708,7 +709,7 @@ def export_mapping_to_pipeline(run_name: str) -> Path:
 # --------------------------------------------------------------------------- #
 # Maps one experimental condition (all its replicate batches) to a PHREEQC
 # scenario; expanded to the per-sample mapping the pipeline already reads.
-CONDITION_MAPPING_COLUMNS = ["condition_key", "phreeqc_record_key"]
+CONDITION_MAPPING_COLUMNS = ["condition_key", "phreeqc_record_key", "notes", "override"]
 CONDITION_MAPPING_FILENAME = "condition_phreeqc_map.csv"
 # Optional advanced map: which PHREEQC solution number each replicate id uses.
 REPLICATE_SOLUTION_COLUMNS = ["replicate_id", "solution_number"]
@@ -722,15 +723,33 @@ def condition_mapping_path(run_name: str) -> Path:
 
 
 def read_condition_mapping(run_name: str) -> pd.DataFrame:
-    """Read the run's condition→PHREEQC map (empty 2-col frame if not created)."""
+    """Read the run's condition→PHREEQC map (empty frame if not created).
+
+    Back-compat: older files may lack the optional ``notes`` / ``override`` columns,
+    which are added (blank / ``False``) on read so callers always see the full schema.
+    """
     path = condition_mapping_path(run_name)
     if path.exists():
-        return pd.read_csv(path)
+        df = pd.read_csv(path)
+        if "notes" not in df.columns:
+            df["notes"] = ""
+        if "override" not in df.columns:
+            df["override"] = False
+        return df
     return pd.DataFrame(columns=CONDITION_MAPPING_COLUMNS)
 
 
-def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key: str) -> pd.DataFrame:
-    """Upsert one ``condition_key -> phreeqc_record_key`` link and save it."""
+def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key: str,
+                          notes: str = "", override: bool = False) -> pd.DataFrame:
+    """Upsert one ``condition_key -> phreeqc_record_key`` link (+ optional notes).
+
+    ``notes`` is free-text validation context (CO2/cover caveats, who mapped it,
+    etc.). ``override=True`` records that a human deliberately saved a mapping the
+    suggestion table would otherwise refuse (e.g. an *unsafe* mapping confirmed via
+    the Advanced manual-override path). Both columns live only in the condition map —
+    they never reach the per-sample map the comparison step reads, so the pipeline is
+    unaffected.
+    """
     ck = str(condition_key).strip()
     key = str(phreeqc_record_key).strip()
     if not ck:
@@ -740,7 +759,8 @@ def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key:
     df = read_condition_mapping(run_name)
     if "condition_key" in df.columns and not df.empty:
         df = df[df["condition_key"].astype(str).str.strip() != ck]
-    new = pd.DataFrame([{"condition_key": ck, "phreeqc_record_key": key}],
+    new = pd.DataFrame([{"condition_key": ck, "phreeqc_record_key": key,
+                         "notes": str(notes or "").strip(), "override": bool(override)}],
                        columns=CONDITION_MAPPING_COLUMNS)
     out = pd.concat([df, new], ignore_index=True)[CONDITION_MAPPING_COLUMNS]
     path = condition_mapping_path(run_name)
@@ -828,6 +848,138 @@ def apply_condition_mapping(run_name: str, *, use_replicate_solution: bool = Fal
     path.parent.mkdir(parents=True, exist_ok=True)
     sample_map.to_csv(path, index=False)
     return path
+
+
+# --------------------------------------------------------------------------- #
+# Per-run comparison artifacts + provenance stamp
+# --------------------------------------------------------------------------- #
+# A lab run's measured-vs-PHREEQC comparison (CSV + figures) belongs to that run,
+# under experiments/<run>/outputs/, so run B's Results tab can never display run
+# A's comparison. A small JSON stamp records the content hashes of the three
+# inputs the comparison was built from, so the app can flag stale results.
+COMPARISON_FILENAME = config.COMPARISON_CSV  # comparison_measured_vs_phreeqc.csv
+COMPARISON_META_FILENAME = "comparison_meta.json"
+COMPARISON_FIGURES_DIRNAME = "figures"
+
+# Human labels for the three provenance sources (used in stale-reason messages).
+_COMPARISON_SOURCE_LABELS = {
+    "data": "run data CSV",
+    "mapping": "sample→PHREEQC mapping",
+    "phreeqc_results": "PHREEQC results (data/processed/phreeqc_results.csv)",
+}
+
+
+def comparison_path(run_name: str) -> Path:
+    """Path to a lab-like run's per-run comparison CSV (lab-like runs only)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_outputs_dir(run_name) / COMPARISON_FILENAME
+
+
+def comparison_figures_dir(run_name: str) -> Path:
+    """Directory for a lab-like run's per-run comparison figures (lab-like only)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_outputs_dir(run_name) / COMPARISON_FIGURES_DIRNAME
+
+
+def comparison_meta_path(run_name: str) -> Path:
+    """Path to a lab-like run's comparison provenance stamp (lab-like runs only)."""
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_outputs_dir(run_name) / COMPARISON_META_FILENAME
+
+
+def has_comparison(run_name: str) -> bool:
+    """True if this run has a generated per-run comparison CSV."""
+    return comparison_path(run_name).exists()
+
+
+def _file_fingerprint(path: Path) -> dict | None:
+    """Content fingerprint (sha256 + byte size) of a file, or None if absent."""
+    if not path.exists():
+        return None
+    raw = path.read_bytes()
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+
+
+def _comparison_source_paths(run_name: str) -> dict[str, Path]:
+    """The three inputs a comparison is built from, by provenance key.
+
+    The run's own data CSV and mapping (so editing either makes results stale) and
+    the shared Phase-1 PHREEQC results (so re-parsing the model invalidates them).
+    """
+    return {
+        "data": data_file_path(run_name),
+        "mapping": mapping_path(run_name),
+        "phreeqc_results": config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV,
+    }
+
+
+def write_comparison_meta(run_name: str, *, timestamp: str | None = None) -> Path:
+    """Stamp the provenance of a just-generated comparison for this run.
+
+    Records the run name/type, a timestamp, and content fingerprints of the run's
+    data CSV, its ``sample_phreeqc_map.csv``, and the shared
+    ``data/processed/phreeqc_results.csv``. :func:`comparison_is_current` re-checks
+    these to decide whether the stored results still match the live inputs.
+    """
+    cfg = require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    if timestamp is None:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+    sources = {
+        key: _file_fingerprint(path)
+        for key, path in _comparison_source_paths(run_name).items()
+    }
+    meta = {
+        "run_name": run_name,
+        "run_type": cfg.get("run_type"),
+        "generated_at": timestamp,
+        "sources": sources,
+    }
+    path = comparison_meta_path(run_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return path
+
+
+def read_comparison_meta(run_name: str) -> dict | None:
+    """Read the comparison provenance stamp, or None if absent/unparseable."""
+    path = comparison_meta_path(run_name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, json.JSONDecodeError):  # pragma: no cover - corrupt stamp
+        return None
+
+
+def comparison_is_current(run_name: str) -> tuple[bool, list[str]]:
+    """Is the stored comparison still consistent with its inputs?
+
+    Returns ``(is_current, stale_reasons)``. ``is_current`` is True only when a
+    comparison CSV + provenance stamp exist and every source file's fingerprint
+    still matches what was recorded. Otherwise ``stale_reasons`` explains why (no
+    results yet, no stamp, or which input changed/appeared/disappeared).
+    """
+    if not comparison_path(run_name).exists():
+        return False, ["No comparison has been generated for this run yet."]
+    meta = read_comparison_meta(run_name)
+    if meta is None:
+        return False, ["No provenance stamp found for this run's comparison."]
+
+    stored = meta.get("sources", {})
+    reasons: list[str] = []
+    for key, path in _comparison_source_paths(run_name).items():
+        label = _COMPARISON_SOURCE_LABELS[key]
+        live = _file_fingerprint(path)
+        recorded = stored.get(key)
+        if live is None and recorded is None:
+            continue
+        if recorded is None and live is not None:
+            reasons.append(f"{label} now exists but was absent when results were generated.")
+        elif recorded is not None and live is None:
+            reasons.append(f"{label} is missing now but was present when results were generated.")
+        elif live != recorded:
+            reasons.append(f"{label} changed since results were generated.")
+    return (not reasons), reasons
 
 
 # --------------------------------------------------------------------------- #

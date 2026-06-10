@@ -1,0 +1,132 @@
+"""Dataset + model **profiles** — the first generalization layer (additive only).
+
+The pipeline was written for *Class C fly ash + PHREEQC*. To begin generalizing
+beyond that pairing **without renaming the package or breaking the working pipeline**,
+this module introduces two small, immutable description objects:
+
+* :class:`DatasetProfile` — what a measured dataset looks like: its id/time/replicate
+  columns, variable columns + units, the condition column and its code dictionary
+  (e.g. the OA/PF/GS cup covers), the fields + numeric tolerances that matter for
+  mapping, and how to parse a sample id.
+* :class:`ModelProfile` — what the prediction model is: its display *name* (so UI
+  strings like "needs new {model} simulation" are profile-driven), its prediction
+  metadata fields, and its parser entry point.
+
+The existing ``config.py`` constants remain the **single source of truth**; the
+fly-ash / PHREEQC profiles here only *reference* them. Profiles are threaded through
+the existing seams with a fly-ash default, so all current behaviour is unchanged —
+passing a different profile is what makes the same code work for another dataset.
+Nothing here does chemistry or ML.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from . import config
+
+
+@dataclass(frozen=True)
+class DatasetProfile:
+    """How one measured dataset is shaped (columns, codes, mapping fields, tolerances)."""
+
+    name: str
+    id_column: str = "sample_id"
+    time_column: str | None = "time_min"
+    replicate_column: str = "replicate_id"
+    # Regex that pulls a replicate number out of a sample id (R1 / rep2 / batch3 …).
+    replicate_pattern: str = r"(?:^|[-_ ])(?:R|REP|REPLICATE|BATCH)\s*[-_]?\s*(\d+)\b"
+    # Optional regex for parsing the whole sample id (documentation / future use).
+    sample_id_pattern: str | None = None
+    # The column that carries the experimental condition code (cup cover for fly ash).
+    condition_column: str = "CO2_condition"
+    # code -> {"description": str, "caution": str}. The UI reads this dict.
+    condition_codes: dict = field(default_factory=dict)
+    # Measured variable columns and their units (display only).
+    variable_columns: tuple = ()
+    variable_units: dict = field(default_factory=dict)
+    # Variables offered in the measured-data overview (subset that makes sense to plot).
+    overview_variables: tuple = ()
+    # Fields used to group replicates into a condition and to judge a mapping.
+    important_fields: tuple = ()
+    # Per-field numeric tolerance for "matches" decisions.
+    tolerances: dict = field(default_factory=dict)
+    # variable -> (measured_column, model_prediction_column) for the comparison.
+    comparison_variable_spec: dict = field(default_factory=dict)
+    # "fly_ash" keeps the bespoke leachant/CO2 condition_key; anything else uses the
+    # generic important-fields key builder.
+    grouping: str = "generic"
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """How the prediction model is described (name + metadata + parser entry point)."""
+
+    name: str
+    # Metadata columns carried from the model side (shown in advanced views).
+    prediction_metadata_fields: tuple = ()
+    # Dotted path to the parser that turns raw model output into a tidy frame.
+    parser_entry_point: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Fly-ash dataset profile — populated from config.py (the single source of truth)
+# --------------------------------------------------------------------------- #
+# Experiment-side cup-cover codes (OA/PF/GS), referenced from the config dict.
+_FLY_ASH_CONDITION_CODES = {
+    code: config.CONDITION_CODE_DESCRIPTIONS[code]
+    for code in ("OA", "PF", "GS")
+}
+
+# Measured variables shown in the overview: pH + the ICP element columns.
+_FLY_ASH_OVERVIEW_VARIABLES = (
+    "final_pH", "Ca_mM", "Si_mM", "Al_mM", "Fe_mM",
+    "Na_mM", "K_mM", "Sc_ppb", "total_REE_ppb",
+)
+_FLY_ASH_VARIABLE_UNITS = {
+    "final_pH": "pH",
+    "Ca_mM": "mM", "Si_mM": "mM", "Al_mM": "mM", "Fe_mM": "mM",
+    "Na_mM": "mM", "K_mM": "mM", "Sc_ppb": "ppb", "total_REE_ppb": "ppb",
+}
+# Comparison variable -> (measured_column, model_prediction_column). The element
+# residuals come straight from config.RESIDUAL_ELEMENTS; pH is added explicitly.
+_FLY_ASH_COMPARISON_SPEC = {
+    "final_pH": ("final_pH", "phreeqc_pH"),
+    **{f"{el}_mM": (f"{el}_mM", f"phreeqc_{el}_mM") for el in config.RESIDUAL_ELEMENTS},
+}
+
+FLY_ASH_PROFILE = DatasetProfile(
+    name="Class C fly ash",
+    id_column="sample_id",
+    time_column="time_min",
+    condition_column="CO2_condition",
+    condition_codes=_FLY_ASH_CONDITION_CODES,
+    variable_columns=tuple(config.EXPERIMENTAL_NUMERIC_COLUMNS),
+    variable_units=_FLY_ASH_VARIABLE_UNITS,
+    overview_variables=_FLY_ASH_OVERVIEW_VARIABLES,
+    # Fields the bespoke condition_key + mapping use (leachant/molarity/cover/time/L:S).
+    important_fields=("leachant", "NaOH_M", "acid_M", "CO2_condition",
+                      "time_min", "liquid_solid_ratio", "temperature_C"),
+    tolerances={"liquid_solid_ratio": 1e-6, "temperature_C": 1.0},
+    comparison_variable_spec=_FLY_ASH_COMPARISON_SPEC,
+    grouping="fly_ash",
+)
+
+
+# --------------------------------------------------------------------------- #
+# PHREEQC model profile
+# --------------------------------------------------------------------------- #
+PHREEQC_PROFILE = ModelProfile(
+    name="PHREEQC",
+    prediction_metadata_fields=("source_file", "simulation", "state", "solution_number"),
+    parser_entry_point="flyash_phreeqc_ml.parsers.pqo_parser",
+)
+
+
+def default_dataset_profile() -> DatasetProfile:
+    """The dataset profile assumed when a caller passes none (keeps current behaviour)."""
+    return FLY_ASH_PROFILE
+
+
+def default_model_profile() -> ModelProfile:
+    """The model profile assumed when a caller passes none."""
+    return PHREEQC_PROFILE

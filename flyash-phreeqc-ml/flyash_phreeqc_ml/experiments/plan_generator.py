@@ -63,19 +63,21 @@ PLAN_COLUMNS = PLAN_LEADING_COLUMNS + _RELEASE_TAIL
 # --------------------------------------------------------------------------- #
 # Each set lists, per factor, the value(s) to sweep. Scalars are held constant;
 # lists are expanded via a Cartesian product. Defaults fill the unspecified knobs.
+# CO2 is controlled by the cup cover (OA = open air, PF = plastic flap, GS = glass).
+# OA is the default; the cover-control set sweeps all three covers.
 _SET_DEFAULTS = {
     "NaOH_M": 0.5,
     "time_min": 60,
     "temperature_C": 25,
     "liquid_solid_ratio": 5,
-    "CO2_condition": "open",
+    "CO2_condition": "OA",
     "replicate": 1,
 }
 
 EXPERIMENT_SETS: dict[str, dict] = {
     "time_series": {"time_min": [10, 20, 40, 60, 90, 120]},
     "naoh_series": {"NaOH_M": [0, 0.1, 0.25, 0.5, 1.0]},
-    "co2_control": {"CO2_condition": ["sealed", "open"]},
+    "co2_control": {"CO2_condition": ["OA", "PF", "GS"]},
     "replicate_check": {"replicate": [1, 2, 3]},
 }
 
