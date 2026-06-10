@@ -17,6 +17,7 @@ The molality→mM conversion is the same one ``compare/residuals.py`` already us
 """
 from __future__ import annotations
 
+import functools
 import math
 import re
 from pathlib import Path
@@ -59,14 +60,22 @@ _MOLALITY_TO_MM = {
 }
 
 # CO2 vocabulary families. Two labels are "compatible" if they share a family
-# (or either is unknown). atmospheric/open vent CO2 in; sealed/low/no-CO2 keep it
-# out — opposite families are a real conflict, not just a missing match.
-_CO2_OPEN = {"open", "atm_co2", "atmco2", "atmospheric", "atmospheric/open"}
-_CO2_SEALED = {"sealed", "low_co2", "lowco2", "noco2", "sealed-like"}
+# (or either is unknown); opposite families are a real conflict, not just a missing
+# match. Two families:
+#   atmospheric — open air to atmospheric CO2: OA (cup cover), atm_CO2 (model).
+#   reduced     — reduced CO2 exchange: PF/GS (cup covers, *not* confirmed airtight),
+#                 low_CO2 / no_CO2 (model). NOTE: never called "sealed".
+# Legacy labels (open / sealed) are still recognised so old data still classifies.
+ATMOSPHERIC = "atmospheric"
+REDUCED = "reduced"
+_CO2_ATMOSPHERIC = {"oa", "atm_co2", "atmco2", "atmospheric", "atmospheric/open", "open"}
+_CO2_REDUCED = {"pf", "gs", "low_co2", "lowco2", "no_co2", "noco2", "sealed", "sealed-like"}
 
-# Confidence bands for the rule-based score (max achievable is 9).
+# Confidence bands for the rule-based score. Max achievable = the positive weights
+# (batch +3, L/S +3, CO2 +2, temperature +1).
 HIGH_SCORE = 7
 MEDIUM_SCORE = 4  # below this is "low" -> treated as no good match
+MAX_SCORE = 9
 
 
 # --------------------------------------------------------------------------- #
@@ -88,21 +97,38 @@ def _to_float(value) -> float | None:
 
 
 def co2_family(label) -> str:
-    """Normalise a CO2 label to a family: ``open`` / ``sealed`` / ``unknown``."""
+    """Normalise a CO2 label to a family: ``atmospheric`` / ``reduced`` / ``unknown``.
+
+    ``OA`` (open air) and ``atm_CO2`` are *atmospheric*; the cup covers ``PF``/``GS``
+    and the model labels ``low_CO2``/``no_CO2`` are *reduced*. PF/GS are reduced but
+    not confirmed airtight, so this family is never named "sealed".
+    """
     if label is None:
         return UNKNOWN
     token = str(label).strip().lower()
     if not token or token == "nan":
         return UNKNOWN
-    if token in _CO2_OPEN:
-        return "open"
-    if token in _CO2_SEALED:
-        return "sealed"
+    if token in _CO2_ATMOSPHERIC:
+        return ATMOSPHERIC
+    if token in _CO2_REDUCED:
+        return REDUCED
     return UNKNOWN
 
 
 def co2_compatible(sample_label, scenario_label) -> bool:
-    """True if two CO2 labels share a family (or either is unknown)."""
+    """True if two CO2 labels share a family (or either is unknown).
+
+    Compatibility (no hard conflict) is not the same as an *exact* CO2 match:
+
+    * **OA ↔ atmospheric model (atm_CO2)** is a genuine match — the open-air cover is
+      directly represented by an atmospheric-CO2 scenario, so OA can reach *exact*.
+    * **PF/GS ↔ reduced model (low_CO2/no_CO2)** share the *reduced* family and so are
+      compatible, but the match is **unconfirmed** — PF/GS are not confirmed airtight
+      and the model does not represent that specific cover. Such a same-family match
+      must NOT count as exact for the CO2 field; :func:`_metadata_alignment` caps a
+      PF/GS sample to *scenario-level only* until a model scenario explicitly carries
+      that PF/GS cover code (see :func:`replicates.mapping_status`).
+    """
     a, b = co2_family(sample_label), co2_family(scenario_label)
     return a == UNKNOWN or b == UNKNOWN or a == b
 
@@ -115,9 +141,9 @@ def infer_metadata_from_filename(source_file: str) -> dict:
 
     Only confident tokens are used; everything else stays ``unknown``:
     * ``L-S_5`` (or ``LS5``) -> ``liquid_solid_ratio = 5``
-    * ``atmCO2`` -> ``CO2_condition = atm_CO2`` (vents to air / open family)
-    * ``lowCO2`` -> ``CO2_condition = low_CO2`` (sealed-like family)
-    * ``noCO2``  -> ``CO2_condition = sealed`` (no CO2 ingress)
+    * ``atmCO2`` -> ``CO2_condition = atm_CO2`` (atmospheric family)
+    * ``lowCO2`` -> ``CO2_condition = low_CO2`` (reduced family)
+    * ``noCO2``  -> ``CO2_condition = no_CO2`` (no CO2 ingress; reduced family)
     """
     name = str(source_file or "")
     out = {"liquid_solid_ratio": None, "CO2_condition": UNKNOWN, "notes": []}
@@ -130,13 +156,13 @@ def infer_metadata_from_filename(source_file: str) -> dict:
     low = name.lower()
     if "atmco2" in low:
         out["CO2_condition"] = "atm_CO2"
-        out["notes"].append("atmCO2 -> atm_CO2 (open/atmospheric)")
+        out["notes"].append("atmCO2 -> atm_CO2 (atmospheric)")
     elif "lowco2" in low:
         out["CO2_condition"] = "low_CO2"
-        out["notes"].append("lowCO2 -> low_CO2 (sealed-like)")
+        out["notes"].append("lowCO2 -> low_CO2 (reduced)")
     elif "noco2" in low:
-        out["CO2_condition"] = "sealed"
-        out["notes"].append("noCO2 -> sealed (no CO2 ingress)")
+        out["CO2_condition"] = "no_CO2"
+        out["notes"].append("noCO2 -> no_CO2 (no CO2 ingress; reduced)")
 
     return out
 
@@ -314,31 +340,90 @@ def confidence_for(score: int) -> str:
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 _CONDITION_CODE_RE = re.compile(r"(?<![A-Z])(OA|PF|GS)(?![A-Z])")
 
+# OA / PF / GS are now known cup-cover / CO2 exposure conditions.
+#   OA = open air  (directly exposed to atmospheric CO2)
+#   PF = plastic flap cover  (covered cup, reduced CO2 exchange — not sealed)
+#   GS = glass cover         (covered cup, reduced CO2 exchange — not sealed)
+# PF / GS are NOT treated as fully sealed unless airtight sealing is confirmed.
+COVER_CONDITION = {
+    "OA": "open_air",
+    "PF": "plastic_flap",
+    "GS": "glass_cover",
+}
+# Qualitative CO2 exposure level implied by the cover (NOT the PHREEQC open/sealed
+# vocabulary). OA is open air; PF/GS are covered cups with reduced — never fully
+# sealed — CO2 exchange.
+CO2_EXPOSURE_LEVEL = {
+    "OA": "open",
+    "PF": "reduced",
+    "GS": "reduced",
+}
+
+
+def cover_condition(code: str | None) -> str | None:
+    """Human-readable cup-cover condition for an OA/PF/GS code (else ``None``)."""
+    if code is None:
+        return None
+    return COVER_CONDITION.get(str(code).strip().upper())
+
+
+def co2_exposure_level(code: str | None) -> str | None:
+    """Qualitative CO2 exposure level implied by an OA/PF/GS cover (else ``None``).
+
+    OA is open air (high atmospheric CO2); PF and GS are covered cups with reduced
+    exchange. This is a *qualitative* exposure descriptor — it is deliberately not
+    the open/sealed PHREEQC ``CO2_condition`` vocabulary, because PF/GS are not
+    confirmed airtight.
+    """
+    if code is None:
+        return None
+    return CO2_EXPOSURE_LEVEL.get(str(code).strip().upper())
+
 
 def _min_confidence(a: str, b: str) -> str:
     """The lower of two confidence labels."""
     return a if CONFIDENCE_ORDER.get(a, 0) <= CONFIDENCE_ORDER.get(b, 0) else b
 
 
-def sample_condition_code(sample: dict) -> str | None:
-    """Experimental OA/PF/GS condition code, if the sample carries one.
+@functools.lru_cache(maxsize=None)
+def _code_regex(codes: tuple):
+    """Compiled ``(CODE1|CODE2|…)`` regex for the given condition codes (cached)."""
+    if not codes:
+        return None
+    return re.compile("(?<![A-Z])(" + "|".join(re.escape(c) for c in codes) + ")(?![A-Z])")
 
-    Looks at an explicit ``condition_code`` / ``extra__condition_code`` column
-    first (the dissolution importer writes the latter), then falls back to the
-    ``sample_id`` and ``notes`` text (e.g. ``...-NaOH-OA-10min``).
+
+def sample_condition_code(sample: dict, profile=None) -> str | None:
+    """Experimental condition code (OA/PF/GS for fly ash), if the sample carries one.
+
+    Looks at an explicit ``condition_code`` / ``extra__condition_code`` / the profile's
+    condition column first (the cup cover is the CO2_condition value for fly ash), then
+    falls back to the ``sample_id`` and ``notes`` text (e.g. ``...-NaOH-OA-10min``). With
+    no profile, the fly-ash codes (OA/PF/GS) and ``CO2_condition`` column are used, so
+    existing callers are unchanged; a :class:`profiles.DatasetProfile` supplies a
+    different code set / condition column for another dataset.
     """
-    for key in ("condition_code", "extra__condition_code"):
+    if profile is None:
+        codes = ("OA", "PF", "GS")
+        cols = ("condition_code", "extra__condition_code", "CO2_condition")
+        regex = _CONDITION_CODE_RE
+    else:
+        codes = tuple(str(c).strip().upper() for c in profile.condition_codes)
+        cols = ("condition_code", "extra__condition_code", profile.condition_column)
+        regex = _code_regex(codes)
+    for key in cols:
         v = sample.get(key)
-        if v not in (None, "") and str(v).strip().upper() in ("OA", "PF", "GS"):
+        if v not in (None, "") and str(v).strip().upper() in codes:
             return str(v).strip().upper()
-    for key in ("sample_id", "notes"):
-        m = _CONDITION_CODE_RE.search(str(sample.get(key, "")).upper())
-        if m:
-            return m.group(1)
+    if regex is not None:
+        for key in ("sample_id", "notes"):
+            m = regex.search(str(sample.get(key, "")).upper())
+            if m:
+                return m.group(1)
     return None
 
 
-def _metadata_alignment(sample: dict, scenario: dict) -> dict:
+def _metadata_alignment(sample: dict, scenario: dict, profile=None) -> dict:
     """Compare *experimental* vs *PHREEQC* metadata and decide a confidence cap.
 
     The PHREEQC scenario manifest (built from ``phreeqc_results.csv`` + filenames)
@@ -350,37 +435,49 @@ def _metadata_alignment(sample: dict, scenario: dict) -> dict:
     """
     notes: list[str] = []
     phreeqc_missing: list[str] = []
+    trace: list[dict] = []
     cap = "high"
+
+    def _cap_entry(field, sample_value, scenario_value, note):
+        """Record a metadata-quality cap: caps confidence to medium, no score change."""
+        notes.append(note)
+        phreeqc_missing.append(field)
+        trace.append({
+            "field": field, "sample_value": sample_value, "scenario_value": scenario_value,
+            "outcome": "missing", "points": 0,
+            "note": note + " Caps confidence to medium (no score change).",
+        })
 
     exp_time = _to_float(sample.get("time_min"))
     pheq_time = _to_float(scenario.get("time_min"))
     if exp_time is not None and pheq_time is None:
-        notes.append(
-            "Experimental time is known, but the selected PHREEQC scenario does not specify time."
-        )
-        phreeqc_missing.append("time_min")
         cap = "medium"
+        _cap_entry("time_min", exp_time, None,
+                   "Experimental time is known, but the selected PHREEQC scenario does not specify time.")
 
-    exp_code = sample_condition_code(sample)
+    exp_code = sample_condition_code(sample, profile)
     pheq_code_raw = scenario.get("condition_code")
     pheq_code = (str(pheq_code_raw).strip().upper()
                  if pheq_code_raw not in (None, "") else None)
-    if exp_code and not pheq_code:
-        notes.append(
-            f"Experimental condition {exp_code} (OA/PF/GS) is known, but the PHREEQC "
-            "scenario does not specify a condition code."
-        )
-        phreeqc_missing.append("condition_code")
+    # PF/GS are reduced-CO2 cup covers that are NOT confirmed airtight: a same-family
+    # ("reduced") model match is *unconfirmed*, so cap to medium until a model scenario
+    # explicitly carries that cover code. OA (open air) is directly represented by an
+    # atmospheric-CO2 model scenario, so it is NOT capped here — a real CO2 mismatch for
+    # OA (e.g. OA vs a reduced scenario) is caught as a family conflict in
+    # replicates.mapping_status, and OA vs an atmospheric scenario can reach exact.
+    if exp_code in ("PF", "GS") and exp_code != pheq_code:
         cap = "medium"
+        _cap_entry("condition_code", exp_code, pheq_code,
+                   f"Experimental cup-cover {exp_code} ({cover_condition(exp_code)}) is a reduced-CO2 "
+                   "cover the model does not explicitly represent. PF/GS are not confirmed airtight, so "
+                   "this is at best a scenario-level (reduced-CO2 family) match, not an exact CO2 match.")
 
     exp_naoh = _to_float(sample.get("NaOH_M"))
     pheq_naoh = _to_float(scenario.get("NaOH_M"))
     if exp_naoh is not None and pheq_naoh is None:
-        notes.append(
-            "Experimental NaOH molarity is known, but the PHREEQC scenario does not specify NaOH_M."
-        )
-        phreeqc_missing.append("NaOH_M")
         cap = "medium"
+        _cap_entry("NaOH_M", exp_naoh, None,
+                   "Experimental NaOH molarity is known, but the PHREEQC scenario does not specify NaOH_M.")
 
     experimental_known = {
         "NaOH_M": exp_naoh is not None,
@@ -396,105 +493,199 @@ def _metadata_alignment(sample: dict, scenario: dict) -> dict:
         "experimental_known": experimental_known,
         "phreeqc_missing": phreeqc_missing,
         "experimental_condition_code": exp_code,
+        "trace": trace,
     }
 
 
-def score_scenario(sample: dict, scenario: dict) -> dict:
+# Leachant family normalization tokens (case/synonym-insensitive).
+_ACID_TOKENS = ("hcl", "acid", "hno3", "h2so4", "nitric", "sulfuric", "hydrochloric")
+
+
+def _leachant_family(leachant) -> str | None:
+    """Group a leachant label into an ``acid`` / ``base`` family (``None`` if blank)."""
+    s = str(leachant or "").strip().lower()
+    if not s or s == "nan":
+        return None
+    return "acid" if any(t in s for t in _ACID_TOKENS) else "base"
+
+
+# Outcome vocabulary for a trace entry.
+TRACE_OUTCOMES = ("matched", "missing", "conflict", "normalized")
+
+
+def _collect_trace_fields(trace: list[dict]) -> tuple[list[str], list[str], list[str]]:
+    """Pull the human field labels back out of the trace (one place, no re-derivation)."""
+    matched = [e["label"] for e in trace if e["outcome"] == "matched" and e.get("label")]
+    conflict = [e["label"] for e in trace if e["outcome"] == "conflict" and e.get("label")]
+    missing = [e["label"] for e in trace if e["outcome"] == "missing" and e.get("label")]
+    return matched, conflict, missing
+
+
+def reason_from_trace(trace: list[dict]) -> str:
+    """Assemble the flat reason string FROM the trace (the single source for it)."""
+    matched, conflict, _ = _collect_trace_fields(trace)
+    if conflict:
+        return "; ".join(matched + [f"CONFLICT: {c}" for c in conflict])
+    if matched:
+        return "; ".join(matched)
+    return "no comparable metadata"
+
+
+def confidence_explanation(score: int, base_confidence: str, final_confidence: str,
+                           phreeqc_missing: list[str]) -> str:
+    """Human banding math: ``score X of max 9 → base; capped to final because …``."""
+    text = f"score {score} of max {MAX_SCORE} → {base_confidence}"
+    if final_confidence != base_confidence:
+        why = ", ".join(phreeqc_missing) if phreeqc_missing else \
+            "experimental metadata the model cannot confirm"
+        text += f"; capped to {final_confidence} because the model does not specify {why}"
+    return text
+
+
+def score_scenario(sample: dict, scenario: dict, profile=None) -> dict:
     """Rule-based score for mapping ``sample`` to a PHREEQC ``scenario`` row.
 
     Transparent, hand-written rules (no learned weights):
     * +3 batch state, -4 initial state,
     * +3 matching liquid_solid_ratio,
-    * +2 compatible CO2_condition,
+    * +2 compatible CO2_condition family,
     * +1 matching-or-unknown temperature,
     * -2 on a major conflict (opposite CO2 family or a different known L/S).
+
+    Returns a machine-readable ``trace`` (one entry per rule that fired, each
+    ``{field, sample_value, scenario_value, outcome, points, note}``) from which the
+    flat ``reason``, the ``matched_fields`` / ``mismatched_fields`` / ``missing_metadata``
+    lists, the ``score_breakdown`` and the ``confidence_explanation`` are all derived —
+    a single source so the UI explanation is *generated*, not re-derived. The integer
+    ``score`` always equals the sum of the trace entries' ``points``.
     """
+    trace: list[dict] = []
     score = 0
-    matched: list[str] = []
-    mismatched: list[str] = []
-    missing: list[str] = []
 
-    state = str(scenario.get("state", "")).strip().lower()
+    def record(field, sample_value, scenario_value, outcome, points, note, label=None):
+        nonlocal score
+        score += points
+        entry = {"field": field, "sample_value": sample_value,
+                 "scenario_value": scenario_value, "outcome": outcome,
+                 "points": int(points), "note": note}
+        if label is not None:
+            entry["label"] = label  # the human token reused for reason / *_fields
+        trace.append(entry)
+
+    # 0) Leachant family normalization — informational (not scored here; the acid/NaOH
+    #    safety decision lives in replicates.mapping_status).
+    fam = _leachant_family(sample.get("leachant"))
+    if fam:
+        record("leachant", sample.get("leachant"), None, "normalized", 0,
+               f"Leachant '{sample.get('leachant')}' grouped as {fam} family "
+               "(case/synonym-normalized).")
+
+    # 1) PHREEQC state.
+    state_raw = scenario.get("state", "")
+    state = str(state_raw).strip().lower()
     if state == "batch":
-        score += 3
-        matched.append("state=batch")
+        record("state", None, state_raw, "matched", 3,
+               "state = batch (post-equilibration)", label="state=batch")
     elif state == "initial":
-        score -= 4
-        mismatched.append("state=initial (starting solution)")
+        record("state", None, state_raw, "conflict", -4,
+               "state = initial (starting solution)",
+               label="state=initial (starting solution)")
 
+    # 2) Liquid/solid ratio.
     s_ls = _to_float(sample.get("liquid_solid_ratio"))
     m_ls = _to_float(scenario.get("liquid_solid_ratio"))
     if s_ls is None or m_ls is None:
-        missing.append("liquid_solid_ratio")
+        record("liquid_solid_ratio", s_ls, m_ls, "missing", 0,
+               "liquid_solid_ratio not comparable (one side unknown)",
+               label="liquid_solid_ratio")
     elif abs(s_ls - m_ls) < 1e-6:
-        score += 3
-        matched.append("liquid_solid_ratio")
+        record("liquid_solid_ratio", s_ls, m_ls, "matched", 3,
+               "liquid_solid_ratio matches", label="liquid_solid_ratio")
     else:
-        mismatched.append(f"liquid_solid_ratio ({s_ls:g} vs {m_ls:g})")
+        record("liquid_solid_ratio", s_ls, m_ls, "conflict", 0,
+               f"liquid_solid_ratio differs ({s_ls:g} vs {m_ls:g})",
+               label=f"liquid_solid_ratio ({s_ls:g} vs {m_ls:g})")
 
+    # 3) CO2 condition — fuzzy family grouping, then the family-match score.
     s_co2 = sample.get("CO2_condition")
     m_co2 = scenario.get("CO2_condition")
     sf, mf = co2_family(s_co2), co2_family(m_co2)
+    record("CO2_condition", s_co2, m_co2, "normalized", 0,
+           f"CO2 grouped by family: '{s_co2}'→{sf}, '{m_co2}'→{mf}.")
     if sf == UNKNOWN or mf == UNKNOWN:
-        missing.append("CO2_condition")
+        record("CO2_condition", s_co2, m_co2, "missing", 0,
+               "CO2_condition not comparable (one side unknown family)",
+               label="CO2_condition")
     elif sf == mf:
-        score += 2
-        matched.append("CO2_condition")
+        record("CO2_condition", s_co2, m_co2, "matched", 2,
+               "CO2_condition family compatible", label="CO2_condition")
     else:
-        mismatched.append(f"CO2_condition ({s_co2} vs {m_co2})")
+        record("CO2_condition", s_co2, m_co2, "conflict", 0,
+               f"CO2_condition family conflict ({sf} vs {mf})",
+               label=f"CO2_condition ({s_co2} vs {m_co2})")
 
+    # 4) Temperature.
     s_t = _to_float(sample.get("temperature_C"))
     m_t = _to_float(scenario.get("temperature_C"))
     if s_t is None or m_t is None:
-        score += 1
-        matched.append("temperature (unknown ok)")
+        record("temperature_C", s_t, m_t, "matched", 1,
+               "temperature (unknown — no penalty)", label="temperature (unknown ok)")
     elif abs(s_t - m_t) < 1.0:
-        score += 1
-        matched.append("temperature")
+        record("temperature_C", s_t, m_t, "matched", 1,
+               "temperature matches", label="temperature")
     else:
-        mismatched.append(f"temperature ({s_t:g} vs {m_t:g})")
+        record("temperature_C", s_t, m_t, "conflict", 0,
+               f"temperature differs ({s_t:g} vs {m_t:g})",
+               label=f"temperature ({s_t:g} vs {m_t:g})")
 
-    # Major metadata conflict: opposite CO2 families, or two known but different L/S.
+    # 5) Major metadata conflict: opposite CO2 families, or two known but different L/S.
     conflict = (sf != UNKNOWN and mf != UNKNOWN and sf != mf) or (
         s_ls is not None and m_ls is not None and abs(s_ls - m_ls) >= 1e-6
     )
     if conflict:
-        score -= 2
+        record("conflict_penalty", None, None, "conflict", -2,
+               "major metadata conflict (CO2 family or L/S)")  # no label: not a reason field
 
-    if mismatched:
-        reason = "; ".join(matched + [f"CONFLICT: {x}" for x in mismatched])
-    elif matched:
-        reason = "; ".join(matched)
-    else:
-        reason = "no comparable metadata"
+    # 6) Metadata-quality caps (time / OA-PF-GS condition / NaOH_M the model can't
+    #    confirm) — 0-point trace entries that lower the confidence band only.
+    align = _metadata_alignment(sample, scenario, profile)
+    trace.extend(align["trace"])
 
-    # Cap confidence when the experiment specifies metadata PHREEQC cannot confirm
-    # (time / OA-PF-GS condition / NaOH_M). High needs both sides to align.
+    # Everything below is DERIVED from the trace (single code path).
+    matched, mismatched, missing = _collect_trace_fields(trace)
+    reason = reason_from_trace(trace)
+    score_breakdown = [{"rule": e["note"], "delta": e["points"]}
+                       for e in trace if e["points"] != 0]
+
     base_confidence = confidence_for(int(score))
-    align = _metadata_alignment(sample, scenario)
     final_confidence = _min_confidence(base_confidence, align["cap"])
 
     return {
         "score": int(score),
         "confidence": final_confidence,
         "base_confidence": base_confidence,
+        "confidence_explanation": confidence_explanation(
+            int(score), base_confidence, final_confidence, align["phreeqc_missing"]),
         "reason": reason,
         "matched_fields": matched,
         "mismatched_fields": mismatched,
         "missing_metadata": missing,
+        "trace": trace,
+        "score_breakdown": score_breakdown,
         "metadata_notes": align["metadata_notes"],
         "experimental_known": align["experimental_known"],
         "phreeqc_missing": align["phreeqc_missing"],
     }
 
 
-def suggest_mappings(sample: dict, manifest: pd.DataFrame, top_n: int = 3) -> list[dict]:
+def suggest_mappings(sample: dict, manifest: pd.DataFrame, top_n: int = 3,
+                     profile=None) -> list[dict]:
     """Score every scenario for ``sample`` and return the top ``top_n`` suggestions."""
     if manifest is None or manifest.empty:
         return []
     scored: list[dict] = []
     for _, scenario in manifest.iterrows():
-        result = score_scenario(sample, scenario.to_dict())
+        result = score_scenario(sample, scenario.to_dict(), profile)
         scored.append({
             "suggested_phreeqc_record_key": scenario.get("phreeqc_record_key", ""),
             "scenario_label": scenario.get("scenario_label", ""),
@@ -504,9 +695,9 @@ def suggest_mappings(sample: dict, manifest: pd.DataFrame, top_n: int = 3) -> li
     return scored[:top_n]
 
 
-def best_confidence(sample: dict, manifest: pd.DataFrame) -> str:
+def best_confidence(sample: dict, manifest: pd.DataFrame, profile=None) -> str:
     """Confidence of the single best scenario for a sample (``low`` if none)."""
-    top = suggest_mappings(sample, manifest, top_n=1)
+    top = suggest_mappings(sample, manifest, top_n=1, profile=profile)
     return top[0]["confidence"] if top else "low"
 
 

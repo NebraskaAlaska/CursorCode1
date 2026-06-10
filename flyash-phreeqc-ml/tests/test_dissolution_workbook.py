@@ -176,6 +176,37 @@ def test_condition_code_preserved(workbook):
         assert f"condition_code={code}" in row["notes"]
 
 
+def test_derived_cover_fields(workbook):
+    df, _ = dw.normalize_dissolution_workbook(workbook, import_timestamp=TS)
+    expected_cover = {"OA": "open_air", "PF": "plastic_flap", "GS": "glass_cover"}
+    expected_exposure = {"OA": "open", "PF": "reduced", "GS": "reduced"}
+    for _, row in df.iterrows():
+        code = row["extra__condition_code"]
+        assert row["extra__cover_condition"] == expected_cover[code]
+        # PF/GS are covered (reduced exposure); OA is open air. Never "sealed".
+        assert row["extra__CO2_exposure_level"] == expected_exposure[code]
+        assert "sealed" not in row["extra__CO2_exposure_level"]
+
+
+def test_co2_condition_is_the_cup_cover_code(workbook):
+    # The cup cover IS the CO2 condition: CO2_condition holds OA/PF/GS per row,
+    # matching the condition code (a shared default never overrides it).
+    df, _ = dw.normalize_dissolution_workbook(
+        workbook, defaults={"CO2_condition": "OA"}, import_timestamp=TS)
+    for _, row in df.iterrows():
+        assert row["CO2_condition"] == row["extra__condition_code"]
+        assert row["CO2_condition"] in ("OA", "PF", "GS")
+
+
+def test_shared_default_does_not_override_cover(workbook):
+    # Even a (legacy) shared default must not relabel covered PF/GS rows.
+    df, _ = dw.normalize_dissolution_workbook(
+        workbook, defaults={"CO2_condition": "sealed"}, import_timestamp=TS)
+    assert "sealed" not in set(df["CO2_condition"].astype(str))
+    pf = df[df["extra__condition_code"] == "PF"]
+    assert not pf.empty and (pf["CO2_condition"] == "PF").all()
+
+
 def test_debug_pivots_present(workbook):
     _, report = dw.normalize_dissolution_workbook(workbook, import_timestamp=TS)
     assert set(report["icp_debug"]) == {"Ca_mM", "Si_mM", "Al_mM"}
@@ -190,5 +221,6 @@ def test_defaults_fill_metadata(workbook):
     }
     df, _ = dw.normalize_dissolution_workbook(workbook, defaults=defaults, import_timestamp=TS)
     assert (df["temperature_C"] == "25").all()
-    assert (df["CO2_condition"] == "sealed").all()
+    # CO2_condition is the per-row cup cover (OA/PF/GS), not the shared "sealed" default.
+    assert set(df["CO2_condition"].astype(str)) <= {"OA", "PF", "GS"}
     assert (df["fly_ash_type"] == "Class C fly ash").all()

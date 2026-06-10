@@ -76,8 +76,40 @@ EXPERIMENTAL_NON_DATA_FILES = {
     EXPERIMENT_PLAN_CSV,
 }
 
-# Accepted CO2 atmosphere labels for a measured/planned experiment.
-CO2_CONDITION_ALLOWED = ["open", "sealed", "low_CO2", "atm_CO2", "unknown"]
+# CO2-condition / cup-cover vocabulary.
+#
+# The experiment controls CO2 exposure with **cup covers**, encoded as condition
+# codes (this is the experimental fact, not an assumption):
+#   OA = open air         — directly exposed to atmospheric CO2
+#   PF = plastic flap cover — covered cup, *likely* reduced CO2 exchange
+#   GS = glass cover        — covered cup, *likely* reduced CO2 exchange
+# PF and GS are NOT confirmed airtight: nothing in code/UI/plots/docs may call them
+# "sealed". The model side (PHREEQC scenarios) uses atm_CO2 / low_CO2 / no_CO2.
+CO2_CONDITION_ALLOWED = ["OA", "PF", "GS", "atm_CO2", "low_CO2", "no_CO2", "unknown"]
+
+# Single source of truth for the human-readable condition descriptions + the
+# not-confirmed-sealed caution. The UI reads this dict (it never hard-codes the
+# wording), and only shows it for datasets that actually use these codes.
+_PF_GS_CAUTION = "Not confirmed airtight — do not treat as sealed."
+CONDITION_CODE_DESCRIPTIONS = {
+    "OA": {"label": "open air",
+           "description": "Open air — directly exposed to atmospheric CO2.",
+           "caution": ""},
+    "PF": {"label": "plastic flap cover",
+           "description": "Plastic flap cover — covered cup, likely reduced CO2 exchange.",
+           "caution": _PF_GS_CAUTION},
+    "GS": {"label": "glass cover",
+           "description": "Glass cover — covered cup, likely reduced CO2 exchange.",
+           "caution": _PF_GS_CAUTION},
+    "atm_CO2": {"label": "atmospheric CO2 (model)",
+                "description": "PHREEQC scenario at atmospheric CO2.", "caution": ""},
+    "low_CO2": {"label": "low CO2 (model)",
+                "description": "PHREEQC scenario at reduced CO2.", "caution": ""},
+    "no_CO2": {"label": "no CO2 ingress (model)",
+               "description": "PHREEQC scenario with no CO2 ingress.", "caution": ""},
+    "unknown": {"label": "unknown",
+                "description": "CO2 condition not specified.", "caution": ""},
+}
 
 # --------------------------------------------------------------------------- #
 # Domain constants

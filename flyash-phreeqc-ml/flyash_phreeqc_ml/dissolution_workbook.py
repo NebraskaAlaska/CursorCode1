@@ -37,6 +37,7 @@ import pandas as pd
 
 from . import config
 from . import import_mapping as im
+from . import scenarios
 from .calculations import ATOMIC_MASSES
 
 # Sheet names (matched case-insensitively, substring-tolerant).
@@ -79,6 +80,9 @@ CONDITION_RE = re.compile(r"(?<![A-Z])(OA|PF|GS)(?![A-Z])")
 ABSENT_CHEMISTRY = ["Fe_mM", "Na_mM", "K_mM", "Sc_ppb", "total_REE_ppb"]
 
 EXTRA_CONDITION_COLUMN = f"{im.EXTRA_COLUMN_PREFIX}condition_code"
+# Optional derived fields from the now-known OA/PF/GS cover meanings.
+EXTRA_COVER_COLUMN = f"{im.EXTRA_COLUMN_PREFIX}cover_condition"
+EXTRA_CO2_EXPOSURE_COLUMN = f"{im.EXTRA_COLUMN_PREFIX}CO2_exposure_level"
 
 
 class DissolutionWorkbookError(Exception):
@@ -504,14 +508,22 @@ def normalize_dissolution_workbook(
         row["original_row_number"] = ""
         row["import_timestamp"] = ts
         row["units_assumed"] = "ICP: mmol/l preferred, mg/L→mM by atomic mass"
+        # The cup cover IS the CO2 condition: store the OA/PF/GS code in
+        # CO2_condition (the cup-cover vocabulary), overriding any shared default.
+        if code:
+            row["CO2_condition"] = code
         row[EXTRA_CONDITION_COLUMN] = code
+        # Optional derived fields — OA/PF/GS are known cup-cover / CO2 exposure
+        # conditions. Kept as extra columns so they ride through unchanged.
+        row[EXTRA_COVER_COLUMN] = scenarios.cover_condition(code) or ""
+        row[EXTRA_CO2_EXPOSURE_COLUMN] = scenarios.co2_exposure_level(code) or ""
         out_rows.append(row)
 
     ordered = (
         list(config.EXPERIMENTAL_RELEASE_COLUMNS)
         + [im.LEACHANT_COLUMN, im.ACID_M_COLUMN]
         + im.PROVENANCE_COLUMNS
-        + [EXTRA_CONDITION_COLUMN]
+        + [EXTRA_CONDITION_COLUMN, EXTRA_COVER_COLUMN, EXTRA_CO2_EXPOSURE_COLUMN]
     )
     schema_df = pd.DataFrame(out_rows, columns=ordered) if out_rows else pd.DataFrame(columns=ordered)
 
@@ -540,8 +552,9 @@ def _build_report(schema_df: pd.DataFrame, n_naoh: int, n_hcl: int,
     warnings = [
         "Fe, Na, K, Sc and total REE are not present in this workbook unless found elsewhere — "
         "those columns stay blank (blank ≠ zero).",
-        "OA / PF / GS condition meanings are unknown unless you define them — they are preserved "
-        "in sample_id and notes.",
+        "OA / PF / GS are cup-cover / CO2 exposure conditions (OA = open air, PF = plastic flap "
+        "cover, GS = glass cover) and are written to CO2_condition per row. PF and GS are covered, "
+        "reduced-CO2-exchange conditions — not fully sealed unless airtight sealing is confirmed.",
         "HCl rows are acid leaching and must not be mapped to NaOH PHREEQC scenarios.",
     ]
     return {

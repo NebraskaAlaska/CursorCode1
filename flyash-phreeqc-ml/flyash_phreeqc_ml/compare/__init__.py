@@ -1,5 +1,6 @@
 """Phase 2: compare measured experimental release against PHREEQC predictions."""
 
+from .inclusion import comparison_inclusion
 from .residuals import (
     compare_measured_vs_phreeqc,
     compute_residuals,
@@ -12,4 +13,5 @@ __all__ = [
     "join_measured_to_phreeqc",
     "compute_residuals",
     "compare_measured_vs_phreeqc",
+    "comparison_inclusion",
 ]

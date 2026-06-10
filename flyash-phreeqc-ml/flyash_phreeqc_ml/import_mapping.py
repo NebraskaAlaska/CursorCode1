@@ -93,6 +93,46 @@ ACID_IMPORT_NOTE = (
     "Imported as acid leaching row; PHREEQC mapping may require matching acid simulation."
 )
 
+# Legacy CO2_condition migration to the cup-cover vocabulary (OA/PF/GS). ``open``
+# (and atmospheric synonyms) map to OA; ``sealed`` is deliberately NOT auto-mapped to
+# a cover — we cannot know which cup cover it was — so it is left as-is and flagged for
+# the user to resolve.
+_LEGACY_CO2_OPEN = {"open", "atm", "atmospheric", "atmospheric/open", "open air"}
+_LEGACY_CO2_AMBIGUOUS = {"sealed", "sealed-like", "closed"}
+CO2_OPEN_TO_OA_NOTE = "CO2_condition 'open' interpreted as OA (open air)."
+CO2_SEALED_AMBIGUOUS_NOTE = (
+    "CO2_condition 'sealed' is ambiguous under the cup-cover vocabulary — set OA / PF / GS "
+    "(or a model label no_CO2) to resolve; not auto-mapped (we can't know which cover it was)."
+)
+
+
+def normalize_co2_condition(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Migrate legacy CO2_condition values to the cup-cover vocabulary.
+
+    Returns ``(new_series, warnings_series)`` (positional index). Legacy ``open`` →
+    ``OA`` with a note; ``sealed`` is left unchanged and **flagged** (PF vs GS is not
+    knowable). Cup-cover / model labels and blanks pass through unchanged.
+    """
+    new: list = []
+    warns: list = []
+    for v in series:
+        if _is_blank(v):
+            new.append(v)
+            warns.append("")
+            continue
+        token = str(v).strip().lower()
+        if token in _LEGACY_CO2_OPEN:
+            new.append("OA")
+            warns.append(CO2_OPEN_TO_OA_NOTE)
+        elif token in _LEGACY_CO2_AMBIGUOUS:
+            new.append(v)  # leave it; do NOT guess a cover
+            warns.append(CO2_SEALED_AMBIGUOUS_NOTE)
+        else:
+            new.append(v)
+            warns.append("")
+    idx = series.index
+    return pd.Series(new, index=idx, dtype=object), pd.Series(warns, index=idx, dtype=object)
+
 
 # --------------------------------------------------------------------------- #
 # File reading + sheet selection
@@ -345,6 +385,11 @@ def build_schema_frame(
         else:
             out[col] = ""
 
+    # Migrate legacy CO2_condition values to the cup-cover vocabulary (open -> OA;
+    # sealed -> flagged, never silently mapped to a cover).
+    co2_norm, co2_warn = normalize_co2_condition(out["CO2_condition"])
+    out["CO2_condition"] = co2_norm.values
+
     # Leachant / acid metadata.
     leach_src = mapping.get(LEACHANT_COLUMN)
     if leach_src and leach_src in raw.columns:
@@ -362,6 +407,11 @@ def build_schema_frame(
         out["NaOH_M"] = out["NaOH_M"].astype(object)
         out.loc[is_acid, "NaOH_M"] = ""  # never force acid data into NaOH_M
         warnings[is_acid] = ACID_IMPORT_NOTE
+    # Merge the CO2 migration notes into import_warning (positional).
+    warnings = pd.Series(
+        ["; ".join(x for x in (w, c) if x) for w, c in zip(warnings.tolist(), co2_warn.tolist())],
+        dtype=object,
+    )
 
     out[LEACHANT_COLUMN] = leachant.to_numpy()
     out[ACID_M_COLUMN] = acid_m.to_numpy() if hasattr(acid_m, "to_numpy") else list(acid_m)
@@ -423,6 +473,7 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
             "rows_no_measured_values": 0,
             "converted_columns": {},
             "classifications": {},
+            "co2_unresolved": 0,
         }
 
     df = schema_df.reset_index(drop=True)
@@ -474,6 +525,15 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
     labels = df.apply(classify_row, axis=1)
     classifications = {k: int(v) for k, v in labels.value_counts().items()}
 
+    # CO2_condition values still outside the cup-cover vocabulary (e.g. legacy
+    # 'sealed' that was flagged, not auto-mapped) — the user must resolve these.
+    co2_unresolved = 0
+    if "CO2_condition" in df.columns:
+        allowed = set(config.CO2_CONDITION_ALLOWED)
+        vals = df["CO2_condition"].astype(str).str.strip()
+        present = vals[(vals != "") & (vals.str.lower() != "nan")]
+        co2_unresolved = int((~present.isin(allowed)).sum())
+
     return {
         "n_rows": len(df),
         "missing_required_columns": missing_cols,
@@ -484,4 +544,5 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
         "rows_no_measured_values": rows_no_measured,
         "converted_columns": converted,
         "classifications": classifications,
+        "co2_unresolved": co2_unresolved,
     }

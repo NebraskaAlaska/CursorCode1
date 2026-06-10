@@ -450,3 +450,103 @@ def test_export_requires_lab_type_and_data(runs_root, tmp_path, monkeypatch):
     run_manager.create_run("lab4", "lab_experiment", created_at="t")
     with pytest.raises(run_manager.RunManagerError):
         run_manager.export_lab_run_to_pipeline("lab4")
+
+
+# --------------------------------------------------------------------------- #
+# Per-run comparison artifacts + provenance stamp
+# --------------------------------------------------------------------------- #
+@pytest.fixture()
+def comparison_run(runs_root, tmp_path, monkeypatch):
+    """A lab run with a data CSV, a mapping, and a stand-in phreeqc_results.csv.
+
+    Returns the run name. ``config.PROCESSED_DIR`` is redirected to a throwaway
+    folder so the shared PHREEQC-results source is controllable per test.
+    """
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    monkeypatch.setattr(config, "PROCESSED_DIR", processed)
+    (processed / config.PHREEQC_RESULTS_CSV).write_text("record_key,pH\nA|sim1|batch|sol1,12.9\n",
+                                                        encoding="utf-8")
+
+    run_manager.create_run("cmp_run", "lab_experiment", created_at="t")
+    run_manager.append_lab_row("cmp_run", {"sample_id": "S1", "final_pH": "13.0"})
+    run_manager.add_mapping("cmp_run", "S1", "A|sim1|batch|sol1")
+    return "cmp_run"
+
+
+def test_comparison_paths_are_per_run_and_lab_only(runs_root):
+    run_manager.create_run("labp", "lab_experiment", created_at="t")
+    cpath = run_manager.comparison_path("labp")
+    fdir = run_manager.comparison_figures_dir("labp")
+    mpath = run_manager.comparison_meta_path("labp")
+    assert cpath == run_manager.run_outputs_dir("labp") / config.COMPARISON_CSV
+    assert fdir == run_manager.run_outputs_dir("labp") / "figures"
+    assert mpath == run_manager.run_outputs_dir("labp") / "comparison_meta.json"
+
+    # Non-lab runs may not have a per-run comparison.
+    run_manager.create_run("litp", "literature_benchmark", created_at="t")
+    for fn in (run_manager.comparison_path, run_manager.comparison_figures_dir,
+               run_manager.comparison_meta_path):
+        with pytest.raises(run_manager.RunTypeError):
+            fn("litp")
+
+
+def test_write_comparison_meta_records_sources(comparison_run):
+    # Simulate a generated comparison, then stamp provenance.
+    run_manager.comparison_path(comparison_run).write_text("sample_id\nS1\n", encoding="utf-8")
+    run_manager.write_comparison_meta(comparison_run, timestamp="2026-06-10T00:00:00")
+
+    meta = run_manager.read_comparison_meta(comparison_run)
+    assert meta["run_name"] == comparison_run
+    assert meta["run_type"] == "lab_experiment"
+    assert meta["generated_at"] == "2026-06-10T00:00:00"
+    # All three sources present and fingerprinted.
+    for key in ("data", "mapping", "phreeqc_results"):
+        assert meta["sources"][key] is not None
+        assert "sha256" in meta["sources"][key]
+
+
+def test_comparison_is_current_fresh(comparison_run):
+    run_manager.comparison_path(comparison_run).write_text("sample_id\nS1\n", encoding="utf-8")
+    run_manager.write_comparison_meta(comparison_run, timestamp="t")
+    current, reasons = run_manager.comparison_is_current(comparison_run)
+    assert current is True
+    assert reasons == []
+
+
+def test_comparison_is_current_no_results(comparison_run):
+    # No comparison CSV written yet.
+    current, reasons = run_manager.comparison_is_current(comparison_run)
+    assert current is False
+    assert reasons and "has been generated" in reasons[0]
+
+
+def test_comparison_stale_when_data_changes(comparison_run):
+    run_manager.comparison_path(comparison_run).write_text("sample_id\nS1\n", encoding="utf-8")
+    run_manager.write_comparison_meta(comparison_run, timestamp="t")
+    # Edit the run's measured data after generating results.
+    run_manager.append_lab_row(comparison_run, {"sample_id": "S2", "final_pH": "12.5"})
+    current, reasons = run_manager.comparison_is_current(comparison_run)
+    assert current is False
+    assert any("run data CSV" in r for r in reasons)
+
+
+def test_comparison_stale_when_mapping_changes(comparison_run):
+    run_manager.comparison_path(comparison_run).write_text("sample_id\nS1\n", encoding="utf-8")
+    run_manager.write_comparison_meta(comparison_run, timestamp="t")
+    # Re-map the sample to a different PHREEQC row.
+    run_manager.add_mapping(comparison_run, "S1", "B|sim1|batch|sol2")
+    current, reasons = run_manager.comparison_is_current(comparison_run)
+    assert current is False
+    assert any("mapping" in r for r in reasons)
+
+
+def test_comparison_stale_when_model_results_change(comparison_run):
+    run_manager.comparison_path(comparison_run).write_text("sample_id\nS1\n", encoding="utf-8")
+    run_manager.write_comparison_meta(comparison_run, timestamp="t")
+    # Re-parsing PHREEQC changes the shared results file.
+    (config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV).write_text(
+        "record_key,pH\nA|sim1|batch|sol1,11.0\n", encoding="utf-8")
+    current, reasons = run_manager.comparison_is_current(comparison_run)
+    assert current is False
+    assert any("PHREEQC results" in r for r in reasons)

@@ -27,7 +27,7 @@ import re
 
 import pandas as pd
 
-from . import scenarios
+from . import profiles, scenarios
 
 # Measured columns summarised / compared, mapped to their manifest prediction col.
 VALUE_COLUMNS = ["final_pH", "Ca_mM", "Si_mM", "Al_mM"]
@@ -89,15 +89,35 @@ def _is_acid(leachant) -> bool:
 # --------------------------------------------------------------------------- #
 # Feature 1 — condition_key + replicate_id
 # --------------------------------------------------------------------------- #
-def condition_key(sample: dict) -> str:
+def condition_key(sample: dict, profile=None) -> str:
     """Stable grouping key for one experimental condition (replicate-independent).
 
-    Built from leachant + molarity (NaOH_M, or acid_M for acids) + OA/PF/GS code +
-    time + L/S + CO2 + temperature. Blank fields are skipped. Example::
-
-        leachant=NaOH, NaOH_M=0.5, code=OA, time_min=10, L/S=5, CO2=open
-        -> "NaOH0.5M_OA_10min_LS5_open"
+    With no profile (or the fly-ash profile) the bespoke fly-ash key is built (leachant
+    + molarity + OA/PF/GS cover + time + L/S + CO2 + temperature). Any other
+    :class:`profiles.DatasetProfile` falls back to a generic key built from that
+    profile's ``important_fields``, so the same grouping works for another dataset
+    without fly-ash columns.
     """
+    profile = profile or profiles.default_dataset_profile()
+    if getattr(profile, "grouping", "generic") == "fly_ash":
+        return _fly_ash_condition_key(sample)
+    return _generic_condition_key(sample, profile)
+
+
+def _generic_condition_key(sample: dict, profile) -> str:
+    """Profile-driven key: ``field=value`` joined over the profile's important fields."""
+    parts: list[str] = []
+    for f in profile.important_fields:
+        v = sample.get(f)
+        if _is_blank(v):
+            continue
+        tok = _num(v) or str(v).strip()
+        parts.append(f"{f}={tok}")
+    return "_".join(parts) if parts else "unknown_condition"
+
+
+def _fly_ash_condition_key(sample: dict) -> str:
+    """The original fly-ash condition key (unchanged behaviour)."""
     leachant = str(sample.get("leachant", "") or "").strip()
     acid = _is_acid(leachant)
     conc = _num(sample.get("acid_M") if acid else sample.get("NaOH_M"))
@@ -117,7 +137,12 @@ def condition_key(sample: dict) -> str:
         parts.append(f"{time}min")
     if ls:
         parts.append(f"LS{ls}")
-    if co2 and co2.lower() not in ("nan", "unknown"):
+    # CO2_condition now holds the cup-cover code (OA/PF/GS) for experiment rows,
+    # which is already captured by `code` above — only append CO2_condition when it
+    # is a distinct (model-side, e.g. atm_CO2/low_CO2/no_CO2) label, so the key never
+    # duplicates the cover code.
+    if (co2 and co2.lower() not in ("nan", "unknown")
+            and co2.strip().upper() not in ("OA", "PF", "GS")):
         parts.append(co2)
     if temp:
         parts.append(f"T{temp}C")
@@ -138,8 +163,11 @@ def replicate_id(sample: dict) -> str:
     return parse_replicate_id(sample.get("sample_id"))
 
 
-def annotate(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of ``df`` with ``condition_key`` and ``replicate_id`` columns."""
+def annotate(df: pd.DataFrame, profile=None) -> pd.DataFrame:
+    """Return a copy of ``df`` with ``condition_key`` and ``replicate_id`` columns.
+
+    ``profile`` defaults to the fly-ash profile, so existing callers are unchanged.
+    """
     if df is None or df.empty:
         out = pd.DataFrame(columns=list(df.columns) if df is not None else [])
         out[CONDITION_KEY_COLUMN] = []
@@ -147,7 +175,7 @@ def annotate(df: pd.DataFrame) -> pd.DataFrame:
         return out
     out = df.copy()
     records = out.to_dict("records")
-    out[CONDITION_KEY_COLUMN] = [condition_key(r) for r in records]
+    out[CONDITION_KEY_COLUMN] = [condition_key(r, profile) for r in records]
     out[REPLICATE_ID_COLUMN] = [replicate_id(r) for r in records]
     return out
 
@@ -185,15 +213,26 @@ def infer_replicate_ids(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 # --------------------------------------------------------------------------- #
 # Feature 2 — replicate summary
 # --------------------------------------------------------------------------- #
-def replicate_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Per-condition replicate count, ids, and mean ± std of pH/Ca/Si/Al.
+def replicate_summary(df: pd.DataFrame, profile=None) -> pd.DataFrame:
+    """Per-condition replicate count, ids, and mean ± std of the value columns.
 
     ``std`` uses ddof=1, so a single-replicate condition has ``std = NaN`` (you
-    cannot estimate spread from one batch).
+    cannot estimate spread from one batch). ``profile`` selects the grouping (and,
+    for a non-fly-ash profile, the value columns); it defaults to the fly-ash profile
+    so existing callers are unchanged.
     """
-    ann = annotate(df)
+    ann = annotate(df, profile)
+    # Fly-ash default keeps the canonical pH/Ca/Si/Al stat columns; a non-fly-ash
+    # profile summarises its own variable columns instead.
+    if profile is None or getattr(profile, "grouping", "generic") == "fly_ash":
+        value_cols = VALUE_COLUMNS
+        columns = REPLICATE_SUMMARY_COLUMNS
+    else:
+        value_cols = [c for c in profile.variable_columns if c in (df.columns if df is not None else [])]
+        columns = ([CONDITION_KEY_COLUMN, "number_of_replicates", "replicate_ids"]
+                   + [f"{stat}_{c}" for c in value_cols for stat in ("mean", "std")])
     if ann.empty:
-        return pd.DataFrame(columns=REPLICATE_SUMMARY_COLUMNS)
+        return pd.DataFrame(columns=columns)
 
     rows: list[dict] = []
     for ck, g in ann.groupby(CONDITION_KEY_COLUMN, sort=True):
@@ -203,12 +242,12 @@ def replicate_summary(df: pd.DataFrame) -> pd.DataFrame:
             "number_of_replicates": int(len(g)),
             "replicate_ids": ", ".join(reps),
         }
-        for col in VALUE_COLUMNS:
+        for col in value_cols:
             vals = pd.to_numeric(g[col], errors="coerce") if col in g.columns else pd.Series(dtype=float)
             row[f"mean_{col}"] = vals.mean() if vals.notna().any() else float("nan")
             row[f"std_{col}"] = vals.std(ddof=1) if vals.notna().sum() >= 2 else float("nan")
         rows.append(row)
-    return pd.DataFrame(rows, columns=REPLICATE_SUMMARY_COLUMNS)
+    return pd.DataFrame(rows, columns=columns)
 
 
 # --------------------------------------------------------------------------- #
@@ -443,29 +482,35 @@ def collision_report(df: pd.DataFrame, sample_mapping: pd.DataFrame,
 MAPPING_STATUS_EXACT = "exact"
 MAPPING_STATUS_SCENARIO = "scenario-level only"
 MAPPING_STATUS_UNSAFE = "unsafe"
-MAPPING_STATUS_NEEDS_NEW = "needs new PHREEQC simulation"
+MAPPING_STATUS_NEEDS_NEW = "needs new simulation"
 
-# Presentation-facing definitions (shown as a small table in the app).
+# Presentation-facing definitions, worded generically (measured data ↔ model
+# prediction) so the workflow is not specific to one experiment. PHREEQC is the
+# current model implementation, surfaced in the advanced views.
 MAPPING_STATUS_DEFINITIONS = {
     MAPPING_STATUS_EXACT:
-        "Experimental condition and PHREEQC scenario metadata match.",
+        "Measured record and model prediction metadata match.",
     MAPPING_STATUS_SCENARIO:
-        "Broad scenario matches, but important metadata such as time, leachant, OA/PF/GS, "
-        "or NaOH/HCl concentration are missing.",
+        "Broad match, but important metadata are missing.",
     MAPPING_STATUS_UNSAFE:
-        "Chemically mismatched mapping, such as an HCl sample mapped to a NaOH/CO2 PHREEQC scenario.",
+        "Known metadata conflict between measured data and model prediction.",
     MAPPING_STATUS_NEEDS_NEW:
-        "No suitable PHREEQC scenario exists.",
+        "No suitable model/simulation result exists.",
 }
 
 
-def mapping_status(sample: dict, scenario: dict | None) -> str:
-    """Classify one sample→scenario mapping into the four presentation statuses.
+def mapping_status(sample: dict, scenario: dict | None, profile=None) -> str:
+    """Classify one measured-record→model-prediction mapping into the four statuses.
 
-    * no scenario → **needs new PHREEQC simulation**;
+    * no model prediction → **needs new simulation**;
     * acid (HCl) sample on a (NaOH) scenario, or opposite CO2 families → **unsafe**;
-    * scenario aligns broadly but PHREEQC lacks time / OA-PF-GS / NaOH_M → **scenario-level only**;
+    * prediction aligns broadly but the model lacks time / condition code / concentration
+      → **scenario-level only**;
     * otherwise → **exact** (rare with the current PHREEQC files, which is the honest point).
+
+    ``profile`` selects the condition vocab the alignment uses; it defaults to the
+    fly-ash profile so existing callers are unchanged. The fly-ash-specific acid/CO2
+    conflict checks simply do not fire for a dataset that lacks those columns.
     """
     if not scenario:
         return MAPPING_STATUS_NEEDS_NEW
@@ -475,7 +520,7 @@ def mapping_status(sample: dict, scenario: dict | None) -> str:
     mf = scenarios.co2_family(scenario.get("CO2_condition"))
     if sf != scenarios.UNKNOWN and mf != scenarios.UNKNOWN and sf != mf:
         return MAPPING_STATUS_UNSAFE
-    align = scenarios._metadata_alignment(sample, scenario)
+    align = scenarios._metadata_alignment(sample, scenario, profile)
     if align["metadata_notes"]:
         return MAPPING_STATUS_SCENARIO
     return MAPPING_STATUS_EXACT
@@ -558,9 +603,9 @@ def conditions_needing_simulation(df: pd.DataFrame, condition_map,
         if status == MAPPING_STATUS_EXACT:
             continue
         reason = {
-            MAPPING_STATUS_NEEDS_NEW: "no mapping / no suitable PHREEQC scenario",
-            MAPPING_STATUS_UNSAFE: "unsafe mapping (e.g. HCl mapped to a NaOH/CO2 scenario)",
-            MAPPING_STATUS_SCENARIO: "scenario-level only (PHREEQC lacks exact time / OA-PF-GS / NaOH_M)",
+            MAPPING_STATUS_NEEDS_NEW: "no mapping / no suitable model-simulation result",
+            MAPPING_STATUS_UNSAFE: "unsafe mapping (e.g. acid leachant mapped to a NaOH/CO2 scenario)",
+            MAPPING_STATUS_SCENARIO: "scenario-level only (model lacks exact time / condition code / concentration)",
         }[status]
         rows.append({
             "condition_key": ck,

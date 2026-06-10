@@ -208,6 +208,20 @@ def test_apply_condition_mapping_requires_a_mapping(lab_run):
         run_manager.apply_condition_mapping(lab_run)
 
 
+def test_condition_mapping_persists_notes(lab_run):
+    # Optional free-text notes round-trip in the condition map but never reach the
+    # per-sample map the comparison step reads.
+    run_manager.add_condition_mapping(
+        lab_run, "NaOH0.5M_OA_10min_LS5_open", "file|sim1|batch|sol1",
+        notes="covered cup; CO2 reduced",
+    )
+    cmap = run_manager.read_condition_mapping(lab_run)
+    assert "notes" in cmap.columns
+    assert cmap.iloc[0]["notes"] == "covered cup; CO2 reduced"
+    sample_map = pd.read_csv(run_manager.apply_condition_mapping(lab_run))
+    assert "notes" not in sample_map.columns  # pipeline schema stays 2-column
+
+
 # --------------------------------------------------------------------------- #
 # Mapping status + conditions-needing-simulation (presentation logic)
 # --------------------------------------------------------------------------- #
@@ -227,6 +241,25 @@ def test_mapping_status_classification():
     # Exact only when nothing is missing (no extra experimental metadata to confirm).
     bare = {"sample_id": "x", "leachant": "NaOH", "CO2_condition": "open"}
     assert rep.mapping_status(bare, {"CO2_condition": "atm_CO2"}) == rep.MAPPING_STATUS_EXACT
+
+
+def test_pf_cover_capped_at_scenario_level():
+    # PF is a reduced-CO2 cover that is NOT confirmed airtight. Against a reduced-family
+    # model scenario it is compatible but unconfirmed -> at most scenario-level, never
+    # exact; against an atmospheric scenario it is a CO2 conflict -> unsafe.
+    pf = {"sample_id": "0.5M-NaOH-PF-10min", "leachant": "NaOH", "CO2_condition": "PF"}
+    assert rep.mapping_status(pf, {"CO2_condition": "low_CO2"}) == rep.MAPPING_STATUS_SCENARIO
+    assert rep.mapping_status(pf, {"CO2_condition": "atm_CO2"}) == rep.MAPPING_STATUS_UNSAFE
+    gs = {"sample_id": "0.5M-NaOH-GS-10min", "leachant": "NaOH", "CO2_condition": "GS"}
+    assert rep.mapping_status(gs, {"CO2_condition": "no_CO2"}) == rep.MAPPING_STATUS_SCENARIO
+
+
+def test_oa_open_air_can_be_exact():
+    # OA (open air) is directly represented by an atmospheric-CO2 model scenario, so it
+    # can reach exact; against a reduced scenario it is a conflict -> unsafe.
+    oa = {"sample_id": "0.5M-NaOH-OA-10min", "leachant": "NaOH", "CO2_condition": "OA"}
+    assert rep.mapping_status(oa, {"CO2_condition": "atm_CO2"}) == rep.MAPPING_STATUS_EXACT
+    assert rep.mapping_status(oa, {"CO2_condition": "low_CO2"}) == rep.MAPPING_STATUS_UNSAFE
 
 
 def test_overall_mapping_status_not_all_exact():

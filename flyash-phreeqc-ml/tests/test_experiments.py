@@ -21,20 +21,21 @@ from flyash_phreeqc_ml.experiments import (
 # Plan generator
 # --------------------------------------------------------------------------- #
 def test_sample_id_format():
+    # CO2 condition is now a cup cover (OA/PF/GS), not "open"/"sealed".
     sid = make_sample_id(
-        naoh_m=0.5, liquid_solid_ratio=5, time_min=10, co2_condition="open", replicate=1
+        naoh_m=0.5, liquid_solid_ratio=5, time_min=10, co2_condition="OA", replicate=1
     )
-    assert sid == "CFA-NaOH0.5M-LS5-10min-open-R1"
+    assert sid == "CFA-NaOH0.5M-LS5-10min-OA-R1"
 
 
 def test_sample_id_compact_numbers():
     # 1.0 -> "1", 0 -> "0" so ids stay short and stable.
     assert make_sample_id(
-        naoh_m=1.0, liquid_solid_ratio=5, time_min=60, co2_condition="open", replicate=2
-    ) == "CFA-NaOH1M-LS5-60min-open-R2"
+        naoh_m=1.0, liquid_solid_ratio=5, time_min=60, co2_condition="OA", replicate=2
+    ) == "CFA-NaOH1M-LS5-60min-OA-R2"
     assert make_sample_id(
-        naoh_m=0, liquid_solid_ratio=5, time_min=60, co2_condition="open", replicate=1
-    ) == "CFA-NaOH0M-LS5-60min-open-R1"
+        naoh_m=0, liquid_solid_ratio=5, time_min=60, co2_condition="OA", replicate=1
+    ) == "CFA-NaOH0M-LS5-60min-OA-R1"
 
 
 def test_plan_has_no_duplicate_sample_ids():
@@ -44,10 +45,17 @@ def test_plan_has_no_duplicate_sample_ids():
 
 def test_plan_keeps_distinct_replicates():
     df = build_experiment_plan()
-    base = "CFA-NaOH0.5M-LS5-60min-open"
+    base = "CFA-NaOH0.5M-LS5-60min-OA"  # default cover is OA (open air)
     # The replicate-check set must contribute R1, R2, R3 as separate rows.
     for r in (1, 2, 3):
         assert f"{base}-R{r}" in set(df["sample_id"])
+
+
+def test_plan_co2_set_uses_cup_covers():
+    df = build_experiment_plan()
+    covers = set(df["CO2_condition"].astype(str))
+    assert {"OA", "PF", "GS"} <= covers           # cover-control set sweeps all three
+    assert "open" not in covers and "sealed" not in covers
 
 
 def test_plan_columns_match_spec():
@@ -104,7 +112,7 @@ def test_validator_clean_row_passes():
     row = {c: "" for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
     row.update({"sample_id": "S1", "NaOH_M": "0.5", "time_min": "60",
                 "temperature_C": "25", "liquid_solid_ratio": "5",
-                "CO2_condition": "open", "final_pH": "12.5", "Ca_mM": "1.2",
+                "CO2_condition": "OA", "final_pH": "12.5", "Ca_mM": "1.2",
                 "notes": "dilution factor 10"})
     report = validate_experimental_df(pd.DataFrame([row]))
     assert "error" not in _severities(report)
