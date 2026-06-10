@@ -1,2 +1,0 @@
-sample_id,mix_id,specimen_id,test_id,date_cast,date_tested,curing_age_days,mix_type,fly_ash_mass_g,cement_mass_g,water_mass_g,red_mud_mass_g,sand_mass_g,additive_type,specimen_shape,length_mm,width_mm,diameter_mm,loaded_area_mm2,peak_load_kN,flow_mm,setting_time_min,compressive_strength_MPa,leachate_pH,leachate_conductivity_uS_cm,data_status,visual_notes,photo_path
-S001,MIX-A,MIX-A-01,T0001,2026-01-10,2026-02-07,28,fly_ash_cement_blend,300,700,400,0,2000,none,cube,50,50,,2500,75,180,240,30.0,11.5,1200,tested,no visible cracks,
