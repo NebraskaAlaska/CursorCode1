@@ -208,11 +208,21 @@ hr { opacity: .45; }
 
 
 def inject_global_css() -> None:
-    """Inject the global stylesheet once per session (idempotent)."""
-    if st.session_state.get("_rd_css_done"):
-        return
-    st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
-    st.session_state["_rd_css_done"] = True
+    """Inject the global stylesheet.
+
+    Must be called on **every** script run (do not guard it behind session
+    state): Streamlit rebuilds its element tree each rerun and drops any element
+    the current run did not re-emit, so a once-only ``<style>`` would vanish the
+    first time the app reruns (e.g. when a run is selected). Re-emitting the same
+    tag each run is idempotent — there is exactly one stylesheet element at this
+    position per run. Uses ``st.html`` (renders no visible wrapper) when
+    available, falling back to ``st.markdown``.
+    """
+    html_fn = getattr(st, "html", None)
+    if callable(html_fn):
+        html_fn(_GLOBAL_CSS)
+    else:  # pragma: no cover - older Streamlit
+        st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- #
