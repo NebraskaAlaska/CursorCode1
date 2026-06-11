@@ -1,0 +1,30 @@
+# Generated PHREEQC input — templated from a measured condition's metadata.
+# DATABASE is supplied to the PHREEQC CLI at run time (not hard-coded here).
+# ASSUMED values (not measured) — shown so they are never buried:
+#   - fly-ash release Si/Al/Ca taken from the configured ASSUMED stock solution (Si=0.00031, Al=0.00073, Ca=0.00233 mol/L) — not measured
+#   - charge balanced with Cl as the counter-ion (the real anion is not measured)
+# CO2 scenario: atm_CO2 — atmospheric CO2(g) equilibration (open air)
+# L/S ratio (metadata, not a SOLUTION field): 5.0
+# source condition: CFA-test
+
+TITLE Generated: NaOH 0.50000 M, L/S 5.0, atm_CO2
+
+SOLUTION 1 generated
+    temp      25.00
+    pH        13.10
+    units     mol/l
+    density   1.0
+    Na        0.50000
+    Si        0.00031   # ASSUMED stock
+    Al        0.00073   # ASSUMED stock
+    Ca        0.00233   # ASSUMED stock
+    Cl        0 charge   # ASSUMED counter-ion (charge balance)
+
+EQUILIBRIUM_PHASES 1
+    CO2(g)    -3.37   10
+    Cal           0      0
+    Portlandite   0      0
+
+USE solution 1
+USE equilibrium_phases 1
+END

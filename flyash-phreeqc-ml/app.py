@@ -28,15 +28,18 @@ if str(_PROJECT_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
 from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import mapping_table  # noqa: E402
+from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
+from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -68,6 +71,10 @@ PREFERRED_PROCESSED = [
 # CO2 labels come straight from config so the form, validator, and plan agree.
 _CO2_OPTIONS = [""] + list(config.CO2_CONDITION_ALLOWED)
 _YESNO_OPTIONS = ["", "yes", "no"]
+
+# Generic end-to-end workflow, shown as a neutral orientation stepper on Start.
+WORKFLOW_STEPS = ["Import data", "Detect records", "Suggest mappings",
+                  "Compare", "Validate", "Export"]
 
 
 # --------------------------------------------------------------------------- #
@@ -293,6 +300,130 @@ def _lab_data_import(run_name: str) -> None:
         _generic_table_import(run_name)
 
 
+# --------------------------------------------------------------------------- #
+# Optional AI import-assist (Data tab, generic importer) — suggestion-only.
+# Everything it proposes flows into the existing review/confirm UI below; nothing
+# AI-touched is saved without the explicit confirm-gated save.
+# --------------------------------------------------------------------------- #
+def _ai_sheet_previews(up, kind: str, raw: pd.DataFrame) -> list[dict]:
+    """Build minimal per-sheet previews (headers + first rows) for classify_sheets."""
+    n = import_assist.MAX_SAMPLE_ROWS
+    if kind == "excel":
+        data = up.getvalue()
+        previews: list[dict] = []
+        try:
+            sheets = import_mapping.list_excel_sheets(io.BytesIO(data))
+        except Exception:  # pragma: no cover - UI guard
+            sheets = []
+        for s in sheets:
+            try:
+                df = import_mapping.read_tabular(io.BytesIO(data), kind="excel", sheet=s)
+            except Exception:
+                continue
+            previews.append({"sheet": s, "headers": [str(c) for c in df.columns],
+                             "rows": df.head(n).astype(str).values.tolist()})
+        return previews
+    return [{"sheet": "csv", "headers": [str(c) for c in raw.columns],
+             "rows": raw.head(n).astype(str).values.tolist()}]
+
+
+def _ai_sample_id_source_column(run_name: str, raw: pd.DataFrame) -> str | None:
+    """Which raw column feeds sample_id — AI suggestion first, else the fuzzy guess."""
+    ai_colmap = st.session_state.get(f"ai_colmap_{run_name}") or []
+    for c in ai_colmap:
+        if c.get("target_col") == "sample_id" and c.get("source_col") in raw.columns:
+            return c["source_col"]
+    src = import_mapping.suggest_column_mapping(raw.columns).get("sample_id")
+    return src if (src is not None and src in raw.columns) else None
+
+
+def _render_ai_names_table(names: list[dict]) -> None:
+    """Editable metadata-extraction table; each row badged rule / ai-suggested / unparsed."""
+    badge = {import_assist.SOURCE_RULE: "rule", import_assist.SOURCE_AI: "ai-suggested"}
+    rows = []
+    for r in names:
+        f = r.get("fields", {})
+        rows.append({
+            "sample_id": r.get("sample_id", ""),
+            "provenance": badge.get(r.get("source"), "unparsed"),
+            "confidence": r.get("confidence", 0.0),
+            "leachant": f.get("leachant"), "concentration": f.get("concentration"),
+            "condition_code": f.get("condition_code"), "time_min": f.get("time_min"),
+            "replicate": f.get("replicate"), "note": r.get("note", ""),
+        })
+    st.markdown(
+        app_ui.status_badge("rule", "exact") + " &nbsp; "
+        + app_ui.status_badge("ai-suggested", "scenario-level") + " &nbsp; "
+        + app_ui.status_badge("unparsed", "neutral"),
+        unsafe_allow_html=True,
+    )
+    st.data_editor(pd.DataFrame(rows), use_container_width=True, height=240,
+                   hide_index=True, key="ai_names_editor")
+    st.caption("Suggestions only — saved rows keep their mapped values; the saved CSV "
+               "records each row's provenance (`rule` / `ai-confirmed` / `manual`).")
+
+
+def _render_ai_import_assist(run_name: str, up, kind: str, raw: pd.DataFrame) -> None:
+    """The 'AI assist (optional)' expander: consent gate + a button per AI function.
+
+    Suggestions land in session_state and are consumed by the existing column-mapping
+    editor and the metadata-extraction table — nothing here saves or maps anything.
+    """
+    with st.expander("🤖 AI assist (optional) — propose interpretations of messy files"):
+        if not import_assist.is_enabled():
+            st.caption(
+                "AI assist is disabled. Set the `ANTHROPIC_API_KEY` environment variable "
+                "and `pip install anthropic` to enable optional suggestions. The importer "
+                "works fully without it."
+            )
+            return
+
+        st.caption(import_assist.DATA_LEAVES_MACHINE_NOTICE)
+        consent = st.checkbox(import_assist.CONSENT_LABEL, key="ai_consent")
+        if not consent:
+            st.info("Tick the box above to allow sending headers + a small preview to the "
+                    "API for these optional suggestions.")
+            return
+
+        headers = [str(c) for c in raw.columns]
+        sample_rows = raw.head(import_assist.MAX_SAMPLE_ROWS).astype(str).values.tolist()
+        b1, b2, b3 = st.columns(3)
+        if b1.button("Classify sheets", key=f"ai_sheets_btn_{run_name}"):
+            with st.spinner("Asking the model to classify sheets…"):
+                st.session_state[f"ai_sheets_{run_name}"] = import_assist.classify_sheets(
+                    _ai_sheet_previews(up, kind, raw))
+        if b2.button("Suggest column mapping", key=f"ai_colmap_btn_{run_name}"):
+            with st.spinner("Asking the model to map columns…"):
+                st.session_state[f"ai_colmap_{run_name}"] = import_assist.propose_column_mapping(
+                    headers, sample_rows, import_assist.default_target_schema())
+            st.rerun()  # so the mapping editor below picks up the new defaults
+        if b3.button("Extract sample-name fields", key=f"ai_names_btn_{run_name}"):
+            src = _ai_sample_id_source_column(run_name, raw)
+            ids = (raw[src].astype(str).tolist() if src else [])
+            with st.spinner("Parsing sample names (rules first, AI for the rest)…"):
+                st.session_state[f"ai_names_{run_name}"] = import_assist.parse_sample_names(
+                    ids, profiles.default_dataset_profile())
+
+        sheets = st.session_state.get(f"ai_sheets_{run_name}")
+        if sheets:
+            st.markdown("**Sheet classification (suggested)**")
+            st.dataframe(pd.DataFrame(sheets), use_container_width=True, height=160,
+                         hide_index=True)
+        colmap = st.session_state.get(f"ai_colmap_{run_name}")
+        if colmap:
+            mapped = [c for c in colmap if c.get("target_col")]
+            st.caption(f"🤖 {len(mapped)} column suggestion(s) applied as defaults in the "
+                       "mapping editor below (badged *ai-suggested*).")
+        names = st.session_state.get(f"ai_names_{run_name}")
+        if names:
+            st.markdown("**Sample-name fields (suggested)**")
+            _render_ai_names_table(names)
+        if st.button("Clear AI suggestions", key=f"ai_clear_{run_name}"):
+            for k in (f"ai_sheets_{run_name}", f"ai_colmap_{run_name}", f"ai_names_{run_name}"):
+                st.session_state.pop(k, None)
+            st.rerun()
+
+
 def _generic_table_import(run_name: str) -> None:
     """Generic CSV/Excel import into a lab run's experimental_release.csv.
 
@@ -328,18 +459,33 @@ def _generic_table_import(run_name: str) -> None:
     st.dataframe(raw, use_container_width=True, height=220)
     st.caption("Detected columns: " + ", ".join(f"`{c}`" for c in map(str, raw.columns)))
 
+    # Optional AI assist — sets suggestion state consumed by the editors below.
+    _render_ai_import_assist(run_name, up, kind, raw)
+
+    # AI column-mapping suggestions (if any) become the editor defaults, layered
+    # over the fuzzy guess. They are defaults only — the user still confirms.
+    ai_colmap = st.session_state.get(f"ai_colmap_{run_name}") or []
+    ai_target_to_source = {c["target_col"]: c["source_col"]
+                           for c in ai_colmap if c.get("target_col")}
+    ai_units = {c["source_col"]: c.get("unit_guess")
+                for c in ai_colmap if c.get("unit_guess")}
+
     # Feature 3 — column mapping interface.
     st.markdown("**2 · Map uploaded columns → app schema**")
-    st.caption("Suggestions are pre-filled from column names; adjust any of them.")
+    st.caption("Suggestions are pre-filled from column names; adjust any of them. "
+               "AI-suggested columns are badged below their selector.")
     suggestion = import_mapping.suggest_column_mapping(raw.columns)
     options = ["(leave blank)"] + [str(c) for c in raw.columns]
     mapping: dict[str, str | None] = {}
     mcols = st.columns(3)
     for i, target in enumerate(import_mapping.MAPPING_TARGETS):
         widget_col = mcols[i % 3]
-        default = suggestion.get(target)
+        ai_default = ai_target_to_source.get(target)
+        default = ai_default if (ai_default in options) else suggestion.get(target)
         idx = options.index(str(default)) if (default is not None and str(default) in options) else 0
         choice = widget_col.selectbox(target, options, index=idx, key=f"lab_map_{run_name}_{target}")
+        if ai_default and ai_default in options:
+            widget_col.caption("🤖 ai-suggested")
         mapping[target] = None if choice == "(leave blank)" else choice
 
     # Feature 4 — unit handling for mapped chemistry columns.
@@ -351,8 +497,11 @@ def _generic_table_import(run_name: str) -> None:
     if mapped_chem:
         ucols = st.columns(3)
         for i, chem in enumerate(mapped_chem):
+            ai_unit = ai_units.get(mapping.get(chem))
+            uidx = (import_mapping.UNIT_OPTIONS.index(ai_unit)
+                    if ai_unit in import_mapping.UNIT_OPTIONS else 0)
             units[chem] = ucols[i % 3].selectbox(
-                f"{chem} unit", import_mapping.UNIT_OPTIONS, index=0,
+                f"{chem} unit", import_mapping.UNIT_OPTIONS, index=uidx,
                 key=f"lab_unit_{run_name}_{chem}",
             )
     else:
@@ -384,6 +533,18 @@ def _generic_table_import(run_name: str) -> None:
         if flagged:
             st.warning(f"⚠️ {flagged} sample_id(s) look like placeholders (TEST/SYNTH/MOCK/DEMO). "
                        "Only save real measured lab data into a lab run.")
+
+    # Per-row metadata provenance: rule / ai-confirmed (AI-proposed and saved here) /
+    # manual. Sourced from the sample-name extraction table; defaults to manual.
+    names = st.session_state.get(f"ai_names_{run_name}") or []
+    source_by_id = {str(r.get("sample_id")): r.get("source") for r in names}
+    if "sample_id" in transformed.columns:
+        sources = [source_by_id.get(str(sid), import_assist.SOURCE_MANUAL)
+                   for sid in transformed["sample_id"].astype(str)]
+    else:
+        sources = [import_assist.SOURCE_MANUAL] * len(transformed)
+    transformed[import_assist.METADATA_PROVENANCE_COLUMN] = (
+        import_assist.build_provenance_column(sources))
 
     # Feature 8 — save options (replace / append), gated on confirmation.
     st.markdown("**6 · Save**")
@@ -911,6 +1072,81 @@ def _render_mapping_assistant(run_name: str, data: pd.DataFrame,
                     st.error(str(exc))
 
 
+def _render_generate_simulation(run_name: str, data: pd.DataFrame,
+                                manifest: pd.DataFrame, needs_new: pd.DataFrame) -> None:
+    """Generate (and optionally run) a PHREEQC simulation for a needs-new condition.
+
+    Preview-first: the templated ``.pqi`` and its chemistry-assumptions banner are
+    always shown (no PHREEQC needed to read them). Running + ingesting requires a
+    configured PHREEQC; afterwards the suggestion table refreshes and the new
+    scenario can be mapped (OA → exact; PF/GS → scenario-level by design).
+    """
+    app_ui.section_header("Generate a PHREEQC simulation",
+                          "make a needs-new condition actionable")
+    configured = phreeqc_runner.is_configured()
+    if not configured:
+        st.info("PHREEQC is not configured, so simulations can be **previewed** here but not "
+                "run. Set `PHREEQC_EXE` + `PHREEQC_DATABASE` to enable running. The generated "
+                "input below is still fully readable.")
+
+    profile = profiles.default_dataset_profile()
+    ck = st.selectbox("Condition needing a new simulation",
+                      needs_new["condition_key"].astype(str).tolist(),
+                      key=f"gen_ck_{run_name}")
+    if st.button("Generate simulation input", key=f"gen_btn_{run_name}"):
+        sample = mapping_table.condition_representative_sample(data, ck, profile)
+        reason = phreeqc_runner.generation_blocked_reason(sample, profile)
+        if reason:
+            st.warning("⚠️ " + reason)
+            st.session_state.pop(f"gen_inputs_{run_name}", None)
+        else:
+            st.session_state[f"gen_inputs_{run_name}"] = {
+                "ck": ck, "inputs": phreeqc_runner.build_input(sample, profile)}
+
+    payload = st.session_state.get(f"gen_inputs_{run_name}")
+    if not payload or payload.get("ck") != ck:
+        return
+    inputs = payload["inputs"]
+    if not inputs:
+        st.info("No simulation can be templated for this condition.")
+        return
+
+    for gi in inputs:
+        with st.expander(f"Generated input — {gi.model_label} ({gi.condition_code})",
+                         expanded=True):
+            app_ui.render_warning_panel(
+                "Chemistry assumptions — read before running",
+                "; ".join(gi.assumptions), level="warning")
+            st.code(gi.pqi_text, language="text")
+
+    if not configured:
+        app_ui.render_warning_panel("PHREEQC not configured", phreeqc_runner._SETUP_HELP,
+                                    level="error")
+        return
+
+    if st.button(f"▶️ Run PHREEQC for {len(inputs)} variant(s) & ingest",
+                 key=f"gen_run_{run_name}", type="primary"):
+        workdir = run_manager.generated_simulations_dir(run_name)
+        ok = 0
+        for gi in inputs:
+            try:
+                out = phreeqc_runner.run(gi.pqi_text, workdir, basename=gi.basename)
+                keys = phreeqc_runner.ingest(out, run_name,
+                                             condition_key=gi.source_condition_key,
+                                             metadata=gi.metadata)
+                st.write(f"✅ **{gi.model_label}** — {len(keys)} record(s) ingested")
+                ok += 1
+            except phreeqc_runner.PhreeqcRunnerError as exc:
+                st.write(f"❌ **{gi.model_label}** — {str(exc).splitlines()[0]}")
+        if ok:
+            st.success(f"Ingested {ok} generated scenario(s) into the shared results — "
+                       "the suggestion table will refresh with the new candidate(s).")
+            _read_csv.clear()
+            _scenario_manifest.clear()
+            st.session_state.pop(f"gen_inputs_{run_name}", None)
+            st.rerun()
+
+
 def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
                        manifest: pd.DataFrame, table: pd.DataFrame) -> None:
     """Conditions whose best candidate is *needs new simulation*.
@@ -931,6 +1167,8 @@ def _render_sim_needed(run_name: str, data: pd.DataFrame, mapping: pd.DataFrame,
     else:
         st.dataframe(needs_new[["condition_key", "n_replicates", "confidence", "reason"]],
                      use_container_width=True, height=240)
+        # Make it actionable: generate a PHREEQC input for one of these conditions.
+        _render_generate_simulation(run_name, data, manifest, needs_new)
 
     # Keep the older per-sample view available but out of the way.
     with st.expander("Per-sample detail (no mapping / low confidence / collisions)"):
@@ -1091,8 +1329,8 @@ def _render_condition_code_help(data: pd.DataFrame) -> None:
 def _render_mapping_status_line(sample: dict, scenario: dict | None) -> str:
     """Show the four-state mapping status as a compact, color-coded line."""
     status = replicates.mapping_status(sample, scenario)
-    emoji, _ = _MAPPING_STATUS_BADGE.get(status, ("•", "info"))
-    st.markdown(f"**Mapping status:** {emoji} {status}")
+    st.markdown("**Mapping status:** " + app_ui.status_badge(status, status),
+                unsafe_allow_html=True)
     st.caption(replicates.MAPPING_STATUS_DEFINITIONS.get(status, ""))
     return status
 
@@ -1619,6 +1857,24 @@ def _render_mapping_section(run_name: str) -> None:
     # section are both driven from it, so their counts always agree.
     table = mapping_table.build_suggestion_table(data, manifest, cond_map)
 
+    # Compact mapping summary — accepted + the status distribution across the
+    # detected measured conditions (same source as the suggestion table below).
+    if not table.empty:
+        vc = table["mapping_status"].value_counts().to_dict()
+        _ms = replicates
+        app_ui.render_metric_cards([
+            {"label": "Accepted mappings", "value": len(cond_map),
+             "status": "good" if len(cond_map) else "neutral"},
+            {"label": "Exact", "value": vc.get(_ms.MAPPING_STATUS_EXACT, 0),
+             "status": "exact" if vc.get(_ms.MAPPING_STATUS_EXACT, 0) else "neutral"},
+            {"label": "Scenario-level", "value": vc.get(_ms.MAPPING_STATUS_SCENARIO, 0),
+             "status": "scenario-level" if vc.get(_ms.MAPPING_STATUS_SCENARIO, 0) else "neutral"},
+            {"label": "Unsafe", "value": vc.get(_ms.MAPPING_STATUS_UNSAFE, 0),
+             "status": "unsafe" if vc.get(_ms.MAPPING_STATUS_UNSAFE, 0) else "neutral"},
+            {"label": "Needs new sim", "value": vc.get(_ms.MAPPING_STATUS_NEEDS_NEW, 0),
+             "status": "needs new simulation" if vc.get(_ms.MAPPING_STATUS_NEEDS_NEW, 0) else "neutral"},
+        ])
+
     # ---- 1) Suggestion table (auto-generated) + accept actions ----
     _render_suggestion_table(run_name, data, manifest, table)
 
@@ -1938,7 +2194,8 @@ def _render_comparison_figures(run_name: str | None) -> None:
     comparison = [p for p in sorted(fig_dir.glob("*.png")) if p.name in _COMPARISON_FIGURES]
     if not comparison:
         return
-    st.subheader("Measured vs PHREEQC (residual figures)")
+    app_ui.section_header("Residual analysis",
+                          "residual = measured − model predicted")
     # The single-sample caveat is folded into the validity line of the inclusion
     # section above, so it is not repeated here.
     for png in comparison:
@@ -2030,11 +2287,13 @@ def _render_valid_now_section() -> None:
     """Feature 5 — what is scientifically valid now vs not fully valid yet."""
     a, b = st.columns(2)
     with a:
-        st.markdown("**✅ Valid now**")
-        st.markdown("\n".join(f"- {x}" for x in _VALID_NOW))
+        with st.container(border=True):
+            app_ui.render_status_badge("Valid now", "valid")
+            st.markdown("\n".join(f"- {x}" for x in _VALID_NOW))
     with b:
-        st.markdown("**🚧 Not fully valid yet**")
-        st.markdown("\n".join(f"- {x}" for x in _NOT_VALID_YET))
+        with st.container(border=True):
+            app_ui.render_status_badge("Not fully valid yet", "preliminary")
+            st.markdown("\n".join(f"- {x}" for x in _NOT_VALID_YET))
 
 
 def _rows_with_any_numeric(data: pd.DataFrame, cols: list[str]) -> int:
@@ -2072,26 +2331,50 @@ def _render_presentation_summary(selected_run: str | None) -> None:
                                 "counts": {}, "n_mapped": 0, "n_unmapped": 0})
     comp_exists = lab_like and run_manager.has_comparison(selected_run)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Dataset imported", "yes" if n_rows else "no")
-    m2.metric("Experimental rows", n_rows)
-    m3.metric("Rows with pH", rows_with_ph)
-    m4.metric("Rows with Ca/Si/Al", rows_with_chem)
-    n1, n2, n3, n4 = st.columns(4)
-    n1.metric("Validation errors", n_err)
-    n2.metric("Validation warnings", n_warn)
-    n3.metric("Mapped samples", msum["n_samples"])
-    n4.metric("Unique model results", msum["n_unique_rows"])
+    _counts = status["counts"]
+    n_exact = _counts.get(replicates.MAPPING_STATUS_EXACT, 0)
+    n_scn = _counts.get(replicates.MAPPING_STATUS_SCENARIO, 0)
+    n_unsafe = _counts.get(replicates.MAPPING_STATUS_UNSAFE, 0)
+    n_needs = _counts.get(replicates.MAPPING_STATUS_NEEDS_NEW, 0)
+
+    # The six headline cards (data + mapping coverage), status-coloured.
+    app_ui.render_metric_cards([
+        {"label": "Data loaded", "value": "Yes" if n_rows else "No",
+         "caption": rt, "status": "good" if n_rows else "neutral"},
+        {"label": "Measured rows", "value": n_rows, "status": "info" if n_rows else "neutral"},
+        {"label": "Mapped samples", "value": msum["n_samples"] if lab_like else "n/a",
+         "caption": f'{msum["n_unique_rows"]} unique model result(s)' if lab_like else "",
+         "status": "good" if (lab_like and msum["n_samples"]) else "neutral"},
+        {"label": "Exact mappings", "value": n_exact if lab_like else "n/a",
+         "status": "exact" if (lab_like and n_exact) else "neutral"},
+        {"label": "Unsafe mappings", "value": n_unsafe if lab_like else "n/a",
+         "status": "unsafe" if (lab_like and n_unsafe) else "neutral"},
+        {"label": "Needs new sim", "value": n_needs if lab_like else "n/a",
+         "status": "needs new simulation" if (lab_like and n_needs) else "neutral"},
+    ])
+    # Secondary cards — measured coverage + validation.
+    app_ui.render_metric_cards([
+        {"label": "Rows with pH", "value": rows_with_ph,
+         "status": "good" if rows_with_ph else "neutral"},
+        {"label": "Rows with Ca/Si/Al", "value": rows_with_chem,
+         "status": "good" if rows_with_chem else "neutral"},
+        {"label": "Scenario-level", "value": n_scn if lab_like else "n/a",
+         "status": "scenario-level" if (lab_like and n_scn) else "neutral"},
+        {"label": "Validation errors", "value": n_err,
+         "status": "error" if n_err else "good"},
+        {"label": "Validation warnings", "value": n_warn,
+         "status": "warning" if n_warn else "good"},
+    ])
 
     overall = status["overall"]
-    _counts = status["counts"]
-    st.markdown(f"**Overall mapping status:** `{overall}`"
-                + ("" if not lab_like else
-                   f"  ·  exact: {_counts.get(replicates.MAPPING_STATUS_EXACT, 0)}, "
-                   f"scenario-level: {_counts.get(replicates.MAPPING_STATUS_SCENARIO, 0)}, "
-                   f"unsafe: {_counts.get(replicates.MAPPING_STATUS_UNSAFE, 0)}, "
-                   f"needs new sim: {_counts.get(replicates.MAPPING_STATUS_NEEDS_NEW, 0)}"))
-    st.markdown(f"**Comparison status:** {'available (preliminary)' if comp_exists else 'not run yet'}")
+    comp_label = "Available (preliminary)" if comp_exists else "Not run yet"
+    comp_status = "preliminary" if comp_exists else "neutral"
+    st.markdown(
+        "**Overall mapping status:** "
+        + app_ui.status_badge(overall, overall if lab_like else "neutral")
+        + " &nbsp; **Comparison:** " + app_ui.status_badge(comp_label, comp_status),
+        unsafe_allow_html=True,
+    )
 
     # Recommended next *scientific* step.
     if not n_rows:
@@ -2126,7 +2409,18 @@ def _render_presentation_summary(selected_run: str | None) -> None:
 # --------------------------------------------------------------------------- #
 def _render_overview(selected_run: str | None) -> None:
     """Project status cards + selected-run summary + a recommended next step."""
-    st.subheader("Presentation summary")
+    app_ui.render_page_header(
+        "Start — validation overview",
+        "A research validation workflow for comparing measured experimental data "
+        "with model predictions. The app identifies what must be matched before "
+        "validation is scientifically valid.",
+        eyebrow="Overview",
+    )
+    app_ui.render_workflow_steps(WORKFLOW_STEPS, current=None)
+    st.write("")
+
+    app_ui.section_header("Presentation summary",
+                          "data, validation, mapping & comparison status at a glance")
     _render_presentation_summary(selected_run)
     st.divider()
 
@@ -2135,7 +2429,7 @@ def _render_overview(selected_run: str | None) -> None:
     measured = _load_measured_safe()
     measured_exists = has_measured_data(measured)
 
-    st.subheader("Project status")
+    app_ui.section_header("Project status", "shared pipeline artifacts")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("master_dataset.csv", "present" if master_path.exists() else "missing")
     n_rows = (
@@ -2152,7 +2446,7 @@ def _render_overview(selected_run: str | None) -> None:
         )
 
     st.divider()
-    st.subheader("Selected run")
+    app_ui.section_header("Selected run", "the active save file")
     if not selected_run:
         st.info("No run selected. Create or open one in the **Experiment runs** sidebar (left).")
         return
@@ -2229,26 +2523,27 @@ def _render_overview(selected_run: str | None) -> None:
         nxt = "Read the comparison in the **Run + Results** tab."
     st.success(f"**Recommended next action:** {nxt}")
 
-    # Workflow checklist.
+    # Workflow checklist — rendered as a progression stepper (first incomplete
+    # step is highlighted; completed steps read as done).
     st.divider()
-    st.subheader("Workflow checklist")
+    app_ui.section_header("Workflow checklist", "progress for this run")
     data_uploaded = not data.empty
     data_checked = (config.TABLES_DIR / config.EXPERIMENTAL_VALIDATION_REPORT_CSV).exists()
     mapping_complete = lab_like and has_map
     workflow_run = comp_exists
     results_available = comp_exists and _comparison_has_residuals(selected_run)
 
-    def _check(done: bool, label: str) -> str:
-        return f"{'✅' if done else '⬜'} {label}"
-
+    checks = [data_uploaded, data_checked, mapping_complete, workflow_run, results_available]
+    labels = ["Data uploaded", "Data checked", "Mapping complete",
+              "Workflow run", "Results available"]
+    current = next((i for i, c in enumerate(checks) if not c), len(checks))
+    app_ui.render_workflow_steps(labels, current=current)
     st.markdown(
-        "\n".join([
-            _check(data_uploaded, "Data uploaded"),
-            _check(data_checked, "Data checked"),
-            _check(mapping_complete, "Mapping complete"),
-            _check(workflow_run, "Workflow run"),
-            _check(results_available, "Results available"),
-        ])
+        " &nbsp;·&nbsp; ".join(
+            app_ui.status_badge(lbl, "good" if done else "neutral")
+            for lbl, done in zip(labels, checks)
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -2350,12 +2645,22 @@ def _render_basic_validation_summary(run_name: str) -> None:
 
 
 def _render_data_entry_tab(selected_run: str | None) -> None:
+    app_ui.render_page_header(
+        "Data — import & validate",
+        "Import or enter measured data for the selected run, review the detected "
+        "records, validate, then save to the run.",
+        eyebrow="Step 1 · Ingest",
+    )
+    app_ui.render_workflow_steps(
+        ["Upload / import data", "Review detected records", "Validate", "Save to run"],
+        current=0,
+    )
     if not selected_run:
         st.info("Select or create a run in the **Experiment runs** sidebar (left) to enter data.")
         return
     cfg = run_manager.load_run_config(selected_run)
     rt = cfg.get("run_type")
-    st.subheader(f"Run `{selected_run}` — {rt}")
+    app_ui.section_header(f"Run · {selected_run}", rt)
     _run_type_warning(rt)
 
     if rt in run_manager.LAB_LIKE_RUN_TYPES:
@@ -2384,6 +2689,17 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
 
 
 def _render_mapping_tab(selected_run: str | None) -> None:
+    app_ui.render_page_header(
+        "Match — measured data to model predictions",
+        "Automatic-first: records are detected and mappings are suggested for you. "
+        "Review, then accept. Manual mapping stays available under advanced.",
+        eyebrow="Step 2 · Map",
+    )
+    app_ui.render_workflow_steps(
+        ["Auto-detect measured records", "Auto-suggest model mappings",
+         "Review suggestions", "Accept mappings"],
+        current=1,
+    )
     if not selected_run:
         st.info(
             "Select or create a **lab_experiment** (or **plastic_composite**) run in the "
@@ -2589,8 +2905,7 @@ def _render_measured_overview(selected_run: str) -> None:
     Renders fully without a sample→PHREEQC mapping and without
     ``data/processed/phreeqc_results.csv`` (it reads nothing but the run's data).
     """
-    st.markdown("#### Measured data overview")
-    st.caption("Measured data only — no model comparison.")
+    app_ui.section_header("Measured data overview", "measured data only — no model comparison")
 
     data = run_manager.read_data_file(selected_run)
     variables = measured_overview.available_variables(data)
@@ -2634,17 +2949,6 @@ def _inclusion_variables(comp: pd.DataFrame) -> list[str]:
     return out
 
 
-# Counts panel: (dict key, label) — built entirely from the inclusion dict.
-_INCLUSION_METRICS = [
-    ("measured_rows_available", "Measured rows"),
-    ("rows_with_mapping", "With mapping"),
-    ("rows_prediction_available", "Prediction available"),
-    ("rows_plotted", "Plotted"),
-    ("unique_predictions_used", "Unique predictions"),
-    ("unmapped_rows", "Unmapped"),
-]
-
-
 def _render_comparison_inclusion(selected_run: str) -> None:
     """Explicit inclusion view: counts, exclusion reasons, status-aware scatter, validity.
 
@@ -2659,7 +2963,8 @@ def _render_comparison_inclusion(selected_run: str) -> None:
     if not variables:
         return  # nothing comparable; residual figures / summary cover the messaging
 
-    st.markdown("#### Model comparison — inclusion")
+    app_ui.section_header("Model comparison — coverage & inclusion",
+                          "measured vs model prediction")
     data = run_manager.read_data_file(selected_run)
     mapping = run_manager.read_mapping(selected_run)
     manifest = _manifest_if_available()
@@ -2677,10 +2982,18 @@ def _render_comparison_inclusion(selected_run: str) -> None:
     inc = comparison_inclusion(data, mapping, comp, variable,
                                manifest=manifest, include_unsafe=include_unsafe)
 
-    # Counts panel — straight from the inclusion dict (consistent with the table).
-    cols = st.columns(len(_INCLUSION_METRICS))
-    for col, (key, label) in zip(cols, _INCLUSION_METRICS):
-        col.metric(label, inc[key])
+    # Coverage cards — straight from the inclusion dict (consistent with the table).
+    n_excluded = inc["n_total"] - inc["rows_plotted"]
+    app_ui.render_metric_cards([
+        {"label": "Measured rows", "value": inc["measured_rows_available"]},
+        {"label": "With mapping", "value": inc["rows_with_mapping"]},
+        {"label": "Prediction available", "value": inc["rows_prediction_available"]},
+        {"label": "Rows plotted", "value": inc["rows_plotted"],
+         "status": "good" if inc["rows_plotted"] else "neutral"},
+        {"label": "Unique predictions", "value": inc["unique_predictions_used"]},
+        {"label": "Excluded rows", "value": n_excluded,
+         "status": "warning" if n_excluded else "good"},
+    ])
 
     if include_unsafe and inc["n_unsafe_plotted"]:
         st.error(
@@ -2698,6 +3011,8 @@ def _render_comparison_inclusion(selected_run: str) -> None:
             st.dataframe(rc, use_container_width=True, hide_index=True, height=180)
 
     if not inc["plotted"].empty:
+        st.caption("**Measured vs model prediction** — points near the dashed 1:1 line "
+                   "indicate agreement *only if the mapping is scientifically valid*.")
         st.pyplot(compare_plots.comparison_scatter_figure(inc["plotted"], variable))
 
     if inc["collapse_warning"]:
@@ -2707,9 +3022,12 @@ def _render_comparison_inclusion(selected_run: str) -> None:
             "simulations* for the list."
         )
 
-    # One overall validity line, chosen by the documented rules. Only `valid` implies
-    # the model was validated.
-    getattr(st, inc["validity_severity"], st.info)(f"**{inc['validity'].upper()}** — {inc['validity_message']}")
+    # One overall validity panel, chosen by the documented rules. Only `valid` implies
+    # the model was validated; everything else reads as preliminary / workflow check.
+    app_ui.render_warning_panel(
+        inc["validity"].upper(), inc["validity_message"],
+        level=inc["validity"] if inc["validity"] in app_ui.STATUS_STYLES else "info",
+    )
 
 
 def _render_results_tab(selected_run: str | None) -> None:
@@ -2753,10 +3071,12 @@ def _render_results_tab(selected_run: str | None) -> None:
         status = replicates.overall_mapping_status(
             data, run_manager.read_mapping(selected_run), _manifest_if_available())
         if not status["all_exact"]:
-            st.warning(
-                "⚠️ **Preliminary / workflow check only.** The graphs below are not final "
-                "model validation, because one or more mappings are scenario-level, unsafe, "
-                "or missing exact PHREEQC metadata. Plotting is still allowed for inspection."
+            app_ui.render_warning_panel(
+                "Preliminary / workflow check only",
+                "The graphs below are not final model validation, because one or more "
+                "mappings are scenario-level, unsafe, or missing exact PHREEQC metadata. "
+                "Plotting is still allowed for inspection.",
+                level="preliminary",
             )
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
         _render_condition_results(selected_run)
@@ -2787,10 +3107,21 @@ def _render_results_tab(selected_run: str | None) -> None:
 
 def _render_run_and_results_tab(selected_run: str | None) -> None:
     """Combined workflow execution + results (the two used to be separate tabs)."""
-    st.subheader("Run workflow")
+    app_ui.render_page_header(
+        "Run + Results — compare, validate, interpret",
+        "Run the workflow for the selected run, then read the measured-data overview, "
+        "the measured-vs-model comparison, residual analysis, and validation tables.",
+        eyebrow="Step 3 · Compare & validate",
+    )
+    app_ui.render_workflow_steps(
+        ["Run workflow", "Measured overview", "Model comparison",
+         "Residual analysis", "Validation / audit"],
+        current=0,
+    )
+    app_ui.section_header("Run workflow", "execute the pipeline for this run")
     _render_run_workflow_tab(selected_run)
     st.divider()
-    st.subheader("Results")
+    app_ui.section_header("Results", "this run's own outputs, provenance-stamped")
     _render_results_tab(selected_run)
 
 
@@ -3096,10 +3427,128 @@ def _render_help_tab() -> None:
         "any comparison or residual. Garbage in, garbage out."
     )
 
+    st.divider()
+    with st.expander("Data safety — what is kept out of version control"):
+        st.markdown(
+            "- Real measured-release CSVs, uploaded Excel workbooks, generated outputs, "
+            "processed CSVs, figures, `run_config.yaml`, condition/replicate mapping CSVs "
+            "and per-run experiment files are **git-ignored by default** and are not "
+            "committed unless explicitly force-added.\n"
+            "- Each run's data lives in its own `experiments/<run>/` folder; only the "
+            "folder's `README.md` is tracked.\n"
+            "- Synthetic/demo rows are force-tagged `source_type=synthetic_demo` and are "
+            "never treated as scientific output."
+        )
 
-def _render_audit_help_tab(dev_mode: bool) -> None:
+    with st.expander("Future direction — an ML *correction* layer (not yet started)"):
+        st.markdown(
+            "The long-term aim is an ML layer that learns **where the model disagrees with "
+            "experiment** — a correction on top of the chemistry, **not** a blind "
+            "replacement for it. It stays dormant until real measured release data and "
+            "exact mappings exist; today the app is a transparent, rule-based validation "
+            "workflow with no learned weights."
+        )
+
+
+def _nearest_manifest_row(manifest: pd.DataFrame, naoh: float, ls: float) -> dict | None:
+    """The batch PHREEQC scenario closest to (NaOH_M, L/S) — display context only."""
+    if manifest is None or manifest.empty:
+        return None
+    df = manifest.copy()
+    if "state" in df.columns:
+        batch = df[df["state"].astype(str).str.lower() == "batch"]
+        df = batch if not batch.empty else df
+    dist = (pd.to_numeric(df.get("NaOH_M"), errors="coerce") - naoh).abs().fillna(9e9) \
+        + (pd.to_numeric(df.get("liquid_solid_ratio"), errors="coerce") - ls).abs().fillna(9e9)
+    idx = df.index[0] if dist.isna().all() else dist.idxmin()
+    r = df.loc[idx]
+    cols = ["scenario_label", "NaOH_M", "liquid_solid_ratio", "CO2_condition",
+            "predicted_pH", "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM", "generated"]
+    return {c: r.get(c) for c in cols if c in df.columns}
+
+
+def _render_surrogate_expander(selected_run: str | None) -> None:
+    """Experimental surrogate UI (Audit/Help only). Suggestion/what-if, never a result.
+
+    Loads the selected run's trained surrogate models and shows a prediction ±
+    95% interval beside the nearest real PHREEQC run, always labelled as an
+    approximation. Surrogate values never enter comparison CSVs, residuals, or mapping.
+    """
+    with app_ui.advanced_expander("Surrogate (experimental) — fast approximation of PHREEQC"):
+        st.caption(
+            "**Surrogate approximation of PHREEQC — not a measurement, not a PHREEQC run.** "
+            "A trained statistical model approximating PHREEQC outputs for fast what-ifs. "
+            "Surrogate values never enter comparison CSVs, residuals, or mapping."
+        )
+        if not selected_run:
+            st.info("Select a run to load its surrogate. Build a dataset with "
+                    "`scripts/10_sample_design.py`, then train + save models "
+                    "(`flyash_phreeqc_ml.ml.surrogate`).")
+            return
+        try:
+            from flyash_phreeqc_ml.ml import surrogate as _sur  # lazy: optional sklearn dep
+        except Exception as exc:  # pragma: no cover - optional dependency
+            st.info(f"scikit-learn not available ({exc}). Install requirements to use the surrogate.")
+            return
+        try:
+            sdir = run_manager.surrogate_dir(selected_run)
+        except run_manager.RunManagerError:
+            st.info("This run type has no surrogate.")
+            return
+        models = _sur.load_surrogate(sdir)
+        if not models:
+            st.info(f"No trained surrogate models in `{sdir.relative_to(_PROJECT_ROOT)}`. "
+                    "Run scripts/10 to build a dataset, then train + save models there.")
+            return
+
+        space = config.SURROGATE_INPUT_SPACE
+        (lo_n, hi_n), (lo_l, hi_l), (lo_t, hi_t) = (
+            space["NaOH_M"], space["liquid_solid_ratio"], space["temperature_C"])
+        c1, c2, c3, c4 = st.columns(4)
+        naoh = c1.number_input("NaOH_M", min_value=float(lo_n), max_value=float(hi_n),
+                               value=float((lo_n + hi_n) / 2), key=f"sur_naoh_{selected_run}")
+        ls = c2.number_input("L/S ratio", min_value=float(lo_l), max_value=float(hi_l),
+                             value=float((lo_l + hi_l) / 2), key=f"sur_ls_{selected_run}")
+        temp = c3.number_input("temperature_C", min_value=float(lo_t), max_value=float(hi_t),
+                               value=float((lo_t + hi_t) / 2), key=f"sur_t_{selected_run}")
+        co2 = c4.selectbox("co2_scenario", list(space["co2_scenario"]),
+                           key=f"sur_co2_{selected_run}")
+        X = pd.DataFrame([{"NaOH_M": naoh, "liquid_solid_ratio": ls,
+                           "temperature_C": temp, "co2_scenario": co2}])
+
+        rows = []
+        for output, model in models.items():
+            p = _sur.predict(model, X).iloc[0]
+            rows.append({"output": output, "surrogate_mean": round(float(p["mean"]), 4),
+                         "lower95": round(float(p["lower"]), 4),
+                         "upper95": round(float(p["upper"]), 4), "domain": p["domain"]})
+        pred_df = pd.DataFrame(rows)
+        st.markdown("**Surrogate prediction ± 95% interval**")
+        st.dataframe(pred_df, use_container_width=True, hide_index=True,
+                     height=min(60 + 35 * len(pred_df), 360))
+        if (pred_df["domain"] == "extrapolation").any():
+            app_ui.render_warning_panel(
+                "Extrapolation", "Some inputs fall outside the trained validity domain — "
+                "these predictions are extrapolation and must not be trusted.", level="error")
+
+        nearest = _nearest_manifest_row(_manifest_if_available(), naoh, ls)
+        if nearest is not None:
+            st.markdown("**Nearest real PHREEQC run** (context only — not a comparison):")
+            st.dataframe(pd.DataFrame([nearest]), use_container_width=True, hide_index=True,
+                         height=80)
+        st.caption("Surrogate approximation of PHREEQC — not a measurement, not a PHREEQC run.")
+
+
+def _render_audit_help_tab(dev_mode: bool, selected_run: str | None = None) -> None:
     """Combined audit + reference tab: formula audit, calculators, raw PHREEQC
-    outputs (in an expander), and the Help / Safety reference."""
+    outputs (in an expander), the experimental surrogate, and the Help / Safety
+    reference."""
+    app_ui.render_page_header(
+        "Audit & Help — transparency and reference",
+        "Verify every downstream calculation, browse model outputs, and read the "
+        "app philosophy, mapping-status definitions, and limitations.",
+        eyebrow="Reference",
+    )
     _render_calc_verification_tab(dev_mode)
 
     st.divider()
@@ -3114,17 +3563,31 @@ def _render_audit_help_tab(dev_mode: bool) -> None:
         _render_phreeqc_only_figures()
 
     st.divider()
+    app_ui.section_header("Surrogate (experimental)",
+                          "fast PHREEQC approximation — not a result path")
+    _render_surrogate_expander(selected_run)
+
+    st.divider()
     _render_help_tab()
 
 
 # --------------------------------------------------------------------------- #
 # Page — wide layout, run-management sidebar, and a tabbed dashboard
 # --------------------------------------------------------------------------- #
-st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
-st.title("flyash-phreeqc-ml — control panel")
-st.caption(
-    "A GUI over the existing Phase 1 / Phase 2 scripts. It does not change the "
-    "chemistry or train any model."
+st.set_page_config(page_title="Experimental Model Validation", layout="wide",
+                   page_icon="🧪")
+app_ui.inject_global_css()
+app_ui.render_hero(
+    "Experimental Model Validation Workspace",
+    "A research workflow for comparing measured experimental data with model "
+    "predictions — import data, detect records, suggest mappings, compare, validate, "
+    "and export.",
+    eyebrow="Measured data → model prediction → mapping → residuals → validation",
+    chips=[
+        (f"Project: Class C fly ash + {MODEL_NAME}", "info"),
+        ("Rule-based mapping (no ML)", "neutral"),
+        ("Honest validation status", "good"),
+    ],
 )
 
 # Sidebar "save files" — selecting a run here drives every tab below.
@@ -3150,4 +3613,4 @@ with tab_map:
 with tab_run_results:
     _render_run_and_results_tab(SELECTED_RUN)
 with tab_audit:
-    _render_audit_help_tab(DEV_MODE)
+    _render_audit_help_tab(DEV_MODE, SELECTED_RUN)

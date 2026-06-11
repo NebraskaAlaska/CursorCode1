@@ -155,10 +155,64 @@ experiment — **not** a blind replacement for the chemistry.
   tab name). See the **`profiles.py`** architecture bullet. Package not renamed; `config.py` public
   constants unchanged.
 
+- **High-end research-dashboard UI** (presentation only, no chemistry/ML). `app_ui.py` (new) is a
+  pure styling layer — a global stylesheet plus helpers (`render_hero`, `render_page_header`,
+  `section_header`, `status_badge`, `render_metric_cards`, `render_warning_panel`,
+  `render_workflow_steps`, `advanced_expander`) with one shared status-colour system (exact=green,
+  scenario-level=amber, unsafe=red, needs-new-sim=blue/purple, preliminary=amber; theme-agnostic
+  translucent tints). `app.py` gained a hero, a per-tab page header + one-sentence purpose, workflow
+  steppers, status cards, badge-styled mapping statuses, coverage cards, and amber "preliminary /
+  workflow check only" panels — **all functionality, warnings, plots, and the scientific-honesty
+  wording preserved** (only relocated/restyled). The global CSS is re-injected **every run** (Streamlit
+  drops elements a rerun doesn't re-emit, so a once-only `<style>` vanishes on the first rerun).
+
+- **Optional AI import-assist** (opt-in, suggestion-only; no AI in mapping or validation).
+  `flyash_phreeqc_ml/ai/import_assist.py` (new) proposes interpretations of messy uploads in the Data
+  tab's generic importer: `classify_sheets`, `propose_column_mapping`, and a **rule-first**
+  `parse_sample_names` (the profile's sample-id conventions parse what they can; only the leftovers go
+  to the LLM). Uses the Anthropic SDK (lazy import; `ANTHROPIC_API_KEY` → enabled, else hidden with a
+  one-line caption — the app works fully without it). Strict-JSON responses are parsed defensively
+  (fence-stripping, graceful fallback). A one-time per-session notice + consent checkbox gate any data
+  leaving the machine. Suggestions land in the **existing review/confirm** flow (mapping editor +
+  an editable metadata table, badged `ai-suggested`/`rule`); saved rows carry a `metadata_provenance`
+  column (`rule`/`ai-confirmed`/`manual`). Nothing AI-touched is saved without the confirm-gated save.
+
+- **On-demand PHREEQC runner** (Prompt 11 — plumbing, no ML). `flyash_phreeqc_ml/phreeqc_runner.py`
+  (new) makes "needs new simulation" actionable: `build_input` templates a `.pqi` from a measured
+  condition's metadata (OA → atmospheric `CO2(g)`; PF/GS → **both** a low-CO₂ and a no-CO₂ variant,
+  since the cover's exchange rate is unconfirmed), with assumed stock chemistry written as **visible**
+  comments; `run` executes the user-supplied PHREEQC **CLI** (`PHREEQC_EXE` + `PHREEQC_DATABASE` from
+  the environment; CEMDATA18 is not redistributable) with a hard timeout and typed
+  `PhreeqcNotConfiguredError`/`PhreeqcRunError`; `ingest` parses with the existing `pqo_parser`, appends
+  to `phreeqc_results.csv` tagged `generated`/`source_condition_key`/`generated_at` (+ exact condition
+  metadata), and regenerates the manifest. The Match tab's needs-new section gained a **Generate
+  simulation** flow (preview the `.pqi` + assumptions panel → run → ingest → refresh); `scripts/09`
+  batches it. Generated `.pqi`/`.pqo` live under `experiments/<run>/outputs/generated/` (gitignored).
+  **Verified design behaviour:** a generated OA scenario reaches **exact** mapping; PF/GS reach
+  **scenario-level only** (the Prompt-5 cup-cover cap). No real PHREEQC is installed here, so the run
+  path is gated + unit-tested via mocks; one optional integration test runs only when configured.
+
+- **PHREEQC surrogate (experimental)** (Prompt 12 — ML scaffolding, **not** in any result path).
+  `flyash_phreeqc_ml/ml/sampling.py` (seeded Latin-hypercube design over `config.SURROGATE_INPUT_SPACE`)
+  + `ml/surrogate.py` (one model per output: a Gaussian-process regressor — standardized inputs,
+  Matérn + white-noise — with a HistGradientBoosting quantile fallback above
+  `SURROGATE_GP_MAX_SAMPLES`; per-output **model card** with training-set hash, n, input ranges =
+  validity domain, k-fold CV, library versions, date; `validate_surrogate` reporting held-out RMSE/MAE
+  + 95%-interval coverage; `predict` flags inputs outside the trained box as `domain=extrapolation`).
+  `scripts/10` writes the design then runs the batch through the runner into `surrogate_dataset.csv`,
+  **recording non-converged runs with a `status` column** rather than dropping them. The Audit/Help
+  tab gained a **Surrogate (experimental)** expander, always labelled "surrogate approximation of
+  PHREEQC — not a measurement, not a PHREEQC run"; **surrogate values never enter comparison CSVs,
+  residuals, or mapping.** Requires scikit-learn + scipy; trained models/datasets are gitignored run
+  outputs.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
-below. Phase 3 (ML) is not started.
+below. The first ML scaffolding now exists as the **experimental PHREEQC surrogate** (Prompt 12), but
+it is deliberately **isolated from every scientific result path** — a fast approximation in the
+Audit/Help tab only, never a measurement, never feeding comparison/residual/mapping. The
+measured-vs-PHREEQC ML *correction* layer (the project's long-term aim) is still not started.
 
 > **Two different `experiments/`.** `flyash_phreeqc_ml/experiments/` is the *Python package*
 > (planning + QA/QC). The repo-root `experiments/` is the *data folder* of run save-files
@@ -243,6 +297,7 @@ blanket `git add` so untracked stray files (e.g. someone's half-named template c
 # setup (virtualenv lives at .venv/)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # runtime: pandas/numpy/matplotlib/openpyxl/streamlit
+                                       #   + OPTIONAL anthropic (AI assist), scikit-learn/scipy (surrogate)
 pip install -r requirements-dev.txt    # pytest
 
 # main pipelines
@@ -253,6 +308,15 @@ python scripts/05_compare_experimental.py  # Phase 2: measured vs PHREEQC (no-op
 python scripts/06_generate_experiment_plan.py    # -> data/raw/experimental_icp/experiment_plan.csv
 python scripts/07_validate_experimental_data.py  # -> outputs/tables/experimental_validation_report.csv
 python scripts/08_sustainability_score.py        # -> outputs/tables/sustainability_score.csv
+
+# on-demand PHREEQC + surrogate (need a user-supplied PHREEQC CLI + CEMDATA18 database):
+export PHREEQC_EXE=phreeqc                        # the PHREEQC binary (or put it on PATH)
+export PHREEQC_DATABASE=/path/to/CEMDATA18-...dat # not redistributable — user-supplied
+python scripts/09_generate_simulations.py --run "<run>"               # generate/run/ingest needs-new conditions
+python scripts/10_sample_design.py --run "<run>" --n-samples 200      # LHS design -> surrogate_dataset.csv
+# Both write their inspectable output (plan/design) even when PHREEQC is unconfigured, then stop cleanly.
+
+# Optional AI import-assist (Data tab): export ANTHROPIC_API_KEY=...   (else the feature stays hidden)
 
 # GUI (optional): thin Streamlit wrapper over the scripts above
 streamlit run app.py

@@ -43,10 +43,15 @@ MANIFEST_COLUMNS = [
     "liquid_solid_ratio",
     "CO2_condition",
     "NaOH_M",
+    "time_min",
     "temperature_C",
     "scenario_label",
     "metadata_quality",
     "notes",
+    # Generated-scenario tags (Prompt 11) — empty/False for hand-built rows.
+    "generated",
+    "source_condition_key",
+    "generated_at",
 ]
 
 UNKNOWN = "unknown"
@@ -94,6 +99,17 @@ def _to_float(value) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _truthy(value) -> bool:
+    """True for real truthy values incl. the strings PHREEQC results CSVs round-trip."""
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes"}
 
 
 def co2_family(label) -> str:
@@ -209,6 +225,22 @@ def build_scenario_manifest(results: pd.DataFrame) -> pd.DataFrame:
         state = r.get("state", "")
         stem = str(source_file).rsplit(".", 1)[0]
 
+        # Generated scenarios (Prompt 11) carry their exact condition metadata, so
+        # the manifest uses that instead of filename inference — this is what lets an
+        # OA condition reach an *exact* mapping (time_min + NaOH_M are now present).
+        gen = _truthy(r.get(config.GENERATED_FLAG_COLUMN))
+        gen_naoh = gen_time = float("nan")
+        if gen:
+            _g = config.GENERATED_META_COLUMNS
+            _ls = _to_float(r.get(_g["liquid_solid_ratio"]))
+            if _ls is not None:
+                ls_ratio = _ls
+            _co2 = r.get(_g["CO2_condition"])
+            if _co2 not in (None, "") and not (isinstance(_co2, float) and pd.isna(_co2)):
+                co2 = str(_co2)
+            gen_naoh = _to_float(r.get(_g["NaOH_M"]))
+            gen_time = _to_float(r.get(_g["time_min"]))
+
         predicted = {}
         for element, mol_col in _MOLALITY_TO_MM.items():
             mol = _to_float(r.get(mol_col)) if mol_col in results.columns else None
@@ -232,12 +264,19 @@ def build_scenario_manifest(results: pd.DataFrame) -> pd.DataFrame:
             **predicted,
             "liquid_solid_ratio": ls_ratio if ls_ratio is not None else float("nan"),
             "CO2_condition": co2,
-            "NaOH_M": float("nan"),  # not inferable from these filenames
-            "temperature_C": _to_float(r.get("temperature_c")),
+            # NaOH_M / time_min are not in the hand-built PHREEQC filenames, so they
+            # stay NaN there; generated scenarios fill them from the source condition.
+            "NaOH_M": gen_naoh,
+            "time_min": gen_time,
+            "temperature_C": (_to_float(r.get(config.GENERATED_META_COLUMNS["temperature_C"]))
+                              if gen else _to_float(r.get("temperature_c"))),
             "scenario_label": _scenario_label(
                 stem, state, ls_ratio, co2, r.get("solution_number", "")),
             "metadata_quality": _metadata_quality(ls_ratio, co2),
             "notes": "; ".join(notes),
+            "generated": bool(gen),
+            "source_condition_key": (r.get(config.GENERATED_SOURCE_COLUMN, "") if gen else ""),
+            "generated_at": (r.get(config.GENERATED_AT_COLUMN, "") if gen else ""),
         })
 
     return pd.DataFrame(rows, columns=MANIFEST_COLUMNS)

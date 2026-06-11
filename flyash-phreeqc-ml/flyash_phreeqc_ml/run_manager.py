@@ -248,6 +248,24 @@ def run_outputs_dir(run_name: str) -> Path:
     return run_dir(run_name) / "outputs"
 
 
+def generated_simulations_dir(run_name: str) -> Path:
+    """Where this run's generated PHREEQC `.pqi`/`.pqo` files live (gitignored).
+
+    Real generated runs go under ``experiments/<run>/outputs/generated/``, never
+    ``data/raw/`` (which is for hand-built, committed inputs).
+    """
+    path = run_outputs_dir(run_name) / "generated"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def surrogate_dir(run_name: str) -> Path:
+    """Where this run's surrogate design/dataset/models live (gitignored)."""
+    path = run_outputs_dir(run_name) / "surrogate"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_exists(run_name: str) -> bool:
     return run_config_path(run_name).exists()
 
