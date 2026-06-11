@@ -5,6 +5,7 @@ layout, and re-pointing the pipeline at a different dataset is a one-line change
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -193,6 +194,81 @@ PHREEQC_MOLALITY_TO_MM = 1000.0
 # For elements, phreeqc_source is the molality column converted to mM; for pH it is
 # the PHREEQC pH directly.
 RESIDUAL_ELEMENTS = ["Ca", "Si", "Al", "Fe"]  # measured_<X>_mM vs phreeqc mol_<X>
+
+
+# --------------------------------------------------------------------------- #
+# PHREEQC execution (Prompt 11 — the on-demand simulation runner)
+# --------------------------------------------------------------------------- #
+# The PHREEQC binary + database are **user-supplied and never committed**. The
+# CEMDATA18 database the project uses is not redistributable. Both are read from
+# the environment so a deployment configures them without code changes; when
+# unset, the runner raises a typed PhreeqcNotConfiguredError with setup guidance.
+PHREEQC_EXE_PATH: str = os.environ.get("PHREEQC_EXE", "phreeqc")  # CLI name / abs path
+PHREEQC_DATABASE_PATH: str | None = os.environ.get("PHREEQC_DATABASE") or None
+PHREEQC_RUN_TIMEOUT_S: float = float(os.environ.get("PHREEQC_TIMEOUT_S", "120"))
+
+# Solution chemistry the template cannot know from a measured condition's metadata
+# alone (fly-ash release is not measured up front). These are **ASSUMED** defaults
+# — surfaced verbatim in the generated .pqi comments and the UI preview, never
+# silently. Sourced from the L-S_5.pqi solution-1 composition (mol/L).
+ASSUMED_STOCK_SOLUTION = {"Si": 0.00031, "Al": 0.00073, "Ca": 0.00233}
+ASSUMED_TEMPERATURE_C = 25.0
+ASSUMED_DENSITY = 1.0
+ASSUMED_PH = 13.0  # used only when a condition has no measured pH
+
+# CO₂ cup-cover semantics → PHREEQC EQUILIBRIUM_PHASES CO2(g) encoding, decoded
+# from the real data/raw inputs+outputs:
+#   atm  → CO2(g) at log pCO2 -3.37, large reservoir (full atmospheric equilibration)
+#   low  → same target SI, tiny depletable reservoir 0.001 mol (reduced exchange)
+#   none → no CO2(g) phase at all (sealed)
+ATM_CO2_LOG_PCO2 = -3.37
+# model scenario label -> (CO2(g) saturation index | None, reservoir mol | None)
+CO2_SCENARIO_ENCODING = {
+    "atm_CO2": (ATM_CO2_LOG_PCO2, 10.0),
+    "low_CO2": (ATM_CO2_LOG_PCO2, 0.001),
+    "no_CO2": (None, None),
+}
+# Cup-cover code (experiment side) -> the model scenario(s) to generate. PF/GS are
+# covered but NOT confirmed sealed, so we generate BOTH a low- and a no-CO₂ variant.
+COVER_TO_CO2_SCENARIOS = {
+    "OA": ["atm_CO2"],
+    "PF": ["low_CO2", "no_CO2"],
+    "GS": ["low_CO2", "no_CO2"],
+}
+# Short {atm,low,none} aliases used by the surrogate sampler's CO₂ axis.
+CO2_SCENARIO_ALIASES = {"atm": "atm_CO2", "low": "low_CO2", "none": "no_CO2"}
+
+# Tag columns written into phreeqc_results.csv / the manifest for generated rows,
+# so generated scenarios are distinguishable from hand-built ones everywhere.
+GENERATED_FLAG_COLUMN = "generated"
+GENERATED_SOURCE_COLUMN = "source_condition_key"
+GENERATED_AT_COLUMN = "generated_at"
+# Generated-scenario metadata carried alongside (lets the manifest use the exact
+# condition metadata instead of filename inference, so OA can reach an exact map).
+GENERATED_META_COLUMNS = {
+    "NaOH_M": "gen_NaOH_M",
+    "liquid_solid_ratio": "gen_liquid_solid_ratio",
+    "CO2_condition": "gen_CO2_condition",
+    "temperature_C": "gen_temperature_C",
+    "time_min": "gen_time_min",
+}
+
+# --------------------------------------------------------------------------- #
+# Surrogate input space (Prompt 12 — Latin-hypercube sampling of PHREEQC)
+# --------------------------------------------------------------------------- #
+# The validity domain the surrogate is trained over. Ranges are inclusive; the
+# CO₂ axis is categorical over the model scenario set.
+SURROGATE_INPUT_SPACE = {
+    "NaOH_M": (0.1, 5.0),
+    "liquid_solid_ratio": (2.0, 20.0),
+    "temperature_C": (15.0, 60.0),
+    "co2_scenario": ["atm", "low", "none"],   # sampled categorically
+}
+# Output variables the surrogate learns (parsed from each run's batch state).
+SURROGATE_OUTPUTS = ["pH", "Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM",
+                     "SI_Cal", "SI_Portlandite"]  # SI_<phase> from config.KEY_PHASES
+# Above this sample count, prefer HistGradientBoosting (quantile) over a GP.
+SURROGATE_GP_MAX_SAMPLES = 2000
 
 
 def ensure_output_dirs() -> None:
