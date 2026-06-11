@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
@@ -68,6 +69,10 @@ PREFERRED_PROCESSED = [
 # CO2 labels come straight from config so the form, validator, and plan agree.
 _CO2_OPTIONS = [""] + list(config.CO2_CONDITION_ALLOWED)
 _YESNO_OPTIONS = ["", "yes", "no"]
+
+# Generic end-to-end workflow, shown as a neutral orientation stepper on Start.
+WORKFLOW_STEPS = ["Import data", "Detect records", "Suggest mappings",
+                  "Compare", "Validate", "Export"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1091,8 +1096,8 @@ def _render_condition_code_help(data: pd.DataFrame) -> None:
 def _render_mapping_status_line(sample: dict, scenario: dict | None) -> str:
     """Show the four-state mapping status as a compact, color-coded line."""
     status = replicates.mapping_status(sample, scenario)
-    emoji, _ = _MAPPING_STATUS_BADGE.get(status, ("•", "info"))
-    st.markdown(f"**Mapping status:** {emoji} {status}")
+    st.markdown("**Mapping status:** " + app_ui.status_badge(status, status),
+                unsafe_allow_html=True)
     st.caption(replicates.MAPPING_STATUS_DEFINITIONS.get(status, ""))
     return status
 
@@ -1619,6 +1624,24 @@ def _render_mapping_section(run_name: str) -> None:
     # section are both driven from it, so their counts always agree.
     table = mapping_table.build_suggestion_table(data, manifest, cond_map)
 
+    # Compact mapping summary — accepted + the status distribution across the
+    # detected measured conditions (same source as the suggestion table below).
+    if not table.empty:
+        vc = table["mapping_status"].value_counts().to_dict()
+        _ms = replicates
+        app_ui.render_metric_cards([
+            {"label": "Accepted mappings", "value": len(cond_map),
+             "status": "good" if len(cond_map) else "neutral"},
+            {"label": "Exact", "value": vc.get(_ms.MAPPING_STATUS_EXACT, 0),
+             "status": "exact" if vc.get(_ms.MAPPING_STATUS_EXACT, 0) else "neutral"},
+            {"label": "Scenario-level", "value": vc.get(_ms.MAPPING_STATUS_SCENARIO, 0),
+             "status": "scenario-level" if vc.get(_ms.MAPPING_STATUS_SCENARIO, 0) else "neutral"},
+            {"label": "Unsafe", "value": vc.get(_ms.MAPPING_STATUS_UNSAFE, 0),
+             "status": "unsafe" if vc.get(_ms.MAPPING_STATUS_UNSAFE, 0) else "neutral"},
+            {"label": "Needs new sim", "value": vc.get(_ms.MAPPING_STATUS_NEEDS_NEW, 0),
+             "status": "needs new simulation" if vc.get(_ms.MAPPING_STATUS_NEEDS_NEW, 0) else "neutral"},
+        ])
+
     # ---- 1) Suggestion table (auto-generated) + accept actions ----
     _render_suggestion_table(run_name, data, manifest, table)
 
@@ -1938,7 +1961,8 @@ def _render_comparison_figures(run_name: str | None) -> None:
     comparison = [p for p in sorted(fig_dir.glob("*.png")) if p.name in _COMPARISON_FIGURES]
     if not comparison:
         return
-    st.subheader("Measured vs PHREEQC (residual figures)")
+    app_ui.section_header("Residual analysis",
+                          "residual = measured − model predicted")
     # The single-sample caveat is folded into the validity line of the inclusion
     # section above, so it is not repeated here.
     for png in comparison:
@@ -2030,11 +2054,13 @@ def _render_valid_now_section() -> None:
     """Feature 5 — what is scientifically valid now vs not fully valid yet."""
     a, b = st.columns(2)
     with a:
-        st.markdown("**✅ Valid now**")
-        st.markdown("\n".join(f"- {x}" for x in _VALID_NOW))
+        with st.container(border=True):
+            app_ui.render_status_badge("Valid now", "valid")
+            st.markdown("\n".join(f"- {x}" for x in _VALID_NOW))
     with b:
-        st.markdown("**🚧 Not fully valid yet**")
-        st.markdown("\n".join(f"- {x}" for x in _NOT_VALID_YET))
+        with st.container(border=True):
+            app_ui.render_status_badge("Not fully valid yet", "preliminary")
+            st.markdown("\n".join(f"- {x}" for x in _NOT_VALID_YET))
 
 
 def _rows_with_any_numeric(data: pd.DataFrame, cols: list[str]) -> int:
@@ -2072,26 +2098,50 @@ def _render_presentation_summary(selected_run: str | None) -> None:
                                 "counts": {}, "n_mapped": 0, "n_unmapped": 0})
     comp_exists = lab_like and run_manager.has_comparison(selected_run)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Dataset imported", "yes" if n_rows else "no")
-    m2.metric("Experimental rows", n_rows)
-    m3.metric("Rows with pH", rows_with_ph)
-    m4.metric("Rows with Ca/Si/Al", rows_with_chem)
-    n1, n2, n3, n4 = st.columns(4)
-    n1.metric("Validation errors", n_err)
-    n2.metric("Validation warnings", n_warn)
-    n3.metric("Mapped samples", msum["n_samples"])
-    n4.metric("Unique model results", msum["n_unique_rows"])
+    _counts = status["counts"]
+    n_exact = _counts.get(replicates.MAPPING_STATUS_EXACT, 0)
+    n_scn = _counts.get(replicates.MAPPING_STATUS_SCENARIO, 0)
+    n_unsafe = _counts.get(replicates.MAPPING_STATUS_UNSAFE, 0)
+    n_needs = _counts.get(replicates.MAPPING_STATUS_NEEDS_NEW, 0)
+
+    # The six headline cards (data + mapping coverage), status-coloured.
+    app_ui.render_metric_cards([
+        {"label": "Data loaded", "value": "Yes" if n_rows else "No",
+         "caption": rt, "status": "good" if n_rows else "neutral"},
+        {"label": "Measured rows", "value": n_rows, "status": "info" if n_rows else "neutral"},
+        {"label": "Mapped samples", "value": msum["n_samples"] if lab_like else "n/a",
+         "caption": f'{msum["n_unique_rows"]} unique model result(s)' if lab_like else "",
+         "status": "good" if (lab_like and msum["n_samples"]) else "neutral"},
+        {"label": "Exact mappings", "value": n_exact if lab_like else "n/a",
+         "status": "exact" if (lab_like and n_exact) else "neutral"},
+        {"label": "Unsafe mappings", "value": n_unsafe if lab_like else "n/a",
+         "status": "unsafe" if (lab_like and n_unsafe) else "neutral"},
+        {"label": "Needs new sim", "value": n_needs if lab_like else "n/a",
+         "status": "needs new simulation" if (lab_like and n_needs) else "neutral"},
+    ])
+    # Secondary cards — measured coverage + validation.
+    app_ui.render_metric_cards([
+        {"label": "Rows with pH", "value": rows_with_ph,
+         "status": "good" if rows_with_ph else "neutral"},
+        {"label": "Rows with Ca/Si/Al", "value": rows_with_chem,
+         "status": "good" if rows_with_chem else "neutral"},
+        {"label": "Scenario-level", "value": n_scn if lab_like else "n/a",
+         "status": "scenario-level" if (lab_like and n_scn) else "neutral"},
+        {"label": "Validation errors", "value": n_err,
+         "status": "error" if n_err else "good"},
+        {"label": "Validation warnings", "value": n_warn,
+         "status": "warning" if n_warn else "good"},
+    ])
 
     overall = status["overall"]
-    _counts = status["counts"]
-    st.markdown(f"**Overall mapping status:** `{overall}`"
-                + ("" if not lab_like else
-                   f"  ·  exact: {_counts.get(replicates.MAPPING_STATUS_EXACT, 0)}, "
-                   f"scenario-level: {_counts.get(replicates.MAPPING_STATUS_SCENARIO, 0)}, "
-                   f"unsafe: {_counts.get(replicates.MAPPING_STATUS_UNSAFE, 0)}, "
-                   f"needs new sim: {_counts.get(replicates.MAPPING_STATUS_NEEDS_NEW, 0)}"))
-    st.markdown(f"**Comparison status:** {'available (preliminary)' if comp_exists else 'not run yet'}")
+    comp_label = "Available (preliminary)" if comp_exists else "Not run yet"
+    comp_status = "preliminary" if comp_exists else "neutral"
+    st.markdown(
+        "**Overall mapping status:** "
+        + app_ui.status_badge(overall, overall if lab_like else "neutral")
+        + " &nbsp; **Comparison:** " + app_ui.status_badge(comp_label, comp_status),
+        unsafe_allow_html=True,
+    )
 
     # Recommended next *scientific* step.
     if not n_rows:
@@ -2126,7 +2176,18 @@ def _render_presentation_summary(selected_run: str | None) -> None:
 # --------------------------------------------------------------------------- #
 def _render_overview(selected_run: str | None) -> None:
     """Project status cards + selected-run summary + a recommended next step."""
-    st.subheader("Presentation summary")
+    app_ui.render_page_header(
+        "Start — validation overview",
+        "A research validation workflow for comparing measured experimental data "
+        "with model predictions. The app identifies what must be matched before "
+        "validation is scientifically valid.",
+        eyebrow="Overview",
+    )
+    app_ui.render_workflow_steps(WORKFLOW_STEPS, current=None)
+    st.write("")
+
+    app_ui.section_header("Presentation summary",
+                          "data, validation, mapping & comparison status at a glance")
     _render_presentation_summary(selected_run)
     st.divider()
 
@@ -2135,7 +2196,7 @@ def _render_overview(selected_run: str | None) -> None:
     measured = _load_measured_safe()
     measured_exists = has_measured_data(measured)
 
-    st.subheader("Project status")
+    app_ui.section_header("Project status", "shared pipeline artifacts")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("master_dataset.csv", "present" if master_path.exists() else "missing")
     n_rows = (
@@ -2152,7 +2213,7 @@ def _render_overview(selected_run: str | None) -> None:
         )
 
     st.divider()
-    st.subheader("Selected run")
+    app_ui.section_header("Selected run", "the active save file")
     if not selected_run:
         st.info("No run selected. Create or open one in the **Experiment runs** sidebar (left).")
         return
@@ -2229,26 +2290,27 @@ def _render_overview(selected_run: str | None) -> None:
         nxt = "Read the comparison in the **Run + Results** tab."
     st.success(f"**Recommended next action:** {nxt}")
 
-    # Workflow checklist.
+    # Workflow checklist — rendered as a progression stepper (first incomplete
+    # step is highlighted; completed steps read as done).
     st.divider()
-    st.subheader("Workflow checklist")
+    app_ui.section_header("Workflow checklist", "progress for this run")
     data_uploaded = not data.empty
     data_checked = (config.TABLES_DIR / config.EXPERIMENTAL_VALIDATION_REPORT_CSV).exists()
     mapping_complete = lab_like and has_map
     workflow_run = comp_exists
     results_available = comp_exists and _comparison_has_residuals(selected_run)
 
-    def _check(done: bool, label: str) -> str:
-        return f"{'✅' if done else '⬜'} {label}"
-
+    checks = [data_uploaded, data_checked, mapping_complete, workflow_run, results_available]
+    labels = ["Data uploaded", "Data checked", "Mapping complete",
+              "Workflow run", "Results available"]
+    current = next((i for i, c in enumerate(checks) if not c), len(checks))
+    app_ui.render_workflow_steps(labels, current=current)
     st.markdown(
-        "\n".join([
-            _check(data_uploaded, "Data uploaded"),
-            _check(data_checked, "Data checked"),
-            _check(mapping_complete, "Mapping complete"),
-            _check(workflow_run, "Workflow run"),
-            _check(results_available, "Results available"),
-        ])
+        " &nbsp;·&nbsp; ".join(
+            app_ui.status_badge(lbl, "good" if done else "neutral")
+            for lbl, done in zip(labels, checks)
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -2350,12 +2412,22 @@ def _render_basic_validation_summary(run_name: str) -> None:
 
 
 def _render_data_entry_tab(selected_run: str | None) -> None:
+    app_ui.render_page_header(
+        "Data — import & validate",
+        "Import or enter measured data for the selected run, review the detected "
+        "records, validate, then save to the run.",
+        eyebrow="Step 1 · Ingest",
+    )
+    app_ui.render_workflow_steps(
+        ["Upload / import data", "Review detected records", "Validate", "Save to run"],
+        current=0,
+    )
     if not selected_run:
         st.info("Select or create a run in the **Experiment runs** sidebar (left) to enter data.")
         return
     cfg = run_manager.load_run_config(selected_run)
     rt = cfg.get("run_type")
-    st.subheader(f"Run `{selected_run}` — {rt}")
+    app_ui.section_header(f"Run · {selected_run}", rt)
     _run_type_warning(rt)
 
     if rt in run_manager.LAB_LIKE_RUN_TYPES:
@@ -2384,6 +2456,17 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
 
 
 def _render_mapping_tab(selected_run: str | None) -> None:
+    app_ui.render_page_header(
+        "Match — measured data to model predictions",
+        "Automatic-first: records are detected and mappings are suggested for you. "
+        "Review, then accept. Manual mapping stays available under advanced.",
+        eyebrow="Step 2 · Map",
+    )
+    app_ui.render_workflow_steps(
+        ["Auto-detect measured records", "Auto-suggest model mappings",
+         "Review suggestions", "Accept mappings"],
+        current=1,
+    )
     if not selected_run:
         st.info(
             "Select or create a **lab_experiment** (or **plastic_composite**) run in the "
@@ -2589,8 +2672,7 @@ def _render_measured_overview(selected_run: str) -> None:
     Renders fully without a sample→PHREEQC mapping and without
     ``data/processed/phreeqc_results.csv`` (it reads nothing but the run's data).
     """
-    st.markdown("#### Measured data overview")
-    st.caption("Measured data only — no model comparison.")
+    app_ui.section_header("Measured data overview", "measured data only — no model comparison")
 
     data = run_manager.read_data_file(selected_run)
     variables = measured_overview.available_variables(data)
@@ -2634,17 +2716,6 @@ def _inclusion_variables(comp: pd.DataFrame) -> list[str]:
     return out
 
 
-# Counts panel: (dict key, label) — built entirely from the inclusion dict.
-_INCLUSION_METRICS = [
-    ("measured_rows_available", "Measured rows"),
-    ("rows_with_mapping", "With mapping"),
-    ("rows_prediction_available", "Prediction available"),
-    ("rows_plotted", "Plotted"),
-    ("unique_predictions_used", "Unique predictions"),
-    ("unmapped_rows", "Unmapped"),
-]
-
-
 def _render_comparison_inclusion(selected_run: str) -> None:
     """Explicit inclusion view: counts, exclusion reasons, status-aware scatter, validity.
 
@@ -2659,7 +2730,8 @@ def _render_comparison_inclusion(selected_run: str) -> None:
     if not variables:
         return  # nothing comparable; residual figures / summary cover the messaging
 
-    st.markdown("#### Model comparison — inclusion")
+    app_ui.section_header("Model comparison — coverage & inclusion",
+                          "measured vs model prediction")
     data = run_manager.read_data_file(selected_run)
     mapping = run_manager.read_mapping(selected_run)
     manifest = _manifest_if_available()
@@ -2677,10 +2749,18 @@ def _render_comparison_inclusion(selected_run: str) -> None:
     inc = comparison_inclusion(data, mapping, comp, variable,
                                manifest=manifest, include_unsafe=include_unsafe)
 
-    # Counts panel — straight from the inclusion dict (consistent with the table).
-    cols = st.columns(len(_INCLUSION_METRICS))
-    for col, (key, label) in zip(cols, _INCLUSION_METRICS):
-        col.metric(label, inc[key])
+    # Coverage cards — straight from the inclusion dict (consistent with the table).
+    n_excluded = inc["n_total"] - inc["rows_plotted"]
+    app_ui.render_metric_cards([
+        {"label": "Measured rows", "value": inc["measured_rows_available"]},
+        {"label": "With mapping", "value": inc["rows_with_mapping"]},
+        {"label": "Prediction available", "value": inc["rows_prediction_available"]},
+        {"label": "Rows plotted", "value": inc["rows_plotted"],
+         "status": "good" if inc["rows_plotted"] else "neutral"},
+        {"label": "Unique predictions", "value": inc["unique_predictions_used"]},
+        {"label": "Excluded rows", "value": n_excluded,
+         "status": "warning" if n_excluded else "good"},
+    ])
 
     if include_unsafe and inc["n_unsafe_plotted"]:
         st.error(
@@ -2698,6 +2778,8 @@ def _render_comparison_inclusion(selected_run: str) -> None:
             st.dataframe(rc, use_container_width=True, hide_index=True, height=180)
 
     if not inc["plotted"].empty:
+        st.caption("**Measured vs model prediction** — points near the dashed 1:1 line "
+                   "indicate agreement *only if the mapping is scientifically valid*.")
         st.pyplot(compare_plots.comparison_scatter_figure(inc["plotted"], variable))
 
     if inc["collapse_warning"]:
@@ -2707,9 +2789,12 @@ def _render_comparison_inclusion(selected_run: str) -> None:
             "simulations* for the list."
         )
 
-    # One overall validity line, chosen by the documented rules. Only `valid` implies
-    # the model was validated.
-    getattr(st, inc["validity_severity"], st.info)(f"**{inc['validity'].upper()}** — {inc['validity_message']}")
+    # One overall validity panel, chosen by the documented rules. Only `valid` implies
+    # the model was validated; everything else reads as preliminary / workflow check.
+    app_ui.render_warning_panel(
+        inc["validity"].upper(), inc["validity_message"],
+        level=inc["validity"] if inc["validity"] in app_ui.STATUS_STYLES else "info",
+    )
 
 
 def _render_results_tab(selected_run: str | None) -> None:
@@ -2753,10 +2838,12 @@ def _render_results_tab(selected_run: str | None) -> None:
         status = replicates.overall_mapping_status(
             data, run_manager.read_mapping(selected_run), _manifest_if_available())
         if not status["all_exact"]:
-            st.warning(
-                "⚠️ **Preliminary / workflow check only.** The graphs below are not final "
-                "model validation, because one or more mappings are scenario-level, unsafe, "
-                "or missing exact PHREEQC metadata. Plotting is still allowed for inspection."
+            app_ui.render_warning_panel(
+                "Preliminary / workflow check only",
+                "The graphs below are not final model validation, because one or more "
+                "mappings are scenario-level, unsafe, or missing exact PHREEQC metadata. "
+                "Plotting is still allowed for inspection.",
+                level="preliminary",
             )
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES:
         _render_condition_results(selected_run)
@@ -2787,10 +2874,21 @@ def _render_results_tab(selected_run: str | None) -> None:
 
 def _render_run_and_results_tab(selected_run: str | None) -> None:
     """Combined workflow execution + results (the two used to be separate tabs)."""
-    st.subheader("Run workflow")
+    app_ui.render_page_header(
+        "Run + Results — compare, validate, interpret",
+        "Run the workflow for the selected run, then read the measured-data overview, "
+        "the measured-vs-model comparison, residual analysis, and validation tables.",
+        eyebrow="Step 3 · Compare & validate",
+    )
+    app_ui.render_workflow_steps(
+        ["Run workflow", "Measured overview", "Model comparison",
+         "Residual analysis", "Validation / audit"],
+        current=0,
+    )
+    app_ui.section_header("Run workflow", "execute the pipeline for this run")
     _render_run_workflow_tab(selected_run)
     st.divider()
-    st.subheader("Results")
+    app_ui.section_header("Results", "this run's own outputs, provenance-stamped")
     _render_results_tab(selected_run)
 
 
@@ -3096,10 +3194,38 @@ def _render_help_tab() -> None:
         "any comparison or residual. Garbage in, garbage out."
     )
 
+    st.divider()
+    with st.expander("Data safety — what is kept out of version control"):
+        st.markdown(
+            "- Real measured-release CSVs, uploaded Excel workbooks, generated outputs, "
+            "processed CSVs, figures, `run_config.yaml`, condition/replicate mapping CSVs "
+            "and per-run experiment files are **git-ignored by default** and are not "
+            "committed unless explicitly force-added.\n"
+            "- Each run's data lives in its own `experiments/<run>/` folder; only the "
+            "folder's `README.md` is tracked.\n"
+            "- Synthetic/demo rows are force-tagged `source_type=synthetic_demo` and are "
+            "never treated as scientific output."
+        )
+
+    with st.expander("Future direction — an ML *correction* layer (not yet started)"):
+        st.markdown(
+            "The long-term aim is an ML layer that learns **where the model disagrees with "
+            "experiment** — a correction on top of the chemistry, **not** a blind "
+            "replacement for it. It stays dormant until real measured release data and "
+            "exact mappings exist; today the app is a transparent, rule-based validation "
+            "workflow with no learned weights."
+        )
+
 
 def _render_audit_help_tab(dev_mode: bool) -> None:
     """Combined audit + reference tab: formula audit, calculators, raw PHREEQC
     outputs (in an expander), and the Help / Safety reference."""
+    app_ui.render_page_header(
+        "Audit & Help — transparency and reference",
+        "Verify every downstream calculation, browse model outputs, and read the "
+        "app philosophy, mapping-status definitions, and limitations.",
+        eyebrow="Reference",
+    )
     _render_calc_verification_tab(dev_mode)
 
     st.divider()
@@ -3120,11 +3246,20 @@ def _render_audit_help_tab(dev_mode: bool) -> None:
 # --------------------------------------------------------------------------- #
 # Page — wide layout, run-management sidebar, and a tabbed dashboard
 # --------------------------------------------------------------------------- #
-st.set_page_config(page_title="flyash-phreeqc-ml", layout="wide")
-st.title("flyash-phreeqc-ml — control panel")
-st.caption(
-    "A GUI over the existing Phase 1 / Phase 2 scripts. It does not change the "
-    "chemistry or train any model."
+st.set_page_config(page_title="Experimental Model Validation", layout="wide",
+                   page_icon="🧪")
+app_ui.inject_global_css()
+app_ui.render_hero(
+    "Experimental Model Validation Workspace",
+    "A research workflow for comparing measured experimental data with model "
+    "predictions — import data, detect records, suggest mappings, compare, validate, "
+    "and export.",
+    eyebrow="Measured data → model prediction → mapping → residuals → validation",
+    chips=[
+        (f"Project: Class C fly ash + {MODEL_NAME}", "info"),
+        ("Rule-based mapping (no ML)", "neutral"),
+        ("Honest validation status", "good"),
+    ],
 )
 
 # Sidebar "save files" — selecting a run here drives every tab below.
