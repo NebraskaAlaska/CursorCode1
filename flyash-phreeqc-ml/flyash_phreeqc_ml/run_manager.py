@@ -273,6 +273,13 @@ def residual_model_dir(run_name: str) -> Path:
     return path
 
 
+def incompleteness_model_dir(run_name: str) -> Path:
+    """Where this run's trained model-incompleteness GPs + cards live (gitignored)."""
+    path = run_outputs_dir(run_name) / "incompleteness_model"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_exists(run_name: str) -> bool:
     return run_config_path(run_name).exists()
 

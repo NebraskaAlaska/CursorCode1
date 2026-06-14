@@ -253,6 +253,34 @@ experiment — **not** a blind replacement for the chemistry.
   Results tab gained a **"Residual correction (experimental)"** expander (per-element gate progress →
   train button when met → LOCO verdict → optional overlay). Covered by `tests/test_residual_model.py`.
 
+- **GP model-incompleteness estimator (experimental)** (Prompt 27 — model *where PHREEQC's mechanism is
+  systematically short*; only after Prompts 22–25 exist + data accumulates). `flyash_phreeqc_ml/ml/incompleteness_model.py`
+  (new) learns the **unexplained closure residual** (Prompt 24/25 — the gap PHREEQC could **not** attribute)
+  per element as a function of batch conditions, **reusing `residual_model`'s machinery verbatim** (feature
+  encoding, GP pipeline, `_loco`, training-hash/card helpers — imported, not reinvented). The output is
+  framed strictly as a **"predicted systematic shortfall of the PHREEQC attribution under these conditions"**
+  — never a measured amount, never fed into closure arithmetic (predictions live only in
+  `predicted_shortfall*` columns). **Gate** (typed `IncompletenessGateError` with counts): ≥30
+  **well-determined** rows across ≥3 conditions, where well-determined = closure-gap σ ≤
+  `GAP_SIGMA_REL_TOL`·|gap| **and** a trustworthy (complete-closure) recovery status **and**
+  `starting_provenance == "measured"` — so a row whose starting assay is a confirmed *or* proposed
+  **literature** stand-in is **excluded from training** (the constraint: trains on measured closure gaps +
+  modeled attributions only). **Noise guard** (`NoLearnablePatternError`): if the residual's reduced χ²
+  around its mean ≤ `NOISE_CHI2_MAX`, training refuses with *"consistent with measurement noise; no
+  learnable pattern"* rather than fitting noise. **LOCO** (leave-one-condition-out) vs the Prompt-13
+  constant-bias baseline via `residual_model._loco`; `use_model_recommended` is True only when it beats the
+  baseline (else stay with the bias bands). **Uses:** (a) `flag_underattributed_conditions` — the
+  active-learning hook (conditions predicted to be strongly under-attributed → candidates for new
+  experiments / better phase lists); (b) `incompleteness_overlay` — an off-by-default, clearly ml-predicted
+  shortfall overlay for the recovery report. Per-element **model card** (gate values, signal assessment,
+  LOCO-vs-baseline, training run names + set hash, library versions, date) + joblib persistence under
+  `run_manager.incompleteness_model_dir` (gitignored). `build_recovery_dataset` assembles the per-row
+  training frame from measured closure + modeled attribution + literature-provenance flags. Requires
+  scikit-learn (via `residual_model`); tests use `optimizer=None` fast-mode. Covered by
+  `tests/test_incompleteness_model.py` (gate 29-refused/30-accepted + ≥3-conditions, well-determined /
+  literature / status filters, noise-domination refusal, LOCO + baseline logic, prediction-only columns,
+  build-dataset target = measured gap − modeled attribution, persistence).
+
 - **Grounded "Ask the assistant"** (Prompt 15 — interpretation layer, read-only, no invented numbers).
   `flyash_phreeqc_ml/ai/assistant.py` (new) answers natural-language questions about the **selected
   run** using the Anthropic **tool-use** API, where every tool wraps an existing read-only function so
@@ -574,11 +602,14 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
 
 - **No ML on the result path.** Do not wire any model into comparison/residual/mapping/validity.
   The experimental ML that exists (surrogate Prompt 12, bias stats Prompt 13, GP residual correction
-  Prompt 14) is deliberately isolated: the surrogate is Audit/Help-only; the residual correction is
-  **hard-gated** (≥30 exact pairs / ≥3 conditions, enforced by a typed error — never lower it) and
-  **display-only**. Real measured release data still does not exist in `data/raw/experimental_icp/`
-  (only the blank template), so for fly ash these models have **no data to train on yet** and Phase 2
-  comparison remains the scientific ceiling — the gate is what keeps that honest.
+  Prompt 14, GP model-incompleteness estimator Prompt 27) is deliberately isolated: the surrogate is
+  Audit/Help-only; the residual correction is **hard-gated** (≥30 exact pairs / ≥3 conditions, enforced
+  by a typed error — never lower it) and **display-only**; the incompleteness model is **hard-gated** the
+  same way (≥30 well-determined rows / ≥3 conditions), additionally **refuses to fit noise** (reduced-χ²
+  guard) and **never trains on literature-provenance rows**, and its output is a labelled "predicted
+  shortfall" estimate that never enters closure arithmetic. Real measured release data still does not exist
+  in `data/raw/experimental_icp/` (only the blank template), so for fly ash these models have **no data to
+  train on yet** and Phase 2 comparison remains the scientific ceiling — the gate is what keeps that honest.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
   `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by
