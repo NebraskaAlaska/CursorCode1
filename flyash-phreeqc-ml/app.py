@@ -67,6 +67,7 @@ from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (grounded Q&A)
+from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -4350,6 +4351,141 @@ def _run_attribution_and_parse(run_name: str, inputs):
     raise phreeqc_runner.PhreeqcRunError("no SELECTED_OUTPUT file produced by the run")
 
 
+def _literature_experiment_conditions(selected_run: str) -> dict:
+    """A compact, representative condition dict for the conditions-match assessment."""
+    try:
+        data = run_manager.read_data_file(selected_run)
+    except Exception:
+        return {}
+    if data is None or data.empty:
+        return {}
+    row = data.iloc[0].to_dict()
+    out = {}
+    for k in ("leachant", "NaOH_M", "acid_M", "temperature_C", "final_pH", "fly_ash_type",
+              "material_id"):
+        v = row.get(k)
+        if v not in (None, "") and not (isinstance(v, float) and v != v):
+            out[k] = v
+    return out
+
+
+_LIT_KINDS = {
+    "Solubility constant (log Ksp)": "solubility_constant",
+    "Candidate precipitate phases (+ solubility)": "candidate_phase",
+    "Typical starting element assay (stand-in)": "starting_assay",
+    "Partition / distribution (Kd)": "partition",
+}
+
+
+def _lit_source_markdown(rec: dict) -> str:
+    """A clickable source label: '[Title (Year)](https://doi.org/…)' or the URL."""
+    cite = rec.get("citation") or {}
+    link = ai_literature.resolvable_link(cite)
+    label = cite.get("title") or "source"
+    yr = cite.get("year")
+    text = f"{label}{f' ({yr})' if yr else ''}"
+    return f"[{text}]({link})" if link else text
+
+
+def _render_literature_proposer(selected_run: str, profile) -> None:
+    """The query form: consent-gated, kind + material/element → propose → quarantine-save."""
+    if not ai_literature.is_enabled():
+        st.caption(
+            "AI literature retrieval is disabled. Set `ANTHROPIC_API_KEY` and "
+            "`pip install anthropic` to enable it. Confirming/reviewing any values already "
+            "saved below still works without it.")
+        return
+    st.caption(ai_literature.LITERATURE_DATA_NOTICE)
+    if not st.checkbox(ai_literature.LITERATURE_CONSENT_LABEL, key=f"lit_consent_{selected_run}"):
+        st.info("Tick the box above to allow a sourced web search for these optional values.")
+        return
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    kind_label = c1.selectbox("What to look up", list(_LIT_KINDS), key=f"lit_kind_{selected_run}")
+    kind = _LIT_KINDS[kind_label]
+    material = c2.text_input("Material", value="Class C fly ash", key=f"lit_mat_{selected_run}")
+    extra = c3.text_input("Element / phase", value="", key=f"lit_extra_{selected_run}")
+    if st.button("🔎 Search literature (sourced)", key=f"lit_go_{selected_run}"):
+        conds = _literature_experiment_conditions(selected_run)
+        with st.spinner("Searching the literature for sourced values…"):
+            if kind == "solubility_constant":
+                cands = ai_literature.propose_solubility_constants(
+                    material, extra or None, experiment_conditions=conds)
+            elif kind == "candidate_phase":
+                cands = ai_literature.propose_candidate_phases(
+                    material, experiment_conditions=conds)
+            elif kind == "starting_assay":
+                cands = ai_literature.propose_starting_assay(
+                    material, extra or "Ca", experiment_conditions=conds)
+            else:
+                cands = ai_literature.propose_partition_behavior(
+                    material, extra or "Ca", experiment_conditions=conds)
+        if not cands:
+            st.warning("No reliably-sourced value found (every result must carry a DOI/URL "
+                       "and a supporting quote). Nothing was saved.")
+        else:
+            added = ai_literature.save_candidates(selected_run, cands)
+            st.success(f"Found {len(cands)} sourced candidate(s); {len(added)} new added to "
+                       "the quarantine store below. Review and confirm before any use.")
+            st.rerun()
+
+
+def _render_literature_review(selected_run: str, profile) -> None:
+    """Review table for quarantined literature values — source-prominent, confirm-gated.
+
+    Every row shows the **clickable DOI/URL**, the supporting quote, and the
+    conditions-match warning. Confirmation moves a value to ``literature-confirmed`` (and
+    logs an audit event); a conditions-mismatched value needs a **second acknowledgement**.
+    """
+    with st.expander("📚 Literature values (AI-assisted, sourced) — quarantined until confirmed"):
+        st.caption(
+            "Proposed values are **source-bound** (DOI preferred, URL fallback) and "
+            "**quarantined**: nothing here enters a calculation until you confirm it, and "
+            "uncited results are dropped before they are ever shown.")
+        _render_literature_proposer(selected_run, profile)
+
+        store = ai_literature.read_store(selected_run)
+        if not store:
+            st.info("No literature values stored for this run yet.")
+            return
+
+        st.markdown("**Stored values** (newest last)")
+        for rec in store:
+            cid = str(rec.get("candidate_id"))
+            confirmed = bool(rec.get("confirmed"))
+            mismatch = ai_literature.has_conditions_mismatch(rec.get("conditions_match"))
+            tag = "✅ confirmed" if confirmed else "🔒 quarantined"
+            st.markdown(
+                f"**{rec.get('quantity', '')}** = `{rec.get('value')} {rec.get('unit', '')}` "
+                f"· {rec.get('material', '')}  —  {tag}")
+            st.markdown(f"Source: {_lit_source_markdown(rec)}")
+            cite = rec.get("citation") or {}
+            if cite.get("supporting_quote"):
+                st.caption(f"“{cite['supporting_quote']}”")
+            cm = rec.get("conditions_match") or {}
+            if mismatch:
+                flags = ", ".join(cm.get("mismatch_flags") or []) or "different conditions"
+                st.warning(f"⚠️ Conditions mismatch: {flags}. "
+                           f"{cm.get('assessment', '')}".strip())
+            elif cm.get("assessment"):
+                st.caption(f"Conditions: {cm['assessment']}")
+
+            if not confirmed:
+                ack = True
+                if mismatch:
+                    ack = st.checkbox(ai_literature.MISMATCH_ACK_LABEL,
+                                      key=f"lit_ack_{selected_run}_{cid}")
+                if st.button("Confirm this value", key=f"lit_confirm_{selected_run}_{cid}",
+                             disabled=mismatch and not ack):
+                    try:
+                        ai_literature.confirm_value(selected_run, cid, acknowledge_mismatch=ack)
+                        st.success("Confirmed and logged to the audit trail.")
+                        st.rerun()
+                    except ai_literature.ConditionsMismatchError:
+                        st.error("Tick the conditions-mismatch acknowledgement to confirm.")
+            st.divider()
+
+
 def _render_mass_balance(selected_run: str) -> None:
     """Batch-reaction element closure (deterministic arithmetic; no model/AI/ML).
 
@@ -4376,6 +4512,17 @@ def _render_mass_balance(selected_run: str) -> None:
             return
 
         data = run_manager.read_data_file(selected_run)
+        # Quarantine gate: fill ONLY confirmed literature starting-assay stand-ins into
+        # blank cells (never overwriting a measured value). Unconfirmed values are ignored.
+        lit_records = ai_literature.confirmed_records(selected_run)
+        lit_badges: dict = {}
+        if lit_records and not data.empty:
+            rows = []
+            for _, r in data.iterrows():
+                nr, b = ai_literature.row_with_confirmed_assays(r.to_dict(), lit_records, profile)
+                rows.append(nr)
+                lit_badges.update(b)
+            data = pd.DataFrame(rows)
         records = mass_balance.closure_records(data, profile)
         if not records:
             st.info("No batch-reaction rows to close yet — enter the material mass, liquid "
@@ -4385,6 +4532,21 @@ def _render_mass_balance(selected_run: str) -> None:
         elements = list(getattr(profile, "mass_balance_elements", ()))
         element = st.selectbox("Element", elements, key=f"mb_el_{selected_run}")
         el_records = [r for r in records if r["element"] == element]
+
+        # Badge any literature stand-in used for THIS element's starting assay (with source).
+        overrides = ai_literature.confirmed_assay_overrides(lit_records, profile)
+        ov = overrides.get(f"{element}_starting_content")
+        if ov:
+            _val, rec = ov
+            cite = rec.get("citation") or {}
+            link = ai_literature.resolvable_link(cite)
+            label = cite.get("title") or "source"
+            yr = cite.get("year")
+            src_md = f"[{label}{f' ({yr})' if yr else ''}]({link})" if link else label
+            st.warning(
+                f"⚠️ {element} starting assay is a **literature stand-in** "
+                f"(`{ai_literature.PROVENANCE_CONFIRMED}`), **not a measurement** — any "
+                f"closure/recovery below is computed from it. Source: {src_md}")
 
         st.markdown("**Closure table** (mmol; provenance per cell below)")
         st.dataframe(mass_balance.closure_table(el_records), use_container_width=True,
@@ -4451,6 +4613,8 @@ def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
         _render_basic_validation_summary(selected_run)
         st.divider()
         _render_mass_balance(selected_run)
+        st.divider()
+        _render_literature_review(selected_run, profiles.FLY_ASH_PROFILE)
         st.divider()
     else:
         st.info("This run type has no measured-data overview or lab validation. The "

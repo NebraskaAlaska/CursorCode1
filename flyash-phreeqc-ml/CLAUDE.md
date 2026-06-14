@@ -465,6 +465,40 @@ experiment — **not** a blind replacement for the chemistry.
   statuses, the degrade path, immutability of the measured block, validity feed) with the PHREEQC run
   mocked.
 
+- **AI-assisted literature value retrieval — sourced + quarantined by construction** (Prompt 26 —
+  suggestion-only; a literature value can **never** silently enter a calculation). `flyash_phreeqc_ml/ai/literature.py`
+  (new) *proposes* sourced literature values (solubility constants, typical element assays, partition
+  behaviour) via the Anthropic **web_search** server tool. `propose_literature_values(query) ->
+  list[LiteratureCandidate]` (+ wrappers `propose_solubility_constants` / `propose_candidate_phases` /
+  `propose_starting_assay` / `propose_partition_behavior`). `LiteratureCandidate` carries
+  value/unit/quantity/material/conditions/`conditions_match`/confidence + a `Citation`
+  (doi/url/title/authors/year/`supporting_quote`). **Validation in code (before display):** a candidate
+  is **dropped** unless it has a supporting quote **and** at least one of doi/url; a DOI is normalised to
+  `https://doi.org/<doi>`; the quote is truncated to ≤25 words (copyright). **Quarantine by
+  construction:** candidates are written `literature-proposed`, `confirmed=False` to a **separate per-run
+  store** `experiments/<run>/outputs/literature_values.jsonl` — never into measured data, the manifest, or
+  a comparison CSV. The **single chokepoint** into a calculation is `row_with_confirmed_assays(row,
+  records, profile)`, which injects **only** `confirmed=True` starting-assay stand-ins into *blank* cells
+  (never overwriting a measured value) and returns a per-column **source badge**; `mass_balance` /
+  `attribution` stay pure and never import literature, so an unconfirmed value is simply ignored by every
+  calculation (pinned by a test that runs a closure and shows the unconfirmed value does not enter it).
+  **Confirmation is deliberate + recorded:** `confirm_value(run, id, *, acknowledge_mismatch=False)` flips
+  the record to `literature-confirmed`, retains the citation permanently, and logs `audit.log_event`
+  (`literature_confirmed`, carrying the resolvable **DOI/link** + title + year, so the value's downstream
+  influence is traceable to the exact paper). A **conditions mismatch** (different material/T/ionic
+  strength, flagged by the model) makes `confirm_value` **refuse** unless the second acknowledgement
+  (`acknowledge_mismatch=True`, the UI's "I understand this value is from different conditions" checkbox) is
+  given — also logged. **System-prompt guards** (stored in the module): only values citable from search
+  with a resolvable DOI/URL + a ≤25-word quote; never fabricate from memory; say "no reliable sourced
+  value found" rather than guess; always report conditions even when mismatched. **UI** (Validate tab):
+  a consent-gated proposer + a **review table** showing the **clickable DOI/URL** (title + year), the
+  supporting quote, and the conditions-match warning with the double-ack gate; the mass-balance closure
+  **badges** any literature stand-in as "starting assay: literature-confirmed (DOI …), not a measurement".
+  Disabled cleanly without `ANTHROPIC_API_KEY` (reuses `import_assist`'s lazy client); per-session
+  data-leaves-machine consent before any query. Covered by `tests/test_literature.py` (mocked client +
+  search: uncited/quote-less dropped, DOI→doi.org, URL-only accepted, quarantine enforced into
+  mass_balance, the mismatch double-ack gate, the "no value found" path, disabled-without-key).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -638,7 +672,21 @@ modules together and own all file I/O paths.
   `app_version`). No edit/delete API; logs ids/counts/statuses/hashes only (never values/contents);
   every call is defensive (warns, never raises). Instrumentation lives at the seams (`run_manager`
   data ops via lazy import, `scripts/05`, and app orchestration). The JSONL is gitignored under
-  `experiments/*/outputs/`. Covered by `tests/test_audit.py`.
+  `experiments/*/outputs/`. Covered by `tests/test_audit.py`. (It also carries the Prompt-26
+  `literature_proposed` / `literature_confirmed` events — the latter keeps the DOI/link + title + year so
+  a confirmed literature value's downstream influence is traceable to the exact paper.)
+
+- **`ai/literature.py` retrieves sourced literature values — quarantined by construction** (Prompt 26;
+  opt-in, suggestion-only). `propose_literature_values(query)` uses the Anthropic **web_search** tool to
+  propose `LiteratureCandidate`s, each **dropped in code** unless it has a supporting quote + a resolvable
+  DOI/URL (DOI → `https://doi.org/…`; quote ≤25 words). Candidates land `literature-proposed` /
+  `confirmed=False` in a **separate** per-run store `experiments/<run>/outputs/literature_values.jsonl`
+  (never measured data / manifest / comparison). The **only** path into a calculation is
+  `row_with_confirmed_assays` (confirmed-only, blank cells only, returns a source badge) — `mass_balance` /
+  `attribution` never import it, so unconfirmed values are inert. `confirm_value(..., acknowledge_mismatch)`
+  flips to `literature-confirmed` (citation retained, audit-logged) and **refuses** a conditions-mismatched
+  value without the second acknowledgement. Reuses `import_assist`'s lazy client (disabled without a key).
+  Covered by `tests/test_literature.py`.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
   layers (provenance, inclusion, traces, bias, conversions, audit) into a self-contained
