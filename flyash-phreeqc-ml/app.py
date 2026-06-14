@@ -58,6 +58,7 @@ from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import mapping_table  # noqa: E402
 from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
+from flyash_phreeqc_ml import mass_balance  # noqa: E402  (deterministic element closure)
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report)
 from flyash_phreeqc_ml import run_manager  # noqa: E402
@@ -4208,6 +4209,102 @@ def _render_start_tab(selected_run: str | None) -> None:
                "input formats, the mapping guide, how to read results, and data safety.")
 
 
+def _mass_balance_bar(record: dict):
+    """Stacked bar for one element/sample: liquid / solid / unaccounted gap."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    fig, ax = plt.subplots(figsize=(3.6, 3.4))
+    liquid = max(record["n_liquid"], 0.0)
+    solid = max(record["n_solid"], 0.0)
+    gap = record["gap"]
+    ax.bar(0, liquid, color="#4878CF", label="liquid")
+    ax.bar(0, solid, bottom=liquid, color="#6ACC64", label="solid residue")
+    # The gap may be negative (over-recovery) — draw it from the top of liquid+solid.
+    ax.bar(0, gap, bottom=liquid + solid, color="#C0C0C0", hatch="//",
+           label="unaccounted (not yet attributed)")
+    ax.axhline(record["n_in"], color="black", lw=1.2, ls="--", label="charged (n_in)")
+    ax.set_xticks([])
+    ax.set_ylabel("mmol")
+    ax.set_title(f"{record['element']} · {record.get('sample_id', '')}", fontsize=9)
+    ax.legend(fontsize=7, loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def _render_mass_balance(selected_run: str) -> None:
+    """Batch-reaction element closure (deterministic arithmetic; no model/AI/ML).
+
+    Renders only when the active dataset profile opts in (declares
+    ``mass_balance_elements``). The gap is element **not yet attributed** to liquid or
+    solid — a measured fact with no mechanism attached.
+    """
+    profile = profiles.FLY_ASH_PROFILE
+    with st.expander("Batch-reaction mass balance — element closure (arithmetic)",
+                     expanded=False):
+        st.caption(
+            "Deterministic closure: **gap = moles_in − moles_liquid − moles_solid** "
+            "(mmol). No model, AI, or ML — the gap is element *not yet attributed* to "
+            "liquid or solid, a measured fact with no mechanism attached."
+        )
+        if not mass_balance.is_enabled(profile):
+            st.info(
+                "This run's dataset profile does not declare batch-reaction mass-balance "
+                "columns, so no closure is computed. Mass balance is **opt-in per profile** "
+                "(set `mass_balance_elements` + the assay units). The schema reserves the "
+                "optional columns `material_mass_g`, `liquid_volume_mL`, `solid_mass_g`, and "
+                "per element `{el}_starting_content` / `{el}_solid_residue`."
+            )
+            return
+
+        data = run_manager.read_data_file(selected_run)
+        records = mass_balance.closure_records(data, profile)
+        if not records:
+            st.info("No batch-reaction rows to close yet — enter the material mass, liquid "
+                    "volume, starting assay, and solid residue for this run's samples.")
+            return
+
+        elements = list(getattr(profile, "mass_balance_elements", ()))
+        element = st.selectbox("Element", elements, key=f"mb_el_{selected_run}")
+        el_records = [r for r in records if r["element"] == element]
+
+        st.markdown("**Closure table** (mmol; provenance per cell below)")
+        st.dataframe(mass_balance.closure_table(el_records), use_container_width=True,
+                     height=200, hide_index=True)
+
+        # Stacked bars for the complete closures (gap labelled "unaccounted").
+        complete = [r for r in el_records if r["status"] == mass_balance.STATUS_COMPLETE]
+        if complete:
+            cols = st.columns(min(3, len(complete)))
+            for i, rec in enumerate(complete[:3]):
+                with cols[i]:
+                    st.pyplot(_mass_balance_bar(rec))
+
+        # Warnings (validation-surface style) — never silent fixes.
+        all_issues = [iss for r in el_records for iss in mass_balance.closure_warnings(r)]
+        if all_issues:
+            st.markdown("**Sanity warnings**")
+            for iss in all_issues:
+                msg = f"`{iss['column']}` — {iss['message']}"
+                (st.error if iss["severity"] == "error" else
+                 st.warning if iss["severity"] == "warning" else st.info)(msg)
+
+        # Provenance per cell — reuse the unit-conversion expander pattern.
+        with st.expander("Provenance — formula + molar mass per term"):
+            for rec in el_records:
+                st.markdown(f"**{rec.get('sample_id', '')} · {rec['element']}** "
+                            f"({rec['status']})")
+                for term, label in (("n_in", "charged"), ("n_liquid", "liquid"),
+                                    ("n_solid", "solid residue")):
+                    p = rec["provenance"][term]
+                    val = "—" if p["value"] is None else f"{p['value']:.4g} mmol"
+                    mm = "" if p["molar_mass"] is None else f" · M = {p['molar_mass']:g} g/mol"
+                    cid = p["conversion_id"] or "—"
+                    st.caption(f"{label}: {val} · `{cid}`{mm} · {p['formula']}")
+                if rec["assumptions"]:
+                    for a in rec["assumptions"]:
+                        st.caption(f"⚠️ assumption: {a}")
+
+
 def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
     """Validate tab: measured-data overview, data validation, and calculation audit."""
     app_ui.render_page_header(
@@ -4230,6 +4327,8 @@ def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
         _render_measured_overview(selected_run)
         st.divider()
         _render_basic_validation_summary(selected_run)
+        st.divider()
+        _render_mass_balance(selected_run)
         st.divider()
     else:
         st.info("This run type has no measured-data overview or lab validation. The "

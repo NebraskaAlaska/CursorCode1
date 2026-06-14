@@ -207,6 +207,39 @@ RESIDUAL_ELEMENTS = ["Ca", "Si", "Al", "Fe"]  # measured_<X>_mM vs phreeqc mol_<
 
 
 # --------------------------------------------------------------------------- #
+# Batch-reaction mass-balance block (optional / additive; arithmetic only)
+# --------------------------------------------------------------------------- #
+# A deterministic element-closure (n_in = n_liquid + n_solid + gap) for a batch
+# reaction (solid material + reagent → leached liquid + residual solid). These
+# columns are APPENDED to the release schema so they are recognised (not treated as
+# unknown) and survive import/save; a dataset that runs no batch reaction simply
+# leaves them blank, and a DatasetProfile opts in by declaring `mass_balance_elements`.
+# NOTE: deliberately NOT added to EXPERIMENTAL_NUMERIC_COLUMNS, so existing profiles'
+# variable_columns (and therefore FLY_ASH_PROFILE) are byte-for-byte unchanged; the
+# mass_balance module coerces its own numeric inputs.
+MASS_BALANCE_ELEMENTS = list(RESIDUAL_ELEMENTS)  # Ca, Si, Al, Fe
+
+BATCH_REACTION_METADATA_COLUMNS = [
+    "material_mass_g",       # solid material charged into the reactor
+    "material_id",           # which material (free text)
+    "reagent",               # reagent identity (free text, e.g. HCl / NaOH)
+    "reagent_conc_M",        # reagent concentration (mol/L)
+    "reagent_volume_mL",     # reagent volume added
+    "liquid_volume_mL",      # post-filtration liquid volume
+    "solid_mass_g",          # recovered solid mass (optional; flagged when absent)
+]
+# Per-element solid-phase assays: starting (pre-reaction) + residue (post-reaction).
+BATCH_REACTION_SOLID_COLUMNS = (
+    [f"{el}_starting_content" for el in MASS_BALANCE_ELEMENTS]
+    + [f"{el}_solid_residue" for el in MASS_BALANCE_ELEMENTS]
+)
+BATCH_REACTION_COLUMNS = BATCH_REACTION_METADATA_COLUMNS + BATCH_REACTION_SOLID_COLUMNS
+
+# Append to the recognised release schema (text material_id/reagent kept as-is).
+EXPERIMENTAL_RELEASE_COLUMNS = EXPERIMENTAL_RELEASE_COLUMNS + BATCH_REACTION_COLUMNS
+
+
+# --------------------------------------------------------------------------- #
 # PHREEQC execution (Prompt 11 — the on-demand simulation runner)
 # --------------------------------------------------------------------------- #
 # The PHREEQC binary + database are **user-supplied and never committed**. The

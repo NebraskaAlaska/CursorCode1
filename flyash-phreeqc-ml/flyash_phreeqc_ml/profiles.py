@@ -74,6 +74,17 @@ class DatasetProfile:
     # Per convertible column, the source units the importer accepts. An undeclared unit
     # is refused (no guess). Empty -> the importer falls back to the units.py default set.
     accepted_units: dict = field(default_factory=dict)
+    # --- Batch-reaction mass balance (additive; used by mass_balance) ---
+    # Empty `mass_balance_elements` = the feature is OFF for this dataset (the default,
+    # so FLY_ASH_PROFILE is unchanged). Declaring elements opts a dataset in; the column
+    # names default to the config batch schema and the units are declared, not guessed.
+    mass_balance_elements: tuple = ()                 # e.g. ("Ca", "Si", "Al", "Fe")
+    material_mass_column: str = "material_mass_g"
+    solid_mass_column: str = "solid_mass_g"           # optional in data; flagged if absent
+    liquid_volume_column: str = "liquid_volume_mL"
+    starting_content_unit: str = "wt%"                # unit of {el}_starting_content
+    solid_residue_unit: str = "wt%"                   # unit of {el}_solid_residue
+    liquid_conc_unit: str = "mM"                      # unit of the measured liquid {el}_mM
 
 
 @dataclass(frozen=True)

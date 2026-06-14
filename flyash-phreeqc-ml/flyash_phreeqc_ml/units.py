@@ -70,6 +70,9 @@ UNIT_MGL = "mg/L"
 UNIT_PPM = "ppm"
 UNIT_PPB = "ppb"
 UNIT_MOLALITY = "mol/kgw"
+# Mass → amount-of-substance units (used by the batch-reaction mass balance).
+UNIT_MG = "mg"
+UNIT_MMOL = "mmol"
 
 # PHREEQC reports element totals as molality (mol/kgw). For dilute solutions
 # mol/kgw ≈ mol/L, so ×1000 gives mM. Defined once here; config re-exports it.
@@ -139,6 +142,10 @@ CONVERSIONS: tuple[Conversion, ...] = (
         id="molality_to_mM", from_unit=UNIT_MOLALITY, to_unit=UNIT_MM,
         formula="mM = molality × 1000   [mol/kgw ≈ mol/L for dilute solutions]",
         requires_molar_mass=False, func=lambda v, m: v * MOLALITY_TO_MM_FACTOR),
+    Conversion(
+        id="mg_to_mmol", from_unit=UNIT_MG, to_unit=UNIT_MMOL,
+        formula="mmol = mg / M_{element}",
+        requires_molar_mass=True, func=lambda v, m: v / m),
 )
 
 _BY_PAIR: dict[tuple[str, str], Conversion] = {

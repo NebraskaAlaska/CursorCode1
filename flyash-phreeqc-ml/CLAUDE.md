@@ -408,6 +408,34 @@ experiment — **not** a blind replacement for the chemistry.
   math, batch grouping from synthetic names + a column, std/SEM flowing into the comparison frame,
   n=1 NaN-not-zero degradation).
 
+- **Batch-reaction mass balance — deterministic element closure** (Prompt 23 — **arithmetic only;
+  works with zero model/AI/ML present**). `flyash_phreeqc_ml/mass_balance.py` (new, pure) computes, per
+  element, `gap = moles_in − moles_liquid − moles_solid` (mmol): `moles_in` = starting solid assay ×
+  material mass, `moles_liquid` = measured liquid mM × liquid volume, `moles_solid` = residue assay ×
+  recovered solid mass. The **gap is a measured fact** — element *not yet attributed* to liquid or
+  solid, with **no mechanism attached**. Honesty rules: all mass→amount conversions go through
+  `units.convert` (new `mg→mmol` registry entry, so every derived term carries a `conversion_id` +
+  molar mass); a **missing required term → `status=incomplete`** listing the fields (never a partial
+  number shown as real); an absent `solid_mass_g` is **assumed = material mass** with the assumption
+  recorded (never silently fabricated). `closure(row, element, *, profile, sigmas)` returns
+  `{n_in,n_liquid,n_solid,gap,gap_fraction,gap_sigma,uncertainty,status,missing_fields,assumptions,
+  provenance}`. **Uncertainty** is propagated (relative-quadrature for products, sum-in-quadrature for
+  the gap) only when per-input sigmas exist, else `gap_sigma=None` + `uncertainty="unknown"` (never
+  implied zero). `closure_warnings` emits validation-surface issues (negative gap beyond gap_sigma →
+  names a likely culprit; gap_fraction > 1.0; implausible over-recovery) — never silent fixes. **Schema
+  (additive):** the optional batch block is appended to `config.EXPERIMENTAL_RELEASE_COLUMNS`
+  (`material_mass_g`/`material_id`/`reagent`/`reagent_conc_M`/`reagent_volume_mL`/`liquid_volume_mL`/
+  `solid_mass_g` + per element `{el}_starting_content`/`{el}_solid_residue`) and the shipped template
+  regenerated to match; deliberately **not** added to `EXPERIMENTAL_NUMERIC_COLUMNS` so
+  `FLY_ASH_PROFILE.variable_columns` is unchanged, and the parser treats the block as **optional**
+  (absence is never an error). `DatasetProfile` gained additive batch fields (`mass_balance_elements`
+  empty = OFF — **FLY_ASH_PROFILE does not opt in and is unchanged**). UI: a **Validate-tab expander**
+  (per-element closure table with provenance, a liquid/solid/**"unaccounted (not yet attributed)"**
+  stacked bar, and the warnings) that renders only when the active profile opts in (else a clear
+  empty state). Covered by `tests/test_mass_balance.py` (closure vs hand-computed moles, conversion_id
+  on every term, incomplete + assumed-solid-mass handling, negative-gap warning, uncertainty vs a
+  hand-check, FLY_ASH unchanged).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

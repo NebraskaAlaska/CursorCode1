@@ -17,13 +17,16 @@
 #   * measured / release CSVs:         *release*.csv  *measured*.csv
 #                                      (allowed only under tests/fixtures/synthetic/)
 #
-# Explicitly ALLOWED (approved to live in this private repo); add only with sign-off:
+# Explicitly ALLOWED (approved / blank-template files that are intentionally tracked);
+# add only with sign-off:
 #   * flyash-phreeqc-ml/data/raw/icp_mix_design/CFA + MK design mix_UMass.xlsx
+#   * flyash-phreeqc-ml/data/raw/experimental_icp/experimental_release_template.csv  (blank header)
 #
 set -euo pipefail
 
 ALLOWLIST_SUFFIXES=(
   "data/raw/icp_mix_design/CFA + MK design mix_UMass.xlsx"
+  "data/raw/experimental_icp/experimental_release_template.csv"
 )
 
 is_allowed() {
