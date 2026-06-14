@@ -23,6 +23,31 @@ The project is built in phases.
 > **no real ML is trained yet**. The comparison runs as soon as measured experimental
 > data is dropped in (see *Entering measured experimental data* below).
 
+## Supported datasets & models (what "supported" means)
+
+The comparison workflow — *measured data → model prediction → mapping → residuals →
+validation status* — is **model-agnostic**: PHREEQC and the fly-ash metadata are the
+current implementation, not a hard limit. The claims below are exactly the ones pinned
+by the **supported-dataset matrix** (`tests/matrix/`, one module per claim). The app
+supports what the matrix tests — no more.
+
+| # | Supported shape | Claim pinned | Test module |
+|---|-----------------|--------------|-------------|
+| a | Fly-ash measured data + **PHREEQC** results | end-to-end suggestion → mapping → inclusion, all four statuses | `test_a_flyash_phreeqc.py` |
+| b | Literature-style fly-ash benchmark | kept a **separate run type**; literature data can never enter a lab release/comparison | `test_b_literature_separation.py` |
+| c | Synthetic measured + known model | residual = **measured − model**, exactly (sign + join correct) | `test_c_hand_residuals.py` |
+| d | Differently-formatted upload (renamed/reordered cols, mg/L) | resolves via the importer + **Prompt-16 unit contract** with conversion provenance | `test_d_reformatted_import.py` |
+| e | Alternate **non-fly-ash** dataset profile | grouping → suggestion → inclusion run from the profile alone (no PHREEQC) | `test_e_alternate_profile.py` |
+| f | **Non-PHREEQC** model via the prediction CSV contract | mapped + compared end-to-end through the same manifest; no PHREEQC parser involved | `test_f_generic_prediction.py` |
+
+A non-PHREEQC model supplies predictions through the documented **model-prediction CSV
+contract** (`docs/model_prediction_format.md`): `record_key`, `model_name`, and
+`pred_pH` / `pred_Ca_mM` … columns in the profile's target units. The Data tab's
+**"Import model predictions (CSV)"** path ingests it; `scenarios.build_scenario_manifest`
+consumes it exactly like PHREEQC output. The manifest is the model-agnostic boundary —
+`tests/test_manifest_model_agnostic.py` pins that no module downstream of it imports the
+PHREEQC parser.
+
 ## Experiment planning & QA/QC (pre-data tools)
 
 Reusable helpers to design an experiment run and keep the measured data clean — for

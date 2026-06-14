@@ -89,6 +89,46 @@ def comparison_scatter_figure(plotted: pd.DataFrame, variable: str):
     return fig
 
 
+def corrected_overlay_figure(overlay: pd.DataFrame, variable: str, unit: str = ""):
+    """"Corrected (experimental)" overlay: raw PHREEQC, correction + interval, measured.
+
+    ``overlay`` has one row per plotted sample with ``sample_id``, ``measured``,
+    ``phreeqc``, ``corrected``, ``corrected_lower``, ``corrected_upper``. The figure
+    **always** shows raw PHREEQC and the corrected value (with its 95% interval)
+    together — the corrected number is never drawn on its own — so the viewer can see
+    how far the correction moves PHREEQC and whether it overshoots the measurement.
+    This is a display artifact only; corrected values never feed mapping/validity or
+    the comparison CSV.
+    """
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    if overlay is None or overlay.empty:
+        ax.text(0.5, 0.5, "No rows to overlay.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    x = list(range(len(overlay)))
+    lower = (overlay["corrected"] - overlay["corrected_lower"]).clip(lower=0).to_numpy()
+    upper = (overlay["corrected_upper"] - overlay["corrected"]).clip(lower=0).to_numpy()
+    ax.errorbar(x, overlay["corrected"], yerr=[lower, upper], fmt="D", color="#8856a7",
+                ecolor="#8856a7", elinewidth=1.2, capsize=3, markersize=6, zorder=3,
+                label="corrected (experimental) ± 95%")
+    ax.scatter(x, overlay["phreeqc"], marker="s", color="#7F7F7F", edgecolor="black",
+               linewidth=0.4, zorder=4, label="raw PHREEQC")
+    if "measured" in overlay.columns:
+        ax.scatter(x, overlay["measured"], marker="o", color="#4878CF", edgecolor="black",
+                   linewidth=0.4, zorder=5, label="measured")
+    ax.set_xticks(x)
+    ax.set_xticklabels(overlay.get("sample_id", pd.Series(x)).astype(str),
+                       rotation=90, fontsize=6)
+    ylab = f"{variable}" + (f" ({unit})" if unit else "")
+    ax.set_ylabel(ylab)
+    ax.set_title(f"{variable} — Corrected (experimental): raw PHREEQC + correction + measured")
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
 def make_comparison_plots(
     comparison: pd.DataFrame,
     figures_dir: str | Path,

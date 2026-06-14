@@ -34,8 +34,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import config
-from .calculations import ATOMIC_MASSES, mgl_to_mM
+from . import config, profiles, units
+from .calculations import ATOMIC_MASSES  # back-compat re-export (== units.MOLAR_MASSES)
 
 
 class ImportMappingError(Exception):
@@ -64,9 +64,11 @@ CHEM_ELEMENT_COLUMNS: dict[str, str] = {
 }
 
 # Accepted concentration units for a chemistry column (mg/L and ppm are treated as
-# equivalent for dilute aqueous solutions).
+# equivalent for dilute aqueous solutions). The authoritative per-column contract is
+# the dataset profile's ``accepted_units`` (see :func:`accepted_units_for`); this list
+# is the UI's default option set and the fallback.
 UNIT_OPTIONS = ["mM", "mg/L", "ppm", "ppb"]
-DEFAULT_UNIT = "mM"
+DEFAULT_UNIT = units.UNIT_MM
 
 # Columns that count as a measured value when classifying a row.
 PH_VALUE_COLUMNS = ["initial_pH", "final_pH"]
@@ -87,6 +89,32 @@ PROVENANCE_COLUMNS = [
 
 # Prefix for preserved unknown/extra source columns.
 EXTRA_COLUMN_PREFIX = "extra__"
+
+# Per-converted-column provenance companions (the authority defines the suffixes).
+# Captured as module-level names so they are usable inside build_schema_frame, whose
+# ``units`` parameter (a dict) shadows the units *module*.
+ORIG_VALUE_SUFFIX = units.ORIG_VALUE_SUFFIX
+ORIG_UNIT_SUFFIX = units.ORIG_UNIT_SUFFIX
+CONVERSION_ID_SUFFIX = units.CONVERSION_ID_SUFFIX
+CONVERSION_PROVENANCE_SUFFIXES = units.CONVERSION_PROVENANCE_SUFFIXES
+
+
+def _convert_column_with_meta(series: pd.Series, element: str, unit: str):
+    """Module-scope wrapper around :func:`units.convert_series` (returns series + meta)."""
+    return units.convert_series(series, unit, units.UNIT_MM, element)
+
+
+def conversion_provenance_columns(converted_columns) -> list[str]:
+    """All companion column names for an iterable of converted columns (flat order)."""
+    out: list[str] = []
+    for col in converted_columns:
+        out.extend(f"{col}{s}" for s in CONVERSION_PROVENANCE_SUFFIXES)
+    return out
+
+
+def is_conversion_provenance_column(name: str) -> bool:
+    """True if ``name`` is a conversion-provenance companion (so it is *not* unknown)."""
+    return units.is_conversion_provenance_column(name)
 
 # Note stamped on rows that were imported as acid leaching.
 ACID_IMPORT_NOTE = (
@@ -275,36 +303,88 @@ def unmapped_columns(raw_df: pd.DataFrame, mapping: dict[str, str | None]) -> li
 # --------------------------------------------------------------------------- #
 # Unit handling
 # --------------------------------------------------------------------------- #
-def convert_concentration(value: float, element: str, unit: str) -> float:
-    """Convert one concentration to mM. ``mM = mg/L / atomic_mass`` (ppb = µg/L).
+def accepted_units_for(column: str, profile=None) -> tuple[str, ...]:
+    """The source units the importer accepts for ``column`` (from the dataset profile).
 
-    ``mg/L`` and ``ppm`` are treated as equivalent for dilute aqueous solutions.
-    Raises ``KeyError`` for an unknown element, ``ImportMappingError`` for a bad
-    unit.
+    Falls back to the units.py lab set when the profile does not declare the column.
     """
-    if unit == "mM":
-        return value
-    if unit in ("mg/L", "ppm"):
-        mg_per_l = value
-    elif unit == "ppb":
-        mg_per_l = value / 1000.0  # µg/L -> mg/L
-    else:
-        raise ImportMappingError(f"unknown unit {unit!r}; expected one of {UNIT_OPTIONS}")
-    return mgl_to_mM(mg_per_l, element)
+    profile = profile or profiles.FLY_ASH_PROFILE
+    declared = getattr(profile, "accepted_units", None) or {}
+    return tuple(declared.get(column, units.LAB_CONCENTRATION_SOURCE_UNITS))
+
+
+def validate_unit(column: str, unit: str, profile=None) -> None:
+    """Refuse an undeclared unit (no guess) with the contract message.
+
+    Raises :class:`units.UnknownUnitError` — e.g. *"unit 'g/L' not recognized for Ca;
+    supported: mg/L, ppm, ppb, mM"* — when ``unit`` is not in the column's accepted set.
+    """
+    accepted = accepted_units_for(column, profile)
+    if unit not in accepted:
+        element = CHEM_ELEMENT_COLUMNS.get(column, column)
+        raise units.UnknownUnitError(
+            f"unit {unit!r} not recognized for {element}; supported: {', '.join(accepted)}")
+
+
+def convert_concentration(value: float, element: str, unit: str) -> float:
+    """Convert one concentration to mM via the single conversion authority.
+
+    ``mg/L``/``ppm`` ≈ mg/L for dilute aqueous; ``ppb`` = µg/L; ``mM`` is identity.
+    Raises :class:`units.UnknownElementError` / :class:`units.UnknownUnitError` — never
+    guesses.
+    """
+    return units.convert(value, unit, units.UNIT_MM, element).value
 
 
 def convert_series_to_mM(series: pd.Series, element: str, unit: str) -> pd.Series:
     """Vectorised :func:`convert_concentration` over a column (non-numeric → NaN)."""
-    if unit == "mM":
-        return series
-    numeric = pd.to_numeric(series, errors="coerce")
-    if unit in ("mg/L", "ppm"):
-        mg_per_l = numeric
-    elif unit == "ppb":
-        mg_per_l = numeric / 1000.0
-    else:
-        raise ImportMappingError(f"unknown unit {unit!r}; expected one of {UNIT_OPTIONS}")
-    return mg_per_l / ATOMIC_MASSES[element]
+    converted, _meta = units.convert_series(series, unit, units.UNIT_MM, element)
+    return converted
+
+
+def conversion_provenance_summary(df: pd.DataFrame, *, max_examples: int = 3) -> list[dict]:
+    """Per converted column: original→target unit, formula, molar mass, example rows.
+
+    Reads the provenance companions an import wrote, so the import preview and the
+    run-data viewer can show *exactly* how each value was converted. Returns ``[]``
+    for a frame with no converted columns / no provenance.
+    """
+    rows: list[dict] = []
+    if df is None or df.empty:
+        return rows
+    for col in CHEM_VALUE_COLUMNS:
+        if col not in df.columns:
+            continue
+        val_col = f"{col}{ORIG_VALUE_SUFFIX}"
+        unit_col = f"{col}{ORIG_UNIT_SUFFIX}"
+        id_col = f"{col}{CONVERSION_ID_SUFFIX}"
+        if not all(c in df.columns for c in (val_col, unit_col, id_col)):
+            continue
+        element = CHEM_ELEMENT_COLUMNS.get(col)
+        from_unit = conv_id = formula = ""
+        molar_mass = None
+        examples: list[dict] = []
+        for i in range(len(df)):
+            orig = df[val_col].iloc[i]
+            if _is_blank(orig):
+                continue
+            ounit = df[unit_col].iloc[i]
+            if not from_unit:
+                from_unit = str(ounit)
+                try:
+                    meta = units.convert(1.0, str(ounit), units.UNIT_MM, element)
+                    conv_id, formula, molar_mass = meta.conversion_id, meta.formula, meta.molar_mass
+                except units.UnitConversionError:
+                    conv_id = str(df[id_col].iloc[i])
+            if len(examples) < max_examples:
+                examples.append({"original": orig, "original_unit": ounit,
+                                 "converted_mM": df[col].iloc[i]})
+        if from_unit:
+            rows.append({"column": col, "element": element, "from_unit": from_unit,
+                         "to_unit": units.UNIT_MM, "conversion_id": conv_id,
+                         "formula": formula, "molar_mass_g_mol": molar_mass,
+                         "examples": examples})
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -353,35 +433,51 @@ def build_schema_frame(
     sheet_name: str = "",
     import_timestamp: str | None = None,
     default_leachant: str = "NaOH",
+    profile=None,
 ) -> pd.DataFrame:
     """Transform a raw upload into a release-schema frame with provenance.
 
     * Canonical schema columns are copied from their mapped source (blank if
       unmapped); chemistry columns are unit-converted to mM via ``units``.
+    * **Conversion provenance** — for every converted chemistry column ``X_mM`` the
+      original value, original unit, and registry ``conversion_id`` are kept as wide
+      companions (``X_mM_orig_value`` / ``_orig_unit`` / ``_conversion_id``), so a
+      wrong conversion is auditable later. Values already in mM get
+      ``conversion_id == "identity"``. The unit is validated against the dataset
+      profile's accepted set first (an undeclared unit is refused, not guessed).
     * ``leachant``/``acid_M`` are filled from their mapped columns or the
       ``default_leachant``; rows whose leachant looks like an acid get ``NaOH_M``
       blanked and an ``import_warning`` (acids are never forced into ``NaOH_M``).
     * Provenance (:data:`PROVENANCE_COLUMNS`) and any unknown source columns
       (prefixed ``extra__``) are appended so nothing is dropped silently.
 
-    Returns a new frame; the input is not modified.
+    Returns a new frame; the input is not modified. (The ``units`` parameter is a
+    ``{column: unit}`` dict, not the units module.)
     """
     units = units or {}
+    profile = profile or profiles.FLY_ASH_PROFILE
     mapping = {**{t: None for t in MAPPING_TARGETS}, **(mapping or {})}
     n = len(raw_df)
     raw = raw_df.reset_index(drop=True)
     ts = import_timestamp or datetime.now().isoformat(timespec="seconds")
 
     out = pd.DataFrame(index=range(n))
+    conversion_companions: dict[str, object] = {}  # companion col -> values (ordered)
     for col in config.EXPERIMENTAL_RELEASE_COLUMNS:
         src = mapping.get(col)
         if src and src in raw.columns:
-            series = raw[src]
             if col in CHEM_ELEMENT_COLUMNS:
-                series = convert_series_to_mM(
-                    series, CHEM_ELEMENT_COLUMNS[col], units.get(col, DEFAULT_UNIT)
-                )
-            out[col] = series.values
+                unit_choice = units.get(col, DEFAULT_UNIT)
+                validate_unit(col, unit_choice, profile)  # refuse undeclared units
+                converted, meta = _convert_column_with_meta(
+                    raw[src], CHEM_ELEMENT_COLUMNS[col], unit_choice)
+                out[col] = converted.values
+                conversion_companions[f"{col}{ORIG_VALUE_SUFFIX}"] = \
+                    pd.to_numeric(raw[src], errors="coerce").values
+                conversion_companions[f"{col}{ORIG_UNIT_SUFFIX}"] = [unit_choice] * n
+                conversion_companions[f"{col}{CONVERSION_ID_SUFFIX}"] = [meta.conversion_id] * n
+            else:
+                out[col] = raw[src].values
         else:
             out[col] = ""
 
@@ -423,6 +519,10 @@ def build_schema_frame(
     out["import_warning"] = warnings.to_numpy()
     out["units_assumed"] = units_summary(units)
 
+    # Conversion-provenance companions (recognised columns, not "extra__"/unknown).
+    for cname, vals in conversion_companions.items():
+        out[cname] = vals
+
     for col in unmapped_columns(raw, mapping):
         out[f"{EXTRA_COLUMN_PREFIX}{col}"] = raw[col].values
 
@@ -430,6 +530,7 @@ def build_schema_frame(
         list(config.EXPERIMENTAL_RELEASE_COLUMNS)
         + [LEACHANT_COLUMN, ACID_M_COLUMN]
         + PROVENANCE_COLUMNS
+        + list(conversion_companions.keys())
         + [c for c in out.columns if c.startswith(EXTRA_COLUMN_PREFIX)]
     )
     return out.reindex(columns=ordered)

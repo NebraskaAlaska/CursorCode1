@@ -156,3 +156,44 @@ def compare_measured_vs_phreeqc(
     predictions = phreeqc_predictions_mM(phreeqc_results, states=states)
     joined = join_measured_to_phreeqc(measured, predictions, mapping=mapping)
     return compute_residuals(joined)
+
+
+def predictions_mM_from_manifest(manifest: pd.DataFrame) -> pd.DataFrame:
+    """A predictions-in-mM frame built from **any** scenario manifest (model-agnostic).
+
+    The manifest is the canonical intermediate (PHREEQC *or* a generic model produced
+    it), so the comparison can be built from it without touching a model-specific
+    parser. Maps the manifest's ``predicted_*`` columns onto the comparison's
+    ``phreeqc_*`` prediction columns. (The ``phreeqc_`` prefix is the historical
+    model-prediction column name kept for backward compatibility — see
+    docs/model_prediction_format.md; it does not mean the prediction came from PHREEQC.)
+    """
+    out = pd.DataFrame()
+    if manifest is None or manifest.empty:
+        out["phreeqc_record_key"] = []
+        return out
+    out["phreeqc_record_key"] = manifest.get("phreeqc_record_key")
+    out["phreeqc_pH"] = manifest.get("predicted_pH")
+    for el in RESIDUAL_ELEMENTS:
+        col = f"predicted_{el}_mM"
+        out[f"phreeqc_{el}_mM"] = manifest[col].values if col in manifest.columns else np.nan
+    for ctx in ("source_file", "state"):
+        if ctx in manifest.columns:
+            out[f"phreeqc_{ctx}"] = manifest[ctx].values
+    return out.reset_index(drop=True)
+
+
+def compare_measured_to_manifest(
+    measured: pd.DataFrame,
+    manifest: pd.DataFrame,
+    mapping: Mapping[str, str] | pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Model-agnostic comparison: measured -> (manifest predictions) -> residuals.
+
+    Identical output shape to :func:`compare_measured_vs_phreeqc`, but built from the
+    manifest, so a non-PHREEQC model's predictions compare end-to-end through the same
+    residual columns the inclusion logic and plots already consume.
+    """
+    predictions = predictions_mM_from_manifest(manifest)
+    joined = join_measured_to_phreeqc(measured, predictions, mapping=mapping)
+    return compute_residuals(joined)

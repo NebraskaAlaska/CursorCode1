@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import config
+from . import config, units
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,15 @@ class DatasetProfile:
     replicate_column: str = "replicate_id"
     # Regex that pulls a replicate number out of a sample id (R1 / rep2 / batch3 …).
     replicate_pattern: str = r"(?:^|[-_ ])(?:R|REP|REPLICATE|BATCH)\s*[-_]?\s*(\d+)\b"
+    # --- Batch semantics (additive; see replicates.REPLICATE_ROLE_DEFINITIONS) ---
+    # A distinct *preparation/batch* of the same condition (not a time point, not a
+    # repeat measurement). The batch id is read from ``batch_column`` if present, else
+    # parsed from the sample id with ``batch_pattern`` (group 1). When ``group_by_batch``
+    # is True the batch becomes part of ``condition_key`` (batches compared separately);
+    # otherwise batches fold into the condition like true replicates.
+    batch_column: str | None = None
+    batch_pattern: str | None = None
+    group_by_batch: bool = False
     # Optional regex for parsing the whole sample id (documentation / future use).
     sample_id_pattern: str | None = None
     # The column that carries the experimental condition code (cup cover for fly ash).
@@ -55,17 +64,43 @@ class DatasetProfile:
     # "fly_ash" keeps the bespoke leachant/CO2 condition_key; anything else uses the
     # generic important-fields key builder.
     grouping: str = "generic"
+    # --- Residual-correction model feature encoding (additive; used by ml.residual_model) ---
+    # Raw numeric metadata columns used as continuous features (missing values imputed).
+    feature_numeric_fields: tuple = ()
+    # Categorical feature names. Names ``leachant_family`` / ``condition_code`` are
+    # *derived* (via scenarios); any other name is read straight from that column.
+    feature_categorical_fields: tuple = ()
+    # --- Import unit contract (additive; used by import_mapping) ---
+    # Per convertible column, the source units the importer accepts. An undeclared unit
+    # is refused (no guess). Empty -> the importer falls back to the units.py default set.
+    accepted_units: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ModelProfile:
-    """How the prediction model is described (name + metadata + parser entry point)."""
+    """How the prediction model is described (name + metadata + parser entry point).
+
+    ``parser_entry_point`` is the dotted module path of the parser that turns this
+    model's raw output into a frame :func:`scenarios.build_scenario_manifest` accepts.
+    Carrying it on the profile is what lets the app stay model-agnostic: the manifest
+    (and everything downstream) does not care which parser produced the predictions.
+    """
 
     name: str
     # Metadata columns carried from the model side (shown in advanced views).
     prediction_metadata_fields: tuple = ()
     # Dotted path to the parser that turns raw model output into a tidy frame.
     parser_entry_point: str = ""
+    # How the model's output reaches the app: a parsed file format (PHREEQC .pqo) or a
+    # generic prediction CSV. The Data tab uses this to choose the import path.
+    source_kind: str = "phreeqc"
+
+    def load_parser(self):
+        """Import and return the parser module named by ``parser_entry_point``."""
+        if not self.parser_entry_point:
+            raise ValueError(f"model profile {self.name!r} has no parser_entry_point")
+        import importlib
+        return importlib.import_module(self.parser_entry_point)
 
 
 # --------------------------------------------------------------------------- #
@@ -109,6 +144,13 @@ FLY_ASH_PROFILE = DatasetProfile(
     tolerances={"liquid_solid_ratio": 1e-6, "temperature_C": 1.0},
     comparison_variable_spec=_FLY_ASH_COMPARISON_SPEC,
     grouping="fly_ash",
+    # Residual-model features: molarity, L/S, time (numeric) + leachant family and the
+    # OA/PF/GS cover code (one-hot). Time is imputed when an exact mapping omits it.
+    feature_numeric_fields=("NaOH_M", "liquid_solid_ratio", "time_min"),
+    feature_categorical_fields=("leachant_family", "condition_code"),
+    # Each convertible ICP column accepts mg/L, ppm, ppb, or mM (the lab-import set).
+    accepted_units={f"{el}_mM": units.LAB_CONCENTRATION_SOURCE_UNITS
+                    for el in config.RESIDUAL_ELEMENTS + ["Na", "K"]},
 )
 
 
@@ -119,6 +161,19 @@ PHREEQC_PROFILE = ModelProfile(
     name="PHREEQC",
     prediction_metadata_fields=("source_file", "simulation", "state", "solution_number"),
     parser_entry_point="flyash_phreeqc_ml.parsers.pqo_parser",
+    source_kind="phreeqc",
+)
+
+
+# A model-agnostic prediction source: any model can supply a CSV that meets the
+# documented contract (see docs/model_prediction_format.md). The manifest builder
+# consumes its parser's output exactly like PHREEQC's, proving generality.
+GENERIC_CSV_PROFILE = ModelProfile(
+    name="Generic model (CSV)",
+    prediction_metadata_fields=("leachant", "NaOH_M", "time_min",
+                                "liquid_solid_ratio", "CO2_condition", "temperature_C"),
+    parser_entry_point="flyash_phreeqc_ml.parsers.generic_prediction_parser",
+    source_kind="generic_csv",
 )
 
 

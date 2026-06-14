@@ -42,8 +42,10 @@ import _path_setup  # noqa: F401  (adds project root to sys.path; must precede p
 
 import pandas as pd
 
-from flyash_phreeqc_ml import config, run_manager
+from flyash_phreeqc_ml import audit, config, profiles, run_manager, scenarios
 from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
+from flyash_phreeqc_ml.compare import inclusion as compare_inclusion
+from flyash_phreeqc_ml.ml import residual_stats
 from flyash_phreeqc_ml.parsers import has_measured_data, load_experimental_release
 from flyash_phreeqc_ml.viz import make_comparison_plots
 
@@ -76,11 +78,15 @@ def _warn_if_fe_unpredicted(comparison: pd.DataFrame) -> None:
         )
 
 
-def _write_per_run_outputs(run_name: str, comparison: pd.DataFrame) -> None:
+def _write_per_run_outputs(run_name: str, comparison: pd.DataFrame,
+                           measured: pd.DataFrame, mapping: pd.DataFrame | None,
+                           phreeqc_results: pd.DataFrame) -> None:
     """Copy the comparison CSV + figures into the run's outputs and stamp provenance.
 
     This is what the app's Results tab reads, so a run only ever shows its own
-    comparison. Raises :class:`run_manager.RunTypeError` for non-lab runs.
+    comparison. Also writes the systematic-bias table (exact mappings only), whose
+    staleness the provenance stamp covers. Raises :class:`run_manager.RunTypeError`
+    for non-lab runs.
     """
     out = run_manager.comparison_path(run_name)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -91,8 +97,42 @@ def _write_per_run_outputs(run_name: str, comparison: pd.DataFrame) -> None:
     for p in make_comparison_plots(comparison, fig_dir):
         print(f"  wrote {p}  (per-run)")
 
+    # Systematic-bias table — descriptive statistics over exact-mapped residuals only.
+    manifest = scenarios.build_scenario_manifest(phreeqc_results)
+    statuses = residual_stats.collect_sample_statuses(
+        measured, mapping, comparison, manifest=manifest)
+    bias = residual_stats.bias_table(comparison, statuses)
+    bias_path = run_manager.bias_table_path(run_name)
+    bias.to_csv(bias_path, index=False)
+    print(f"  wrote {bias_path}  (systematic bias, {len(bias)} row(s), exact mappings only)")
+
     meta = run_manager.write_comparison_meta(run_name)
     print(f"  wrote {meta}  (provenance stamp)")
+
+    # Audit: a comparison was generated (reference the stamp's hashes, don't duplicate),
+    # plus the inclusion partition counts (Prompt 4) per comparison variable.
+    stamp = run_manager.read_comparison_meta(run_name) or {}
+    audit.log_comparison_generated(run_name, meta_file=meta.name,
+                                   sources=stamp.get("sources", {}))
+    _log_inclusion(run_name, measured, mapping, comparison, manifest)
+
+
+def _log_inclusion(run_name, measured, mapping, comparison, manifest) -> None:
+    """Log per-variable plotted/excluded/validity counts for the just-built comparison."""
+    profile = profiles.FLY_ASH_PROFILE
+    variables = []
+    for var, (mcol, _pcol) in profile.comparison_variable_spec.items():
+        if mcol not in comparison.columns:
+            continue
+        inc = compare_inclusion.comparison_inclusion(
+            measured, mapping, comparison, var, manifest=manifest, profile=profile)
+        variables.append({
+            "variable": var, "rows_plotted": inc["rows_plotted"],
+            "rows_excluded": inc["n_total"] - inc["rows_plotted"],
+            "validity": inc["validity"], "collapse_warning": inc["collapse_warning"],
+            "status_counts": inc["status_counts"],
+        })
+    audit.log_inclusion(run_name, variables=variables)
 
 
 def main(run_name: str | None = None) -> None:
@@ -138,7 +178,7 @@ def main(run_name: str | None = None) -> None:
 
     # Per-run artifacts + provenance stamp (how the app invokes this script).
     if run_name:
-        _write_per_run_outputs(run_name, comparison)
+        _write_per_run_outputs(run_name, comparison, measured, mapping, phreeqc_results)
 
 
 def _parse_args() -> argparse.Namespace:
