@@ -473,6 +473,20 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
   The remote is confirmed **private**, and the existing `data/raw/` contents (UMass mix-design
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
+- **The CFA+MK mix-design workbook lives in `data/raw/icp_mix_design/`** (config `ICP_DIR`). It was
+  renamed from the fragile space-named `experimental icp/` folder — which differed from the Phase-2
+  `experimental_icp/` (`EXPERIMENTAL_ICP_DIR`) only by a space. They are **two distinct folders for
+  different data** (mix-design inputs vs. measured release); do not merge them (`scripts/02_parse_icp`
+  globs `*.csv` in `ICP_DIR`, so the release CSVs must stay out of it). `.gitignore` ignores any
+  `*.xlsx/*.xls/*.csv` under `icp_mix_design/` with a `!`-re-include keeping **only** the one approved
+  UMass workbook tracked — so a *new* ICP file is never committed accidentally.
+- **Pre-commit data-safety hook.** `flyash-phreeqc-ml/scripts/hooks/pre-commit` (tracked) blocks
+  staged `*.xlsx`/`*.xls`, anything under `data/raw/experimental*`, `data/processed/`,
+  `experiments/*/outputs/`, and `*release*`/`*measured*` CSVs outside `tests/fixtures/synthetic/`
+  (the one approved UMass workbook is allowlisted). **Install it** (from the parent `CursorCode1`
+  repo root, since this is a subdir): `cp flyash-phreeqc-ml/scripts/hooks/pre-commit
+  .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`. Bypass a deliberate, reviewed exception
+  with `git commit --no-verify`. (The hook is not auto-installed — `.git/hooks/` is per-clone.)
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
   `20*_release*.csv`, `*measured*.csv`, the manual-entry file, the generated plan
   (`experiment_plan.csv`), and the generated `sample_phreeqc_map.csv` in

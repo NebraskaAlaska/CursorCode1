@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# Data-safety pre-commit guard for the CursorCode1 / flyash-phreeqc-ml repo.
+#
+# Blocks staged paths that look like research data or generated artifacts, so they
+# are never committed by accident. It is a SAFETY NET, not a policy engine:
+#   - install:   cp flyash-phreeqc-ml/scripts/hooks/pre-commit .git/hooks/pre-commit
+#                chmod +x .git/hooks/pre-commit
+#     (run from the PARENT repo root — this repo is a subdir of CursorCode1)
+#   - bypass for a deliberate, reviewed exception:  git commit --no-verify
+#
+# Blocked when staged (added / copied / modified / renamed):
+#   * any spreadsheet:                 *.xlsx  *.xls
+#   * raw experimental data:           **/data/raw/experimental*
+#   * processed (re-creatable):        **/data/processed/
+#   * per-run generated outputs:       **/experiments/*/outputs/
+#   * measured / release CSVs:         *release*.csv  *measured*.csv
+#                                      (allowed only under tests/fixtures/synthetic/)
+#
+# Explicitly ALLOWED (approved to live in this private repo); add only with sign-off:
+#   * flyash-phreeqc-ml/data/raw/icp_mix_design/CFA + MK design mix_UMass.xlsx
+#
+set -euo pipefail
+
+ALLOWLIST_SUFFIXES=(
+  "data/raw/icp_mix_design/CFA + MK design mix_UMass.xlsx"
+)
+
+is_allowed() {
+  local f="$1" a
+  for a in "${ALLOWLIST_SUFFIXES[@]}"; do
+    [[ "$f" == *"$a" ]] && return 0
+  done
+  return 1
+}
+
+blocked=()
+while IFS= read -r -d '' f; do
+  is_allowed "$f" && continue
+  base="${f##*/}"
+  reason=""
+  if [[ "$f" == *.xlsx || "$f" == *.xls ]]; then
+    reason="spreadsheet (*.xlsx/*.xls)"
+  elif [[ "$f" == *data/raw/experimental* ]]; then
+    reason="raw experimental data (data/raw/experimental*)"
+  elif [[ "$f" == *data/processed/* ]]; then
+    reason="generated data (data/processed/)"
+  elif [[ "$f" == *experiments/*/outputs/* ]]; then
+    reason="per-run generated output (experiments/*/outputs/)"
+  elif [[ "$base" == *release*.csv || "$base" == *measured*.csv ]]; then
+    if [[ "$f" != *tests/fixtures/synthetic/* ]]; then
+      reason="measured/release CSV"
+    fi
+  fi
+  [[ -n "$reason" ]] && blocked+=("$f  ->  $reason")
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if (( ${#blocked[@]} > 0 )); then
+  echo "" >&2
+  echo "✋ pre-commit data-safety guard blocked these staged paths:" >&2
+  for b in "${blocked[@]}"; do echo "     $b" >&2; done
+  echo "" >&2
+  echo "  These look like research data or generated artifacts that should not be" >&2
+  echo "  committed. Unstage them, or — if this is a deliberate, approved exception —" >&2
+  echo "  re-run with:  git commit --no-verify" >&2
+  echo "" >&2
+  exit 1
+fi
+exit 0

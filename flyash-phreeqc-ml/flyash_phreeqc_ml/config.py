@@ -35,14 +35,17 @@ TABLES_DIR: Path = OUTPUTS_DIR / "tables"
 # pipeline workflow. Run data is gitignored by default (see .gitignore).
 EXPERIMENT_RUNS_DIR: Path = PROJECT_ROOT / "experiments"
 
-# Raw sub-directories (names contain spaces, matching the delivered dataset).
+# Raw sub-directories (the PHREEQC folder names contain spaces, matching the
+# delivered dataset).
 PHREEQC_INPUT_DIR: Path = RAW_DIR / "PHREEQC inputs"
 PHREEQC_OUTPUT_DIR: Path = RAW_DIR / "PHREEQC outputs"
-ICP_DIR: Path = RAW_DIR / "experimental icp"  # the CFA+MK mix-design workbook
+# The CFA+MK mix-design workbook. Renamed from the fragile space-named
+# "experimental icp" folder to a distinct, no-space name (it differed from
+# EXPERIMENTAL_ICP_DIR only by a space, which was confusing and brittle).
+ICP_DIR: Path = RAW_DIR / "icp_mix_design"
 
 # Phase 2: measured experimental release data (filled from the lab/ICP results).
-# Note the underscore — this is a new directory, distinct from the space-named
-# "experimental icp" folder that holds the mix-design workbook.
+# A separate directory from ICP_DIR (mix-design inputs) — they hold different data.
 EXPERIMENTAL_ICP_DIR: Path = RAW_DIR / "experimental_icp"
 
 # --------------------------------------------------------------------------- #
