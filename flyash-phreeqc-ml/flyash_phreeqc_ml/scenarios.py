@@ -208,13 +208,24 @@ def _scenario_label(stem: str, state, ls_ratio, co2_condition, solution_number) 
 
 
 def build_scenario_manifest(results: pd.DataFrame) -> pd.DataFrame:
-    """Build the scenario manifest from a parsed ``phreeqc_results`` frame.
+    """Build the scenario manifest from a model's parsed predictions.
 
-    Missing molality columns (e.g. ``mol_Fe``, which CEMDATA18 often omits) become
-    NaN predictions, not zero — "unavailable", not "predicted zero".
+    Accepts **either** source and produces the same manifest, so the suggestion
+    engine, mapping statuses, inclusion logic and plots never have to know which model
+    produced the numbers:
+
+    * a PHREEQC ``phreeqc_results`` frame (``mol_*`` molality + ``source_file`` +
+      ``state``) — the original path; missing molality columns (e.g. ``mol_Fe``)
+      become NaN predictions, not zero;
+    * a **generic predictions** frame (carrying ``model_name`` + ``predicted_*``), the
+      output of :func:`parsers.generic_prediction_parser.parse_predictions`.
     """
     if results is None or results.empty:
         return pd.DataFrame(columns=MANIFEST_COLUMNS)
+
+    # Dispatch on the model-agnostic generic source (it carries a model_name).
+    if "model_name" in results.columns:
+        return _manifest_from_generic_predictions(results)
 
     rows: list[dict] = []
     for _, r in results.iterrows():
@@ -279,6 +290,59 @@ def build_scenario_manifest(results: pd.DataFrame) -> pd.DataFrame:
             "generated_at": (r.get(config.GENERATED_AT_COLUMN, "") if gen else ""),
         })
 
+    return pd.DataFrame(rows, columns=MANIFEST_COLUMNS)
+
+
+def _manifest_from_generic_predictions(preds: pd.DataFrame) -> pd.DataFrame:
+    """Map a generic model-prediction frame onto the canonical manifest schema.
+
+    The frame is the normalized output of the generic prediction parser: it carries
+    ``record_key`` + ``model_name`` + ``predicted_pH`` / ``predicted_<X>_mM`` (already
+    in target units) + optional mapping metadata. A generic prediction is the model's
+    final/equilibrium estimate, so ``state`` is set to ``"batch"`` (scored like a
+    PHREEQC batch result). ``source_file`` carries the model name so the advanced views
+    still show a source. NOTE: the manifest's join-key column keeps the historical name
+    ``phreeqc_record_key`` (renaming it touches every downstream consumer — flagged for
+    review in docs/model_prediction_format.md); it holds the generic ``record_key``.
+    """
+    rows: list[dict] = []
+    for _, r in preds.iterrows():
+        model = str(r.get("model_name", "") or "")
+        ls = _to_float(r.get("liquid_solid_ratio"))
+        co2 = r.get("CO2_condition")
+        co2 = str(co2) if co2 not in (None, "") and not (isinstance(co2, float) and pd.isna(co2)) \
+            else UNKNOWN
+        predicted = {}
+        for element in ("Ca", "Si", "Al", "Fe"):
+            predicted[f"predicted_{element}_mM"] = _to_float(r.get(f"predicted_{element}_mM"))
+            if predicted[f"predicted_{element}_mM"] is None:
+                predicted[f"predicted_{element}_mM"] = float("nan")
+        label = r.get("scenario_label")
+        if not label or (isinstance(label, float) and pd.isna(label)):
+            bits = [model] + [b for b in (
+                f"L/S {ls:g}" if ls is not None else "",
+                str(co2) if co2 != UNKNOWN else "") if b]
+            label = " — ".join(bits) if bits else model
+        rows.append({
+            "phreeqc_record_key": str(r.get("record_key", "")),
+            "source_file": model,
+            "simulation": "",
+            "state": "batch",                       # a model prediction = final state
+            "solution_number": "",
+            "predicted_pH": _to_float(r.get("predicted_pH")),
+            **predicted,
+            "liquid_solid_ratio": ls if ls is not None else float("nan"),
+            "CO2_condition": co2,
+            "NaOH_M": _to_float(r.get("NaOH_M")),
+            "time_min": _to_float(r.get("time_min")),
+            "temperature_C": _to_float(r.get("temperature_C")),
+            "scenario_label": label,
+            "metadata_quality": _metadata_quality(ls, co2),
+            "notes": f"generic model prediction ({model})" if model else "generic model prediction",
+            "generated": False,
+            "source_condition_key": "",
+            "generated_at": "",
+        })
     return pd.DataFrame(rows, columns=MANIFEST_COLUMNS)
 
 

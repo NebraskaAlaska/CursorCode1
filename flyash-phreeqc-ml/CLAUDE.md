@@ -206,13 +206,221 @@ experiment — **not** a blind replacement for the chemistry.
   residuals, or mapping.** Requires scikit-learn + scipy; trained models/datasets are gitignored run
   outputs.
 
+- **Systematic-bias estimates (statistics, not learning)** (Prompt 13 — the *first* "residual
+  correction", deliberately descriptive). `flyash_phreeqc_ml/ml/residual_stats.py` (new;
+  **pandas/numpy only, no sklearn**) computes per-element / per-condition mean-residual bias over
+  **exact**-mapped comparisons only. `bias_table(comparison_df, statuses, min_n=5)` returns one row
+  per `(element, condition_key)` plus a pooled `(element, all-conditions)` row with `n_exact_pairs`,
+  `mean_residual`, `std` (ddof=1), `sem`, a `sufficient` flag (`n ≥ min_n`), and `unit`; **below
+  `min_n` the row is kept `sufficient=False` and the UI shows "insufficient exact pairs (k of N
+  needed)", never a number.** Rows are filtered to status `exact` using the **inclusion module's
+  status join** (`collect_sample_statuses` → `compare.inclusion`, the single source — scenario-level
+  / unsafe / unmapped excluded), and **synthetic/demo rows are never counted even if marked exact**.
+  Wording comes from the sign convention (`residual = measured − model`: positive mean → model
+  **under**predicts) via `describe_bias_row`; `bias_direction` maps the sign, `sufficient_bias_bands`
+  exposes the pooled mean±std for the shaded plot band, and `exact_residuals` is the plot-ready frame.
+  Every rendering carries the explicit non-claim line (`NON_CLAIM_LINE`: "Bias estimates describe this
+  dataset's exact-mapped comparisons; they are not a general correction model."). The Results tab
+  gained a **"Systematic bias (exact mappings only)"** expander (table with the mean hidden below
+  threshold + plain-language captions + a per-element residual scatter with a shaded mean±std band
+  where sufficient). `scripts/05 --run` writes the table to `experiments/<run>/outputs/systematic_bias.csv`
+  beside the comparison, so the **comparison provenance stamp** (which fingerprints the same three
+  inputs) already covers its staleness. Covered by `tests/test_residual_stats.py`.
+
+- **GP residual-correction model (experimental)** (Prompt 14 — the *learned* successor to the bias
+  bands, hard-gated and display-only). `flyash_phreeqc_ml/ml/residual_model.py` (new; lazy/optional
+  scikit-learn) fits one **GaussianProcessRegressor per element** whose **target is the residual**
+  (`measured − model`) and whose **features are condition metadata** encoded via the dataset profile —
+  leachant family, molarity, L/S, time (numeric, median-imputed) + the CO₂/cover code one-hot (new
+  additive `DatasetProfile.feature_numeric_fields` / `feature_categorical_fields`). Three hard rules:
+  (1) **Data-sufficiency gate** — `train_element_model` raises a typed `ResidualModelGateError`
+  carrying the counts unless the element has **≥30 exact pairs across ≥3 distinct condition_keys**
+  (`gate_status` / `ResidualGateStatus.progress_message` → "14 of 30 exact pairs; 2 of 3 conditions");
+  the UI shows progress instead of a train button until met. Exactness reuses
+  `residual_stats.exact_mask` (same Prompt-13 filter incl. synthetic exclusion — **this never weakens
+  the Prompt-13 gate, only adds a stricter one**). (2) **Leave-one-condition-out validation**
+  (`loco_cross_validate` / `_loco`) — not random k-fold, because generalizing to an *unseen condition*
+  is the failure mode that matters; reports per-element LOCO RMSE **vs the Prompt-13 constant-bias
+  baseline** (the held-out-fold training mean), with `beats_baseline` / `use_correction_recommended`;
+  if it doesn't beat the constant bias the UI says so prominently (red) and recommends staying with
+  the bias bands. (3) **Corrected = PHREEQC + predicted_residual with the GP interval**, shown only as
+  an **off-by-default "Corrected (experimental)" overlay** (`compare_plots.corrected_overlay_figure`)
+  that always draws **raw PHREEQC + correction + interval + measured together — never the corrected
+  value alone**; corrected values **never feed mapping status, validity status, or the comparison
+  CSV's residual columns**. A per-model **model card** (training run names + set hash, gate values,
+  LOCO-vs-baseline, library versions, date) saves beside the model under
+  `experiments/<run>/outputs/residual_model/` (gitignored; `run_manager.residual_model_dir`). The
+  Results tab gained a **"Residual correction (experimental)"** expander (per-element gate progress →
+  train button when met → LOCO verdict → optional overlay). Covered by `tests/test_residual_model.py`.
+
+- **Grounded "Ask the assistant"** (Prompt 15 — interpretation layer, read-only, no invented numbers).
+  `flyash_phreeqc_ml/ai/assistant.py` (new) answers natural-language questions about the **selected
+  run** using the Anthropic **tool-use** API, where every tool wraps an existing read-only function so
+  each number in an answer comes from the app's own code paths, never the model. Tools (all read-only,
+  none mutates anything): `get_mapping_overview` (suggestion table + `overall_mapping_status`),
+  `get_inclusion_counts` (Prompt-4 per-variable counts + the one validity status),
+  `get_unsafe_mappings`, `get_needed_simulations`, `get_bias_table` (Prompt-13, carries the non-claim
+  line), `get_comparison_rows` (capped), `get_run_provenance` (`comparison_is_current` + reasons), and
+  `get_mapping_trace(condition_key)` (Prompt-6 scoring trace). A carefully-written `SYSTEM_PROMPT`
+  (stored in the module) forces the model to **answer only from tool results, cite which tool each
+  number came from, refuse to say "validated" unless `get_inclusion_counts` reports
+  `validity=="valid"`, flag insufficiency and point to the gate counts, and frame "what should I test
+  next" as suggestions** reasoned from the unsafe/needs-simulation/bias tools. `answer()` runs a finite
+  tool_use→tool_result loop and returns an `AssistantAnswer(text, trace, ok, error)`; the `trace` lists
+  every tool call + a short summary so the UI shows a collapsed **"data used"** panel under each
+  answer. Disabled cleanly without `ANTHROPIC_API_KEY` (reuses `import_assist`'s lazy client). The UI
+  is a chat box in **Audit / Help only** (kept out of the workflow tabs — an interpretation layer, not
+  a step), scoped to the selected run, gated by the same per-session **data-leaves-machine consent**;
+  conversation history is **session-only, never written to run files**. Covered by
+  `tests/test_assistant.py` (tool shapes, dispatcher round-trip with a mocked client, disabled path).
+
+- **Conversion provenance + single unit authority** (Prompt 16 — data-model honesty, no chemistry/ML).
+  `flyash_phreeqc_ml/units.py` (new) is the **one place** any unit conversion happens: a
+  `MOLAR_MASSES` registry (IUPAC standard atomic weights, cited in-code and surfaced in the UI) and a
+  `CONVERSIONS` registry (each entry: `id`, `from_unit`, `to_unit`, human-readable `formula` string,
+  function). `convert(value, from_unit, to_unit, element) -> ConversionResult` returns the converted
+  value **plus** the registry id and parameters used (molar mass); identity (`from==to`) →
+  `conversion_id="identity"`. **No silent fallbacks** — an unknown unit/element raises a typed
+  `UnknownUnitError`/`UnknownElementError` (e.g. *"unit 'g/L' not recognized for Ca; supported: mg/L,
+  ppm, ppb, mM"*). The old factors now route through it: `config.PHREEQC_MOLALITY_TO_MM =
+  units.MOLALITY_TO_MM_FACTOR`, `calculations.ATOMIC_MASSES = units.MOLAR_MASSES`,
+  `calculations.mgl_to_mM` and `import_mapping.convert_concentration`/`convert_series_to_mM` all call
+  `units.convert`. **Provenance columns:** when the generic importer converts `X_mM` it keeps wide
+  companions `X_mM_orig_value` / `X_mM_orig_unit` / `X_mM_conversion_id` (identity-tagged when already
+  mM); they survive `run_manager.save_lab_dataframe` and are recognised (never `extra__`/unknown).
+  **Re-derivation check:** `calculations.verify_conversions(df)` recomputes each converted column from
+  its companions through the registry and reports pass/warning/fail per column (legacy runs without
+  companions load and are flagged `unknown(legacy)`, never errored) — this catches a wrong molar mass
+  or changed formula after the fact. **Defined input contract:** `import_mapping.validate_unit` refuses
+  an undeclared unit using the profile's new additive `DatasetProfile.accepted_units`; documented in
+  `docs/input_format.md`. **UI:** an "Unit conversions applied" expander (import preview + run-data
+  viewer) shows original→target, formula, molar mass, and 3 example rows; the Calculation Verification
+  view renders the molar-mass + conversion registries straight from `units.py` and a per-run
+  conversion re-derivation table. Covered by `tests/test_units.py`.
+
+- **Append-only audit log** (Prompt 17 — provenance of *actions*, no chemistry/ML). `flyash_phreeqc_ml/audit.py`
+  (new) records how a run's comparison was produced: `log_event(run_name, event_type, payload)` appends
+  **one JSON line** to `experiments/<run>/outputs/audit_log.jsonl` with `timestamp`, `event_type`,
+  `app_version` (the package `__version__`), and a sanitised `payload`. **Append-only by construction** —
+  the module exposes only `log_event` + typed convenience loggers + `read_audit(run_name) -> DataFrame`;
+  there is **no edit/delete API**. It logs **actions, not data**: names, counts, ids, statuses, and content
+  hashes only — **never measured values, never file contents** (file *names* yes, contents no). Every
+  function is defensive — a logging failure **warns, never crashes** the workflow — and the reader tolerates
+  malformed lines and unknown (future) `event_type`s. Instrumented seams (small calls, lazy `audit` import
+  in `run_manager` to avoid a cycle): **import** (`run_manager.save_lab_dataframe` — rows/mode/columns +
+  conversion ids from companions; the app enriches via an `audit_context` with file name/sheet/column
+  mapping), **mapping accepted/deleted** (`add_condition_mapping` carries `mapping_status`;
+  `delete_condition_mapping_rows`), **validation** (severity counts), **suggestion_table** (per-status
+  counts, de-duped per session), **script_run** (name + exit status, from `_run_lab_workflow`),
+  **comparison_generated + inclusion** (`scripts/05` — the comparison event *references the Prompt-1
+  `comparison_meta.json` hashes* rather than duplicating the stamp; inclusion logs Prompt-4 per-variable
+  counts), and **export** (run-CSV / pipeline). The Audit/Help tab gained an **"Audit trail"** expander
+  (filter by `event_type`, newest first, download the JSONL — the log is itself the export). The
+  `comparison_meta.json` stamp keeps its stale-detection role. Covered by `tests/test_audit.py`
+  (append-only, schema, import→map→compare instrumentation, unknown-event-type tolerance).
+
+- **One-click validation report** (Prompt 18 — a self-contained review bundle, no chemistry/ML).
+  `flyash_phreeqc_ml/report.py :: build_report(run_name) -> Path` writes
+  `experiments/<run>/outputs/validation_report_<ts>/` so an advisor/committee can review *how a
+  comparison was produced* **without the app**: a self-contained **`report.html`** (inline CSS, base64
+  images — no external refs) with sections for run metadata + provenance (from `comparison_meta.json` +
+  `comparison_is_current` — a stale report says **STALE** in the header), measured-data summary +
+  overview figures, unit conversions (Prompt-16 provenance) + `verify_conversions`, the mapping table
+  with compact **Prompt-6 traces** (matched/missing/conflicting fields), the **Prompt-4** inclusion
+  counts + excluded-rows table, the residual table + comparison/residual figures with the sign-
+  convention caption, the **Prompt-13** bias table (only when the gate is met), the mapping-status
+  summary + per-variable **validity lines stated verbatim**, audit-log warnings, and **Recommended
+  next simulations**. Alongside: `measured_clean.csv`, `model_predictions_used.csv`, `mapping_table.csv`,
+  `residuals.csv`, `excluded_rows.csv`, **`needed_simulations.csv`** (columns chosen to feed Prompt-11's
+  `build_input` — `concentration`/L:S/temperature/time/cover-CO₂ — so export + runner interoperate),
+  the copied `audit_log.jsonl`, the figure PNGs, and **`MANIFEST.json`** (per-file SHA-256 + app version
+  + timestamp). **Honesty (Prompt-4 wording is the truth):** the header always carries the overall
+  validity (`valid` only when *every* comparable variable is valid); whenever it is not `valid` a
+  standing banner reads *"This comparison is {status} — it is a workflow check, not model validation."*
+  Pure stdlib + existing deps (string-templated HTML; **PDF is future work**). UI: an **"Export
+  validation report"** button in Run + Results builds the folder (which logs an audit export event) and
+  offers a **zip download**. Report folders are gitignored run outputs. Covered by `tests/test_report.py`
+  (builds on the synthetic fixture, MANIFEST hashes verify, STALE header, preliminary/valid banner
+  wording, needed_simulations columns ↔ Prompt-11 fields).
+
+- **Generality proven: non-PHREEQC model predictions via a CSV contract** (Prompt 19 — model-agnostic
+  comparison, no chemistry/ML). `flyash_phreeqc_ml/parsers/generic_prediction_parser.py` (new) validates
+  a documented **model-prediction CSV contract** (`docs/model_prediction_format.md`): required
+  `record_key` + `model_name`, prediction columns `pred_pH` / `pred_<X>_mM` named per the dataset
+  profile's variables in target units (non-target units convert via the **Prompt-16 registry** with
+  tagged provenance), optional metadata matching the profile's mapping fields — with **specific typed
+  errors** (`MissingRequiredColumn` / `NoPredictionColumns` / `DuplicateRecordKey` / `BlankRecordKey` /
+  `InvalidPredictionValue`; no silent fallback). `ModelProfile` gained `parser_entry_point` + a
+  `load_parser()` + `source_kind`; **`PHREEQC_PROFILE`** (pqo) and **`GENERIC_CSV_PROFILE`** are
+  registered. **`scenarios.build_scenario_manifest` now consumes either source** (dispatch on a
+  `model_name` column → `_manifest_from_generic_predictions`, `state="batch"`), and
+  `compare.residuals` gained `predictions_mM_from_manifest` + **`compare_measured_to_manifest`** so the
+  comparison is built from the manifest, model-agnostically. The suggestion engine, mapping statuses,
+  inclusion, residuals and plots operate on the manifest and **do not import the pqo parser** (pinned by
+  `tests/test_manifest_model_agnostic.py`). Data tab: an **"Import model predictions (CSV)"** path
+  (same review-before-save as measured import; model name from the file; saved to
+  `data/processed/model_predictions.csv` which takes manifest precedence over `phreeqc_results.csv`).
+  The **supported-dataset matrix** (`tests/matrix/`, named fixtures + one module per claim a–f: fly-ash+
+  PHREEQC, literature separation, hand-computed residuals, reformatted/units import, alternate non-fly-
+  ash profile, non-PHREEQC generic prediction end-to-end) pins what "supported" means; the **README**
+  claims match the matrix, no more. **Known leak (flagged, not blocking):** the manifest keeps the
+  historical column names `phreeqc_record_key` / `phreeqc_<X>_mM` (renaming touches every consumer) —
+  they hold whatever model produced the numbers; documented in `docs/model_prediction_format.md`.
+
+- **UI aligned to Import → Validate → Match → Compare → Export + user docs** (Prompt 20 — UI
+  reorganization + docs, **no functional/scientific changes**). The five tabs were renamed/re-scoped to
+  six: **Start** (`_render_start_tab` → overview + a Help pointer), **Import** (`_render_import_tab` —
+  the old Data tab; the data-quality validation summary **moved out** to Validate), **Validate**
+  (`_render_validate_tab` — measured-data overview **moved from** Results, the basic data validation
+  **moved from** Import, the **Calculation Verification** block + the model raw-outputs viewer **moved
+  from** Audit/Help, and the validation & sustainability tables **moved from** Results), **Match**
+  (`_render_match_tab` — the old Match PHREEQC; model name now comes from the profile in captions),
+  **Compare** (`_render_compare_tab` — run workflow + comparison results, with the **assistant** and
+  **surrogate moved in** from Audit/Help; report export + validation tables + measured overview moved
+  out), and **Export** (`_render_export_tab` — **report export moved from** Results, **audit trail
+  moved from** Audit/Help, plus a new **Help & user guide** rendering `docs/user_guide/`). A shared
+  `_next_step_hint` (the Start checklist logic) is surfaced as a **➡️ Next step** line at the top of
+  every tab; each tab renders a **specific empty state** when its prerequisites are missing. New user
+  docs in **`docs/user_guide/`** (`getting_started` / `input_formats` / `mapping_guide` /
+  `interpreting_results` / `data_safety` / `faq`) are rendered in-app from the Export tab. A path-
+  display helper `_rel()` makes captions crash-proof when runs live outside the repo (presentation
+  only). Smoke-tested at the **AppTest level** (`tests/test_app_tabs_smoke.py`): the full app runs
+  end-to-end with no exception and the six tab labels, in the no-run state and against a populated
+  synthetic run for each run type.
+
+- **Replicate / uncertainty closeout — SEM, batches, comparison error bars** (Prompt 21 — uncertainty
+  visibility, no scientific-logic change). `replicates.replicate_summary` now reports **SEM**
+  (`sem_<col> = std/√n`, n = non-null replicate count) alongside std (NaN for n<2, never a fake 0);
+  `measured_overview.prepare_overview` group_stats gains `sem`; and the **error-bar toggle (std vs
+  SEM)** in the measured-overview and condition-results plots picks which, with a caption stating which
+  and n. **n=1 conditions degrade gracefully** — the mean is drawn with **no** error bar (never a zero
+  bar) and listed as `n=1`. **Explicit replicate roles** (`replicates.REPLICATE_ROLE_DEFINITIONS`:
+  time_point / batch / true_replicate): time is already separated via `condition_key`; **batch** is now
+  supported via additive `DatasetProfile.batch_column` / `batch_pattern` (parsed from sample names) +
+  `group_by_batch` — when set, `condition_key` appends `_batch<id>` so batches compare separately,
+  else they fold into the condition like true replicates (`replicates.batch_id`; `annotate` adds a
+  `batch_id` column only when the profile defines batches, so the fly-ash default is unchanged).
+  **Uncertainty into the comparison:** `condition_mean_comparison` carries measured `std_<X>` + `sem_<X>`
+  through (so plots draw measured error bars) plus a `within_meas_std_<X>` flag (`|residual| ≤ std`,
+  None when n<2), with the caption *"a residual smaller than the replicate spread is indistinguishable
+  from experimental noise."* How replicates inherit condition-level mappings and how batches differ is
+  documented in `docs/mapping_rules.md` (§5.5). Covered by `tests/test_replicate_uncertainty.py` (SEM
+  math, batch grouping from synthetic names + a column, std/SEM flowing into the comparison frame,
+  n=1 NaN-not-zero degradation).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
 below. The first ML scaffolding now exists as the **experimental PHREEQC surrogate** (Prompt 12), but
 it is deliberately **isolated from every scientific result path** — a fast approximation in the
-Audit/Help tab only, never a measurement, never feeding comparison/residual/mapping. The
-measured-vs-PHREEQC ML *correction* layer (the project's long-term aim) is still not started.
+Audit/Help tab only, never a measurement, never feeding comparison/residual/mapping. The first step
+toward the *correction* layer exists as **descriptive systematic-bias estimates** (Prompt 13) — plain
+statistics over exact-mapped residuals, explicitly **not** a trained model — and the first *learned*
+correction now exists as the **experimental GP residual-correction model** (Prompt 14), but it is
+**hard-gated** (≥30 exact pairs / ≥3 conditions), **LOCO-validated against the constant-bias
+baseline**, and **display-only** (a raw-vs-corrected overlay that never replaces PHREEQC output or
+feeds mapping/validity/the comparison CSV). A correction trusted enough to drive results is still
+future work — it stays an overlay until LOCO shows it beats the bias bands on unseen conditions.
 
 > **Two different `experiments/`.** `flyash_phreeqc_ml/experiments/` is the *Python package*
 > (planning + QA/QC). The repo-root `experiments/` is the *data folder* of run save-files
@@ -249,9 +457,13 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
 
 ## Working rules (project-specific)
 
-- **No ML training yet.** Do not build/train models unless measured experimental release data
-  actually exists in `data/raw/experimental_icp/` (a filled CSV, not just the blank template).
-  Until then, Phase 2 comparison is the ceiling.
+- **No ML on the result path.** Do not wire any model into comparison/residual/mapping/validity.
+  The experimental ML that exists (surrogate Prompt 12, bias stats Prompt 13, GP residual correction
+  Prompt 14) is deliberately isolated: the surrogate is Audit/Help-only; the residual correction is
+  **hard-gated** (≥30 exact pairs / ≥3 conditions, enforced by a typed error — never lower it) and
+  **display-only**. Real measured release data still does not exist in `data/raw/experimental_icp/`
+  (only the blank template), so for fly ash these models have **no data to train on yet** and Phase 2
+  comparison remains the scientific ceiling — the gate is what keeps that honest.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
   `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by
@@ -339,6 +551,29 @@ modules together and own all file I/O paths.
   CSV **schema** (`EXPERIMENTAL_RELEASE_COLUMNS` / `EXPERIMENTAL_NUMERIC_COLUMNS`), key elements/
   phases, and the molality→mM factor live here. The shipped template CSV, the parser, and the
   tests all derive from this list — change the schema here, not in three places.
+  (`PHREEQC_MOLALITY_TO_MM` is re-exported from `units.py`, the conversion authority.)
+
+- **`units.py` is the single conversion authority.** Every unit conversion in the app routes through
+  `units.convert(value, from_unit, to_unit, element) -> ConversionResult` (value + registry `id` +
+  molar mass used + formula). It owns `MOLAR_MASSES` (IUPAC atomic weights, surfaced in the UI) and
+  the `CONVERSIONS` registry (mg/L·ppm·ppb→mM, molality→mM, identity). **No silent fallbacks**:
+  unknown unit/element raise typed `UnknownUnitError`/`UnknownElementError`. `config`, `calculations`,
+  and `import_mapping` all call through it (one code path). It also defines the conversion-provenance
+  companion suffixes (`_orig_value`/`_orig_unit`/`_conversion_id`). Imports nothing from the package
+  (so `config` can re-export the molality factor without a cycle). Covered by `tests/test_units.py`.
+
+- **`audit.py` is the append-only event log.** `log_event` / `read_audit` + typed convenience loggers
+  write/read `experiments/<run>/outputs/audit_log.jsonl` (one JSON line per action, with
+  `app_version`). No edit/delete API; logs ids/counts/statuses/hashes only (never values/contents);
+  every call is defensive (warns, never raises). Instrumentation lives at the seams (`run_manager`
+  data ops via lazy import, `scripts/05`, and app orchestration). The JSONL is gitignored under
+  `experiments/*/outputs/`. Covered by `tests/test_audit.py`.
+
+- **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
+  layers (provenance, inclusion, traces, bias, conversions, audit) into a self-contained
+  `validation_report_<ts>/` (report.html + CSVs + figures + MANIFEST.json with SHA-256). Pure
+  composition — it adds no chemistry; the Prompt-4 validity rules drive all honesty wording. Gitignored
+  run output. Covered by `tests/test_report.py`.
 
 - **`profiles.py`** — the **generalization layer** (additive; pure, no chemistry/ML). Two frozen
   dataclasses describe a dataset + model so the same code can serve more than fly ash + PHREEQC
@@ -551,10 +786,11 @@ modules together and own all file I/O paths.
   `sol1/sol2/sol3` are **replicate batches of one experimental condition**, not time points, so a
   measured row is *(condition, replicate batch)* rather than a sample mapped straight to a solution
   number. `condition_key` collapses leachant + molarity (`acid_M` for acids) + OA/PF/GS code + time +
-  L/S + CO2 + temp into one stable grouping key (e.g. `NaOH0.5M_OA_10min_LS5_open`); `replicate_id` /
+  L/S + CO2 + temp into one stable grouping key (e.g. `NaOH0.5M_OA_10min_LS5_open`), optionally
+  appending `_batch<id>` when the profile sets `group_by_batch` (see Prompt-21 bullet); `replicate_id` /
   `parse_replicate_id` read `R1/rep2/batch3` from the sample_id (`infer_replicate_ids` fills blanks by
-  order **with a warning**); `replicate_summary` reports count + mean ± std (ddof=1, NaN for a single
-  replicate) of pH/Ca/Si/Al per condition. `expand_condition_mapping` turns one `condition_key →
+  order **with a warning**); `replicate_summary` reports count + **mean ± std ± SEM** (ddof=1; SEM=std/√n;
+  NaN for a single replicate) of pH/Ca/Si/Al per condition. `expand_condition_mapping` turns one `condition_key →
   record_key` link into the per-sample map the pipeline reads (all replicates inherit it);
   `replicate_record_key` / `expand_replicate_solution_mapping` are the optional advanced path where
   each replicate points at its own `solN`. `condition_mean_comparison` (mean ± std vs PHREEQC,
@@ -596,10 +832,13 @@ modules together and own all file I/O paths.
   view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
 - **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
-  wide-layout **guided five-tab workflow** driven by a run-management **sidebar** (run selector +
-  create-run expander; current run name/type/folder/source; a run-type warning; a "go to Run +
-  Results tab" reminder; and a **Developer explanation mode** toggle). The five tabs follow the
-  ingest → verify → map → run → interpret order:
+  wide-layout **guided six-tab workflow** — **Start, Import, Validate, Match, Compare, Export**
+  (Prompt 20) — driven by a run-management **sidebar** (run selector + create-run expander; current run
+  name/type/folder/source; a run-type warning; a "go to **Compare** tab" reminder; and a **Developer
+  explanation mode** toggle). Every tab carries a one-line header + a **➡️ Next step** hint and a
+  specific empty state. The numbered list below describes the underlying render functions (mostly
+  unchanged); see the **Prompt-20 bullet** above for exactly what moved where. Original
+  ingest → verify → map → run → interpret order, now Import → Validate → Match → Compare → Export:
   1. **Start** (`_render_overview`) — project status cards + selected-run summary (run type, data
      rows, mapped samples, unique PHREEQC rows used), a one-line **data-quality status**, what's
      missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run

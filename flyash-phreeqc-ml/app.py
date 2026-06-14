@@ -2,8 +2,8 @@
 
 A thin GUI on top of the existing Phase 1 / Phase 2 code — it does **not**
 reimplement any pipeline logic. A run-management sidebar drives a guided
-five-tab workflow (Start, Data, Match PHREEQC, Run + Results, Audit / Help).
-Each tab reuses the package functions; this file adds no chemistry or ML.
+workflow aligned to **Import → Validate → Match → Compare → Export** (plus a
+Start overview). Each tab reuses the package functions; this file adds no chemistry or ML.
 It lets you:
 
 * see project + run status at a glance,
@@ -16,12 +16,26 @@ Run with:  streamlit run app.py
 from __future__ import annotations
 
 import io
+import json
 import subprocess
+import zipfile
 import sys
 from pathlib import Path
 
 # Make the package importable when Streamlit runs this file directly.
 _PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _rel(path: Path) -> Path:
+    """Display a path relative to the project root, or as-is if it lives elsewhere.
+
+    Presentation-only: runs are normally under the repo, but a deployment may point
+    ``EXPERIMENT_RUNS_DIR`` elsewhere — a caption must never crash on that.
+    """
+    try:
+        return Path(path).relative_to(_PROJECT_ROOT)
+    except ValueError:
+        return Path(path)
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -29,6 +43,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
+from flyash_phreeqc_ml import audit  # noqa: E402  (append-only audit log)
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
@@ -37,9 +52,12 @@ from flyash_phreeqc_ml import mapping_table  # noqa: E402
 from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import replicates  # noqa: E402
+from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report)
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
+from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
+from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (grounded Q&A)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -47,6 +65,7 @@ from flyash_phreeqc_ml.parsers import (  # noqa: E402
 )
 from flyash_phreeqc_ml.compare import comparison_inclusion  # noqa: E402
 from flyash_phreeqc_ml.compare import inclusion as compare_inclusion  # noqa: E402
+from flyash_phreeqc_ml.ml import residual_stats  # noqa: E402  (descriptive bias stats)
 from flyash_phreeqc_ml.viz import compare_plots  # noqa: E402
 from flyash_phreeqc_ml.viz import measured_overview  # noqa: E402
 
@@ -195,11 +214,11 @@ def _render_run_sidebar() -> str | None:
     st.sidebar.markdown(f"**Current run:** `{selected}`")
     st.sidebar.markdown(f"**Type:** `{cfg.get('run_type')}`")
     st.sidebar.markdown(f"**Source:** `{cfg.get('data_source')}`")
-    st.sidebar.caption(f"📁 {run_manager.run_dir(selected).relative_to(_PROJECT_ROOT)}")
+    st.sidebar.caption(f"📁 {_rel(run_manager.run_dir(selected))}")
     if cfg.get("description"):
         st.sidebar.caption(f"📝 {cfg['description']}")
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
-    st.sidebar.info("➡️ Open the **Run + Results** tab to execute this run.")
+    st.sidebar.info("➡️ Open the **Compare** tab to execute this run.")
     return selected
 
 
@@ -298,6 +317,73 @@ def _lab_data_import(run_name: str) -> None:
         _dissolution_import(run_name)
     else:
         _generic_table_import(run_name)
+
+    _render_model_predictions_import(run_name)
+
+
+def _render_model_predictions_import(run_name: str) -> None:
+    """"Import model predictions (CSV)" — a non-PHREEQC model via the generic contract.
+
+    Same review-before-save pattern as the measured import. UI strings say *model
+    predictions*; the model name is read from the file. Saved predictions become the
+    manifest source (precedence over PHREEQC), so the same mapping/comparison applies.
+    """
+    from flyash_phreeqc_ml.parsers import generic_prediction_parser as gpp
+
+    with st.expander("Import model predictions (CSV) — a model other than PHREEQC",
+                     expanded=False):
+        st.caption(
+            "A non-PHREEQC model can supply predictions via the documented CSV contract "
+            "(`docs/model_prediction_format.md`): required `record_key` + `model_name`, "
+            "prediction columns `pred_pH` / `pred_Ca_mM` … in the profile's target units. "
+            "These flow through the **same** manifest → mapping → comparison as PHREEQC."
+        )
+        up = st.file_uploader("Model predictions CSV", type=["csv"],
+                              key=f"mp_up_{run_name}")
+        if up is None:
+            return
+        try:
+            raw = pd.read_csv(up)
+        except Exception as exc:  # noqa: BLE001 - surface any read error to the user
+            st.error(f"Could not read CSV: {exc}")
+            return
+        st.markdown("**Uploaded preview**")
+        st.dataframe(raw.head(20), use_container_width=True, height=180)
+
+        try:
+            parsed = gpp.parse_predictions(raw)
+        except gpp.PredictionContractError as exc:
+            st.error(f"Contract error — fix the file and re-upload: {exc}")
+            return
+
+        model_names = sorted({str(m) for m in parsed["model_name"].unique()})
+        st.success(f"Parsed {len(parsed)} prediction row(s) · model: "
+                   f"{', '.join(model_names) or '(unnamed)'}.")
+        manifest = scenarios.build_scenario_manifest(parsed)
+        show_cols = [c for c in ("phreeqc_record_key", "scenario_label", "predicted_pH",
+                                 "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM",
+                                 "predicted_Fe_mM") if c in manifest.columns]
+        st.markdown(f"**Model predictions to use ({', '.join(model_names) or 'model'}) — "
+                    "review before save**")
+        st.dataframe(manifest[show_cols], use_container_width=True, height=200,
+                     hide_index=True)
+
+        confirmed = st.checkbox(
+            "I reviewed these model predictions and want to use them for mapping + "
+            "comparison (they take precedence over PHREEQC).",
+            key=f"mp_confirm_{run_name}")
+        if st.button("Save model predictions", key=f"mp_save_{run_name}",
+                     disabled=not confirmed):
+            dest = config.PROCESSED_DIR / config.MODEL_PREDICTIONS_CSV
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            parsed.to_csv(dest, index=False)
+            audit.log_event(run_name, "model_predictions_import", {
+                "file_name": getattr(up, "name", None),
+                "model_names": model_names, "n_rows": int(len(parsed))})
+            _scenario_manifest.clear()
+            st.success(f"Saved {len(parsed)} model prediction(s) → "
+                       f"`{_rel(dest)}`. The Match tab will use them.")
+            st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -526,6 +612,7 @@ def _generic_table_import(run_name: str) -> None:
     st.markdown("**5 · Transformed preview & validation**")
     _import_render_report(import_mapping.summarize_import(transformed, units))
     st.dataframe(transformed, use_container_width=True, height=240)
+    _render_unit_conversions_applied(transformed)
 
     if "sample_id" in transformed.columns:
         sid = transformed["sample_id"].astype(str).str.upper()
@@ -555,11 +642,15 @@ def _generic_table_import(run_name: str) -> None:
     existing = run_manager.read_data_file(run_name)
 
     def _do_save(mode: str) -> None:
-        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode)
+        ctx = {"file_name": getattr(up, "name", None), "sheet": sheet_name or None,
+               "column_mapping": {k: v for k, v in mapping.items() if v},
+               "mapping_confirmed": True}
+        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode,
+                                              audit_context=ctx)
         saved = run_manager.read_data_file(run_name)
         _read_csv.clear()
         st.success(f"Saved {len(transformed)} imported row(s) ({mode}) → "
-                   f"`{dest.relative_to(_PROJECT_ROOT)}`. Run now has {len(saved)} row(s).")
+                   f"`{_rel(dest)}`. Run now has {len(saved)} row(s).")
         st.dataframe(saved, use_container_width=True, height=240)
 
     if not existing.empty:
@@ -577,7 +668,8 @@ def _generic_table_import(run_name: str) -> None:
             _do_save("replace")
 
 
-def _save_transformed(run_name: str, transformed: pd.DataFrame, key_prefix: str) -> None:
+def _save_transformed(run_name: str, transformed: pd.DataFrame, key_prefix: str,
+                      *, audit_context: dict | None = None) -> None:
     """Confirm-gated replace/append save of a transformed frame (shared by importers)."""
     confirmed = st.checkbox(
         "I reviewed the imported data and understand these values will be saved to this "
@@ -586,11 +678,12 @@ def _save_transformed(run_name: str, transformed: pd.DataFrame, key_prefix: str)
     existing = run_manager.read_data_file(run_name)
 
     def _do_save(mode: str) -> None:
-        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode)
+        dest = run_manager.save_lab_dataframe(run_name, transformed, mode=mode,
+                                              audit_context=audit_context)
         saved = run_manager.read_data_file(run_name)
         _read_csv.clear()
         st.success(f"Saved {len(transformed)} imported row(s) ({mode}) → "
-                   f"`{dest.relative_to(_PROJECT_ROOT)}`. Run now has {len(saved)} row(s).")
+                   f"`{_rel(dest)}`. Run now has {len(saved)} row(s).")
         st.dataframe(saved, use_container_width=True, height=240)
 
     if not existing.empty:
@@ -707,7 +800,9 @@ def _dissolution_import(run_name: str) -> None:
 
     # Save (confirm-gated).
     st.markdown("**4 · Save**")
-    _save_transformed(run_name, transformed, key_prefix="diss")
+    _save_transformed(run_name, transformed, key_prefix="diss",
+                      audit_context={"file_name": getattr(up, "name", None),
+                                     "sheet": "dissolution_workbook"})
 
 
 def _lab_entry_form(run_name: str) -> None:
@@ -745,7 +840,7 @@ def _lab_entry_form(run_name: str) -> None:
         else:
             row = {c: (inputs.get(c) or "").strip() for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
             path = run_manager.append_lab_row(run_name, row)
-            st.success(f"Saved sample '{row['sample_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            st.success(f"Saved sample '{row['sample_id']}' to {_rel(path)}.")
             _read_csv.clear()
 
 
@@ -761,7 +856,7 @@ def _literature_entry(run_name: str) -> None:
         try:
             df = pd.read_csv(up)
             path = run_manager.save_literature_dataframe(run_name, df)
-            st.success(f"Saved {len(df)} row(s) to {path.relative_to(_PROJECT_ROOT)}.")
+            st.success(f"Saved {len(df)} row(s) to {_rel(path)}.")
             _read_csv.clear()
         except Exception as exc:  # pragma: no cover - UI guard
             st.error(f"Could not read CSV: {exc}")
@@ -782,7 +877,7 @@ def _literature_entry(run_name: str) -> None:
         else:
             row = {c: (inputs.get(c) or "").strip() for c in run_manager.LITERATURE_BENCHMARK_COLUMNS}
             path = run_manager.append_literature_row(run_name, row)
-            st.success(f"Added literature row '{row['source_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            st.success(f"Added literature row '{row['source_id']}' to {_rel(path)}.")
             _read_csv.clear()
 
 
@@ -808,7 +903,7 @@ def _demo_entry(run_name: str) -> None:
         else:
             row = {c: (inputs.get(c) or "").strip() for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
             path = run_manager.append_demo_row(run_name, row)
-            st.success(f"Added demo row '{row['sample_id']}' to {path.relative_to(_PROJECT_ROOT)}.")
+            st.success(f"Added demo row '{row['sample_id']}' to {_rel(path)}.")
             _read_csv.clear()
 
 
@@ -831,7 +926,7 @@ def _run_lab_workflow(run_name: str) -> None:
     st.markdown("**Step 1 — Export run data → pipeline**")
     try:
         dest = run_manager.export_lab_run_to_pipeline(run_name)
-        st.success(f"Exported to `{dest.relative_to(_PROJECT_ROOT)}`.")
+        st.success(f"Exported to `{_rel(dest)}`.")
     except run_manager.RunManagerError as exc:
         st.error(f"Export failed: {exc}")
         st.error("⛔ Workflow stopped — no scripts were run.")
@@ -841,12 +936,12 @@ def _run_lab_workflow(run_name: str) -> None:
     # otherwise warn (the workflow still runs, just without residuals).
     if run_manager.has_mapping(run_name):
         map_dest = run_manager.export_mapping_to_pipeline(run_name)
-        st.success(f"Sample→PHREEQC mapping exported to `{map_dest.relative_to(_PROJECT_ROOT)}`.")
+        st.success(f"Sample→PHREEQC mapping exported to `{_rel(map_dest)}`.")
     else:
         st.warning(
             "No measured-data → model mapping found. The workflow can still run, but "
             "measured-vs-model residuals will not be calculated. Add a mapping in "
-            "the **Match PHREEQC** tab."
+            "the **Match** tab."
         )
 
     # Steps 2..N — run each script, halting on the first failure. The comparison
@@ -865,6 +960,7 @@ def _run_lab_workflow(run_name: str) -> None:
         with st.spinner(f"Running {label}…"):
             proc = _run_script(script, *args)
         _show_process_result(label, proc)
+        audit.log_script_run(run_name, script=script, exit_status=int(proc.returncode))
         if proc.returncode != 0:
             st.error(f"⛔ Workflow stopped at step {i} ({label}) — see stderr above.")
             return
@@ -1471,7 +1567,8 @@ def _accept_condition_mappings(run_name: str, rows: list[dict], *,
         note = (f"override of {status} mapping" if override
                 else f"accepted from suggestion table ({status})")
         try:
-            run_manager.add_condition_mapping(run_name, ck, key, notes=note, override=override)
+            run_manager.add_condition_mapping(run_name, ck, key, notes=note,
+                                              override=override, mapping_status=status)
             accepted += 1
         except run_manager.RunManagerError as exc:
             st.error(f"{ck}: {exc}")
@@ -1626,7 +1723,7 @@ def _render_suggestion_table(run_name: str, data: pd.DataFrame, manifest: pd.Dat
         try:
             dest = run_manager.export_mapping_to_pipeline(run_name)
             _map_flash(run_name, "success",
-                       f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 reads it.")
+                       f"Copied mapping to {_rel(dest)} — step 05 reads it.")
             _read_csv.clear()
         except run_manager.RunManagerError as exc:
             _map_flash(run_name, "error", str(exc))
@@ -1751,7 +1848,7 @@ def _render_condition_mapping_advanced(run_name: str, cond_map: pd.DataFrame) ->
             try:
                 path = run_manager.apply_condition_mapping(run_name, use_replicate_solution=use_rep_sol)
                 n = len(run_manager.read_mapping(run_name))
-                st.success(f"Applied — {n} sample row(s) written to `{path.relative_to(_PROJECT_ROOT)}`.")
+                st.success(f"Applied — {n} sample row(s) written to `{_rel(path)}`.")
                 _read_csv.clear()
                 st.rerun()
             except run_manager.RunManagerError as exc:
@@ -1841,7 +1938,7 @@ def _render_mapping_section(run_name: str) -> None:
     if not results_path.exists():
         st.info(
             "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(the Run + Results tab) to generate model (PHREEQC) results."
+            "(the Compare tab) to generate model (PHREEQC) results."
         )
         return
     phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
@@ -1856,6 +1953,12 @@ def _render_mapping_section(run_name: str) -> None:
     # Build the suggestion table ONCE; the table view and the "needs new simulation"
     # section are both driven from it, so their counts always agree.
     table = mapping_table.build_suggestion_table(data, manifest, cond_map)
+    if not table.empty:
+        _sc = table["mapping_status"].value_counts().to_dict()
+        _audit_once(
+            run_name, "suggestion:" + ":".join(f"{k}={v}" for k, v in sorted(_sc.items())),
+            lambda: audit.log_suggestion_table(
+                run_name, status_counts=_sc, n_conditions=int(len(table))))
 
     # Compact mapping summary — accepted + the status distribution across the
     # detected measured conditions (same source as the suggestion table below).
@@ -1952,7 +2055,7 @@ def _render_mapping_section(run_name: str) -> None:
                 try:
                     dest = run_manager.export_mapping_to_pipeline(run_name)
                     st.success(
-                        f"Copied mapping to {dest.relative_to(_PROJECT_ROOT)} — step 05 "
+                        f"Copied mapping to {_rel(dest)} — step 05 "
                         "will use it to compute residuals."
                     )
                     _read_csv.clear()
@@ -2087,7 +2190,7 @@ def _render_results_summary(run_name: str | None) -> None:
 
     st.markdown(
         f"- **ICP chemistry:** {'missing (pH-only)' if icp_missing else 'present'}\n"
-        f"- **Comparison CSV:** `{comp_path.relative_to(_PROJECT_ROOT)}`"
+        f"- **Comparison CSV:** `{_rel(comp_path)}`"
     )
 
     # Test/demo guard.
@@ -2270,6 +2373,11 @@ _OA_PF_GS_CAVEAT = (
 
 
 def _manifest_if_available() -> pd.DataFrame:
+    # A non-PHREEQC model's predictions (generic CSV) take precedence when present —
+    # the manifest (and everything downstream) is model-agnostic.
+    mp = config.PROCESSED_DIR / config.MODEL_PREDICTIONS_CSV
+    if mp.exists():
+        return _scenario_manifest(str(mp), mp.stat().st_mtime)
     rp = config.PROCESSED_DIR / config.PHREEQC_RESULTS_CSV
     if rp.exists():
         return _scenario_manifest(str(rp), rp.stat().st_mtime)
@@ -2378,11 +2486,11 @@ def _render_presentation_summary(selected_run: str | None) -> None:
 
     # Recommended next *scientific* step.
     if not n_rows:
-        nxt = "Import the dissolution workbook in the **Data** tab."
+        nxt = "Import the dissolution workbook in the **Import** tab."
     elif n_err:
-        nxt = f"Fix {n_err} validation error(s) in the **Data** tab before mapping."
+        nxt = f"Fix {n_err} validation error(s) in the **Import** / **Validate** tabs before mapping."
     elif lab_like and msum["n_samples"] == 0:
-        nxt = "Map conditions to model scenarios in the **Match PHREEQC** tab."
+        nxt = "Map conditions to model scenarios in the **Match** tab."
     elif status["counts"].get("unsafe", 0):
         nxt = ("Resolve unsafe mapping(s) (e.g. HCl mapped to a NaOH/CO2 scenario) — generate "
                "matching acid PHREEQC scenarios.")
@@ -2390,9 +2498,9 @@ def _render_presentation_summary(selected_run: str | None) -> None:
         nxt = ("Generate time- and condition-resolved PHREEQC scenarios so mappings can become "
                "exact; the current comparison is a workflow check, not final validation.")
     elif not comp_exists:
-        nxt = "Run the workflow in the **Run + Results** tab to generate the comparison."
+        nxt = "Run the workflow in the **Compare** tab to generate the comparison."
     else:
-        nxt = "Review the preliminary comparison in the **Run + Results** tab."
+        nxt = "Review the preliminary comparison in the **Compare** tab."
     st.success(f"**Recommended next scientific step:** {nxt}")
 
     if not (lab_like and status["all_exact"]):
@@ -2407,6 +2515,55 @@ def _render_presentation_summary(selected_run: str | None) -> None:
 # --------------------------------------------------------------------------- #
 # Tab renderers — each is a self-contained view; all reuse the helpers above.
 # --------------------------------------------------------------------------- #
+def _next_step_hint(selected_run: str | None) -> str:
+    """One recommended next action for the selected run (the Start checklist logic).
+
+    Shared by Start and surfaced as a "next step" hint at the top of every tab, so a
+    user who didn't build the app always knows where to go next. References the new
+    tab names (Import / Match / Compare / Export).
+    """
+    if not selected_run:
+        return "Create or open a run in the **Experiment runs** sidebar (left)."
+    try:
+        cfg = run_manager.load_run_config(selected_run)
+    except run_manager.RunManagerError:
+        return "Create or open a run in the **Experiment runs** sidebar (left)."
+    rt = cfg.get("run_type")
+    data = run_manager.read_data_file(selected_run)
+    lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES
+    has_map = run_manager.has_mapping(selected_run) if lab_like else False
+    map_summary = (run_manager.summarize_mapping(run_manager.read_mapping(selected_run))
+                   if lab_like else {"has_collisions": False})
+    icp_present = lab_like and any(_has_numeric(data, c) for c in _ICP_MEASURED_COLS)
+    is_mock = _looks_like_run_test(data)
+    comp_exists = lab_like and run_manager.has_comparison(selected_run)
+
+    if data.empty:
+        return "Import or enter data in the **Import** tab."
+    if is_mock:
+        return "Mock/test data — for code checking only, not scientific conclusions."
+    if rt == "literature_benchmark":
+        return ("Review the literature table in the **Import** tab — literature data are "
+                "kept separate from lab data and are not run through the pipeline.")
+    if rt == "synthetic_demo":
+        return "This is a synthetic/demo run — for testing only, not scientific output."
+    if lab_like and not has_map:
+        return "Map measured data to model results in the **Match** tab."
+    if lab_like and map_summary["has_collisions"]:
+        return ("Review mapping in the **Match** tab — several samples share one model "
+                "result, so graphs may be misleading.")
+    if not comp_exists:
+        return "Run the workflow in the **Compare** tab to generate results."
+    if lab_like and not icp_present:
+        return "Only pH comparison is meaningful until ICP data are added."
+    return "Read the comparison in the **Compare** tab, then build a report in **Export**."
+
+
+def _render_next_step(selected_run: str | None) -> None:
+    """Render the one-line "next step" hint at the top of a tab."""
+    st.info(f"➡️ **Next step:** {_next_step_hint(selected_run)}")
+
+
 def _render_overview(selected_run: str | None) -> None:
     """Project status cards + selected-run summary + a recommended next step."""
     app_ui.render_page_header(
@@ -2471,7 +2628,7 @@ def _render_overview(selected_run: str | None) -> None:
     s3.metric("Mapped samples", map_summary["n_samples"] if lab_like else "n/a")
     s4.metric("Unique model results used",
               map_summary["n_unique_rows"] if lab_like else "n/a")
-    st.caption(f"📁 {run_manager.run_dir(selected_run).relative_to(_PROJECT_ROOT)} · source `{cfg.get('data_source')}`")
+    st.caption(f"📁 {_rel(run_manager.run_dir(selected_run))} · source `{cfg.get('data_source')}`")
 
     # Data quality status (one honest line).
     if data.empty:
@@ -2500,28 +2657,8 @@ def _render_overview(selected_run: str | None) -> None:
         for m in missing:
             st.markdown(f"- {m}")
 
-    # Recommended next action.
-    if data.empty:
-        nxt = "Upload or enter lab data in the **Data** tab."
-    elif is_mock:
-        nxt = "Use only for code checking, not scientific conclusions."
-    elif rt == "literature_benchmark":
-        nxt = ("Review the literature table in the **Data** tab. Literature data are "
-               "kept separate from lab data and are not run through the pipeline.")
-    elif rt == "synthetic_demo":
-        nxt = "This is a synthetic/demo run — for testing only, not scientific output."
-    elif lab_like and not has_map:
-        nxt = "Map samples to model scenarios in the **Match PHREEQC** tab."
-    elif lab_like and map_summary["has_collisions"]:
-        nxt = ("Review mapping in the **Match PHREEQC** tab; several samples share one "
-               "PHREEQC row, so graphs may be misleading.")
-    elif not comp_exists:
-        nxt = "Run the workflow in the **Run + Results** tab to generate results."
-    elif lab_like and not icp_present:
-        nxt = "Only pH comparison is meaningful until ICP data are added."
-    else:
-        nxt = "Read the comparison in the **Run + Results** tab."
-    st.success(f"**Recommended next action:** {nxt}")
+    # Recommended next action (shared logic, also surfaced on every tab).
+    st.success(f"**Recommended next action:** {_next_step_hint(selected_run)}")
 
     # Workflow checklist — rendered as a progression stepper (first incomplete
     # step is highlighted; completed steps read as done).
@@ -2547,11 +2684,39 @@ def _render_overview(selected_run: str | None) -> None:
     )
 
 
+def _render_unit_conversions_applied(df: pd.DataFrame) -> None:
+    """"Unit conversions applied" expander: original→target, formula, molar mass, examples.
+
+    Reads the conversion-provenance companions an import wrote, so every converted
+    value is traceable to its original value + unit + the registry conversion id.
+    Renders nothing when the frame carries no converted columns.
+    """
+    rows = import_mapping.conversion_provenance_summary(df)
+    if not rows:
+        return
+    with st.expander("Unit conversions applied", expanded=False):
+        st.caption("Every converted column kept its original value, original unit, and the "
+                   "registry `conversion_id`, so the conversion is auditable later. "
+                   f"Molar masses: {units.MOLAR_MASS_SOURCE}.")
+        for r in rows:
+            mm = r["molar_mass_g_mol"]
+            head = (f"**{r['column']}** — {r['from_unit']} → {r['to_unit']}  ·  "
+                    f"`{r['conversion_id']}`")
+            if mm is not None:
+                head += f"  ·  M_{r['element']} = {mm:g} g/mol"
+            st.markdown(head)
+            st.caption(f"formula: `{r['formula']}`")
+            if r["examples"]:
+                st.dataframe(pd.DataFrame(r["examples"]), use_container_width=True,
+                             hide_index=True, height=min(40 + 35 * len(r["examples"]), 160))
+
+
 def _render_run_data_and_edit(run_name: str, rt: str) -> None:
     """This run's data table + row deletion + CSV/pipeline export (no mapping)."""
     data = run_manager.read_data_file(run_name)
     st.markdown(f"**This run's data** ({len(data)} row(s)):")
     st.dataframe(data, use_container_width=True, height=300)
+    _render_unit_conversions_applied(data)
 
     # --- Delete / clean rows --- only affects THIS run's CSV.
     if not data.empty:
@@ -2601,26 +2766,51 @@ def _render_run_data_and_edit(run_name: str, rt: str) -> None:
     ec1, ec2 = st.columns(2)
     with ec1:
         if not data.empty:
-            st.download_button(
+            export_name = f"{run_name}_{run_manager.spec_for(rt).data_filename}"
+            if st.download_button(
                 "⬇️ Export this run's CSV",
                 data=data.to_csv(index=False).encode("utf-8"),
-                file_name=f"{run_name}_{run_manager.spec_for(rt).data_filename}",
+                file_name=export_name,
                 mime="text/csv",
                 use_container_width=True,
-            )
+            ):
+                audit.log_export(run_name, kind="run_csv", file_name=export_name,
+                                 n_rows=int(len(data)))
     with ec2:
         if rt in run_manager.LAB_LIKE_RUN_TYPES:
             if st.button("➡️ Export to pipeline (manual-entry CSV)", use_container_width=True,
                          key=f"export_pipe_{run_name}"):
                 try:
                     dest = run_manager.export_lab_run_to_pipeline(run_name)
+                    audit.log_export(run_name, kind="pipeline_manual_entry",
+                                     file_name=dest.name, n_rows=int(len(data)))
                     st.success(
-                        f"Copied to {dest.relative_to(_PROJECT_ROOT)} — the existing "
+                        f"Copied to {_rel(dest)} — the existing "
                         "scripts (05/07) will pick it up."
                     )
                     _read_csv.clear()
                 except run_manager.RunManagerError as exc:
                     st.error(str(exc))
+
+
+def _audit_once(run_name: str, dedupe_key: str, log_fn) -> None:
+    """Log a render-time event at most once per (run, key) per session (no spam).
+
+    Render functions run on every interaction; ``dedupe_key`` should encode the
+    salient state (e.g. the counts) so a *genuine* change logs again but a re-render
+    of the same state does not.
+    """
+    if not run_name:
+        return
+    seen = st.session_state.setdefault("_audit_seen", set())
+    token = (run_name, dedupe_key)
+    if token in seen:
+        return
+    seen.add(token)
+    try:
+        log_fn()
+    except Exception:  # pragma: no cover - logging must never crash a render
+        pass
 
 
 def _render_basic_validation_summary(run_name: str) -> None:
@@ -2632,6 +2822,11 @@ def _render_basic_validation_summary(run_name: str) -> None:
     real = [i for i in issues if i.get("severity") in ("error", "warning")]
     errors = [i for i in real if i["severity"] == "error"]
     warnings = [i for i in real if i["severity"] == "warning"]
+    _audit_once(
+        run_name, f"validation:{len(errors)}:{len(warnings)}",
+        lambda: audit.log_validation(
+            run_name, severity_counts={"error": len(errors), "warning": len(warnings)},
+            source=run_name))
 
     st.markdown("**Basic data validation**")
     v1, v2 = st.columns(2)
@@ -2644,19 +2839,22 @@ def _render_basic_validation_summary(run_name: str) -> None:
         st.dataframe(report, use_container_width=True, height=200)
 
 
-def _render_data_entry_tab(selected_run: str | None) -> None:
+def _render_import_tab(selected_run: str | None) -> None:
     app_ui.render_page_header(
-        "Data — import & validate",
+        "Import — add measured data",
         "Import or enter measured data for the selected run, review the detected "
-        "records, validate, then save to the run.",
-        eyebrow="Step 1 · Ingest",
+        "records and unit conversions, then save to the run.",
+        eyebrow="Step 1 · Import",
     )
+    _render_next_step(selected_run)
     app_ui.render_workflow_steps(
-        ["Upload / import data", "Review detected records", "Validate", "Save to run"],
+        ["Upload / import data", "Review detected records", "Review units", "Save to run"],
         current=0,
     )
     if not selected_run:
-        st.info("Select or create a run in the **Experiment runs** sidebar (left) to enter data.")
+        st.info("Select or create a run in the **Experiment runs** sidebar (left) to import "
+                "data. Use **lab_experiment** for measured ICP/pH data, **literature_benchmark** "
+                "for reported values, or **synthetic_demo** for testing.")
         return
     cfg = run_manager.load_run_config(selected_run)
     rt = cfg.get("run_type")
@@ -2674,10 +2872,7 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
 
     st.divider()
     _render_run_data_and_edit(selected_run, rt)
-
-    if rt in run_manager.LAB_LIKE_RUN_TYPES:
-        st.divider()
-        _render_basic_validation_summary(selected_run)
+    st.caption("Data-quality validation moved to the **Validate** tab.")
 
     st.divider()
     with st.expander("Legacy global data entry — not recommended", expanded=False):
@@ -2688,13 +2883,14 @@ def _render_data_entry_tab(selected_run: str | None) -> None:
         _render_legacy_global_form()
 
 
-def _render_mapping_tab(selected_run: str | None) -> None:
+def _render_match_tab(selected_run: str | None) -> None:
     app_ui.render_page_header(
-        "Match — measured data to model predictions",
-        "Automatic-first: records are detected and mappings are suggested for you. "
-        "Review, then accept. Manual mapping stays available under advanced.",
-        eyebrow="Step 2 · Map",
+        "Match — link measured data to model predictions",
+        f"Automatic-first: records are detected and {MODEL_NAME} mappings are suggested "
+        "for you. Review, then accept. Manual mapping stays available under advanced.",
+        eyebrow="Step 2 · Match",
     )
+    _render_next_step(selected_run)
     app_ui.render_workflow_steps(
         ["Auto-detect measured records", "Auto-suggest model mappings",
          "Review suggestions", "Accept mappings"],
@@ -2809,9 +3005,17 @@ def _render_condition_results(selected_run: str | None) -> None:
         if n_lt2:
             st.warning(f"⚠️ {n_lt2} condition(s) have fewer than 2 replicates — no standard "
                        "deviation, so the mean is a single measurement.")
-        metric = st.selectbox("Metric to plot", replicates.VALUE_COLUMNS,
-                              key=f"cmp_metric_{selected_run}")
-        _render_condition_errorbar(comp, metric)
+        mc1, mc2 = st.columns([3, 2])
+        metric = mc1.selectbox("Metric to plot", replicates.VALUE_COLUMNS,
+                               key=f"cmp_metric_{selected_run}")
+        err_label = mc2.radio("Error bars", ["std", "SEM"], horizontal=True,
+                              key=f"cmp_err_{selected_run}",
+                              help="std = replicate spread; SEM = std/√n = uncertainty of "
+                                   "the mean. n=1 conditions show no bar.")
+        _render_condition_errorbar(comp, metric, "sem" if err_label == "SEM" else "std")
+        st.caption("Measured error bars vs the model point: **a residual smaller than the "
+                   "replicate spread is indistinguishable from experimental noise** (see "
+                   "`within_meas_std_*` in the table).")
         with st.expander("Advanced: individual replicate scatter"):
             ind = replicates.individual_replicate_comparison(
                 data, run_manager.read_mapping(selected_run), manifest)
@@ -2827,8 +3031,12 @@ def _render_condition_results(selected_run: str | None) -> None:
     st.markdown("---")
 
 
-def _render_condition_errorbar(comp: pd.DataFrame, metric: str) -> None:
-    """Measured mean ± std vs PHREEQC prediction, one point per condition."""
+def _render_condition_errorbar(comp: pd.DataFrame, metric: str, err_kind: str = "std") -> None:
+    """Measured mean ± (std|SEM) vs PHREEQC prediction, one point per condition.
+
+    A condition with no spread (n=1, error is NaN) is drawn as a mean marker with **no
+    error bar** — never a fake zero — and is listed below the plot.
+    """
     label = replicates.RESIDUAL_LABEL[metric]
     sub = comp.dropna(subset=[f"mean_{metric}"]).reset_index(drop=True)
     if sub.empty:
@@ -2836,10 +3044,21 @@ def _render_condition_errorbar(comp: pd.DataFrame, metric: str) -> None:
         return
     import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
 
+    err = pd.to_numeric(sub[f"{err_kind}_{metric}"], errors="coerce")
+    has_err = err.notna()
     x = list(range(len(sub)))
     fig, ax = plt.subplots(figsize=(7, 3.6))
-    ax.errorbar(x, sub[f"mean_{metric}"], yerr=sub[f"std_{metric}"].fillna(0.0),
-                fmt="o", capsize=4, label="measured mean ± std")
+    err_name = "SEM" if err_kind == "sem" else "std"
+    # Points with a spread get an error bar; n=1 points are plain markers (no fake 0).
+    if has_err.any():
+        idx = [i for i in x if has_err.iloc[i]]
+        ax.errorbar([x[i] for i in idx], sub[f"mean_{metric}"].iloc[idx], yerr=err.iloc[idx],
+                    fmt="o", capsize=4, label=f"measured mean ± {err_name}")
+    if (~has_err).any():
+        idx = [i for i in x if not has_err.iloc[i]]
+        ax.scatter([x[i] for i in idx], sub[f"mean_{metric}"].iloc[idx],
+                   marker="o", facecolors="none", edgecolors="C0",
+                   label="measured mean (n=1, no spread)")
     pheq = pd.to_numeric(sub[f"phreeqc_{label}"], errors="coerce")
     if pheq.notna().any():
         ax.scatter(x, pheq, marker="x", color="red", s=60, label="PHREEQC")
@@ -2850,10 +3069,18 @@ def _render_condition_errorbar(comp: pd.DataFrame, metric: str) -> None:
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+    n1 = sub.loc[~has_err, "condition_key"].astype(str).tolist()
+    if n1:
+        st.caption(f"n=1 (no error bar): {', '.join(f'`{c}`' for c in n1)}.")
 
 
-def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
-    """Matplotlib plot for the measured-data overview (points colored by condition)."""
+def _render_overview_plot(ov: dict, variable: str, overlay: bool,
+                          err_kind: str = "std") -> list[str]:
+    """Measured-data overview plot. Returns the list of n=1 conditions (no error bar).
+
+    Error bars use ``err_kind`` (``"std"`` or ``"sem"``). A single-replicate condition
+    has no spread, so its mean is drawn **without** an error bar (never a fake zero).
+    """
     import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
 
     plot = ov["plot"]
@@ -2862,6 +3089,19 @@ def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
     cmap = plt.get_cmap("tab10" if len(conditions) <= 10 else "tab20")
     color = {c: cmap(i % cmap.N) for i, c in enumerate(conditions)}
     stats = {str(r["condition_key"]): r for _, r in ov["group_stats"].iterrows()}
+    n1: list[str] = []
+
+    def _bar(x, c, ecolor):
+        g = stats[c]
+        err = g.get(err_kind)
+        if err is None or pd.isna(err):     # n=1 → omit the bar, just mark the mean
+            ax.errorbar(x, g["mean"], yerr=None, fmt="_", color=ecolor,
+                        elinewidth=1.6, zorder=2)
+            if str(c) not in n1:
+                n1.append(str(c))
+        else:
+            ax.errorbar(x, g["mean"], yerr=err, fmt="_", color=ecolor,
+                        capsize=4, elinewidth=1.6, zorder=2)
 
     fig, ax = plt.subplots(figsize=(7.5, 4))
     use_time = ov["has_time"] and tcol in plot.columns and plot[tcol].notna().any()
@@ -2872,10 +3112,7 @@ def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
             ax.scatter(pd.to_numeric(sub[tcol], errors="coerce"), sub["value"],
                        color=color[c], label=c, edgecolor="black", linewidth=0.3, zorder=3)
             if overlay and c in stats:
-                xt = pd.to_numeric(sub[tcol], errors="coerce").mean()
-                g = stats[c]
-                ax.errorbar(xt, g["mean"], yerr=(0.0 if pd.isna(g["std"]) else g["std"]),
-                            fmt="_", color=color[c], capsize=4, elinewidth=1.6, zorder=2)
+                _bar(pd.to_numeric(sub[tcol], errors="coerce").mean(), c, color[c])
         ax.set_xlabel(tcol)
     else:
         pos = {c: i for i, c in enumerate(conditions)}
@@ -2884,9 +3121,7 @@ def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
             ax.scatter([pos[c]] * len(sub), sub["value"], color=color[c], label=c,
                        edgecolor="black", linewidth=0.3, zorder=3)
             if overlay and c in stats:
-                g = stats[c]
-                ax.errorbar(pos[c], g["mean"], yerr=(0.0 if pd.isna(g["std"]) else g["std"]),
-                            fmt="_", color="black", capsize=5, elinewidth=1.6, zorder=2)
+                _bar(pos[c], c, "black")
         ax.set_xticks(range(len(conditions)))
         ax.set_xticklabels(conditions, rotation=45, ha="right", fontsize=7)
 
@@ -2897,6 +3132,7 @@ def _render_overview_plot(ov: dict, variable: str, overlay: bool) -> None:
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+    return n1
 
 
 def _render_measured_overview(selected_run: str) -> None:
@@ -2912,14 +3148,19 @@ def _render_measured_overview(selected_run: str) -> None:
     if not variables:
         st.info(
             "No numeric measured variables in this run yet — enter pH or ICP values in "
-            "the **Data** tab to see the overview."
+            "the **Import** tab to see the overview."
         )
         return
 
-    c1, c2 = st.columns([3, 2])
+    c1, c2, c3 = st.columns([3, 2, 2])
     variable = c1.selectbox("Measured variable", variables, key=f"overview_var_{selected_run}")
-    overlay = c2.checkbox("Overlay condition mean ± std", value=True,
+    overlay = c2.checkbox("Overlay condition mean ± error", value=True,
                           key=f"overview_overlay_{selected_run}")
+    err_label = c3.radio("Error bars", ["std", "SEM"], horizontal=True,
+                         key=f"overview_err_{selected_run}",
+                         help="std = spread of the replicates; SEM = std/√n = uncertainty "
+                              "of the mean. Single-replicate conditions show no bar.")
+    err_kind = "sem" if err_label == "SEM" else "std"
 
     ov = measured_overview.prepare_overview(data, variable)
     rep_counts = ov["replicate_counts"]
@@ -2937,7 +3178,15 @@ def _render_measured_overview(selected_run: str) -> None:
     if ov["plot"].empty:
         st.info(f"No numeric `{variable}` values to plot.")
         return
-    _render_overview_plot(ov, variable, overlay)
+    n1 = _render_overview_plot(ov, variable, overlay, err_kind)
+    if overlay:
+        which = "standard error of the mean (SEM = std/√n)" if err_kind == "sem" else \
+            "standard deviation (std, ddof=1)"
+        st.caption(f"Error bars show the **{which}** per condition; replicate counts (n) "
+                   f"per condition are listed above.")
+        if n1:
+            st.caption(f"⚠️ n=1 (no error bar): {', '.join(f'`{c}`' for c in sorted(n1))} — "
+                       "a single measurement has no spread.")
 
 
 def _inclusion_variables(comp: pd.DataFrame) -> list[str]:
@@ -3018,7 +3267,7 @@ def _render_comparison_inclusion(selected_run: str) -> None:
     if inc["collapse_warning"]:
         st.warning(
             "🔁 " + inc["collapse_message"]
-            + " See the **Match PHREEQC** tab → *Conditions needing new PHREEQC "
+            + " See the **Match** tab → *Conditions needing new PHREEQC "
             "simulations* for the list."
         )
 
@@ -3028,6 +3277,233 @@ def _render_comparison_inclusion(selected_run: str) -> None:
         inc["validity"].upper(), inc["validity_message"],
         level=inc["validity"] if inc["validity"] in app_ui.STATUS_STYLES else "info",
     )
+
+
+def _bias_band_figure(points: pd.DataFrame, element: str, unit: str, band: dict | None):
+    """Per-condition residual scatter with a shaded mean±std band (where sufficient)."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    fig, ax = plt.subplots(figsize=(7.5, 3.8))
+    conditions = sorted(points["condition_key"].unique())
+    xpos = {ck: i for i, ck in enumerate(conditions)}
+    ax.axhline(0.0, color="#888", lw=1, ls="--", zorder=1)
+    if band is not None:
+        mean, std = band["mean"], band["std"]
+        ax.axhspan(mean - std, mean + std, color="#3b82f6", alpha=0.12, zorder=0,
+                   label=f"pooled mean ± std (n={band['n']})")
+        ax.axhline(mean, color="#3b82f6", lw=1.4, zorder=2)
+    ax.scatter([xpos[c] for c in points["condition_key"]], points["residual"],
+               color="#1f77b4", s=42, zorder=3, edgecolor="white", linewidth=0.5)
+    ax.set_xticks(range(len(conditions)))
+    ax.set_xticklabels(conditions, rotation=30, ha="right", fontsize=8)
+    ax.set_ylabel(f"residual ({unit}) = measured − model")
+    ax.set_title(f"{element}: exact-mapped residuals by condition")
+    if band is not None:
+        ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def _render_systematic_bias(selected_run: str) -> None:
+    """"Systematic bias (exact mappings only)" — descriptive residual statistics.
+
+    Reads this run's comparison, takes the inclusion module's status join (single
+    source), and shows the per-element/per-condition mean±std bias over **exact**
+    mappings only. Always carries the explicit non-claim line; below ``min_n`` it
+    shows "insufficient exact pairs", never a number.
+    """
+    comp_path = _run_comparison_path(selected_run)
+    if comp_path is None or not comp_path.exists():
+        return
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    if not any(_has_numeric(comp, f"residual_{el}")
+               for el in (*config.RESIDUAL_ELEMENTS, "pH")):
+        return  # no residuals at all → nothing to summarise
+
+    data = run_manager.read_data_file(selected_run)
+    mapping = run_manager.read_mapping(selected_run)
+    manifest = _manifest_if_available()
+    statuses = residual_stats.collect_sample_statuses(
+        data, mapping, comp, manifest=manifest)
+    table = residual_stats.bias_table(comp, statuses)
+
+    with st.expander("Systematic bias (exact mappings only)"):
+        st.caption(
+            "Mean residual (`measured − model`) over exact-mapped pairs only. "
+            "Positive → the model underpredicts; negative → it overpredicts."
+        )
+        # The explicit non-claim, shown every time the table renders.
+        app_ui.render_warning_panel(
+            "Descriptive only — not a correction model",
+            residual_stats.NON_CLAIM_LINE, level="preliminary",
+        )
+        if table.empty:
+            st.info(
+                "No exact-mapped comparisons yet, so no bias can be estimated. "
+                "Bias is computed only over mappings classified **exact** in the "
+                "Match tab — scenario-level, unsafe and unmapped rows are excluded."
+            )
+            return
+
+        # Display frame: hide the mean for insufficient rows (no over-claiming).
+        disp = table.copy()
+        disp["mean_residual_shown"] = [
+            (f"{r.mean_residual:+.3g}" if r.sufficient
+             else f"insufficient ({int(r.n_exact_pairs)} of {residual_stats.DEFAULT_MIN_N})")
+            for r in table.itertuples()
+        ]
+        disp = disp[["element", "condition_key", "n_exact_pairs",
+                     "mean_residual_shown", "std", "sem", "unit", "sufficient"]]
+        st.dataframe(disp, use_container_width=True, hide_index=True, height=260)
+
+        # Plain-language captions for the rows that meet the threshold.
+        good = table[table["sufficient"]]
+        if not good.empty:
+            for r in good.itertuples():
+                st.markdown(f"- {residual_stats.describe_bias_row(r._asdict())}")
+        else:
+            st.caption(
+                f"No condition yet reaches {residual_stats.DEFAULT_MIN_N} exact pairs — "
+                "estimates are shown as counts, not means."
+            )
+
+        # Per-element residual band (shaded mean±std where the pooled estimate is sufficient).
+        bands = residual_stats.sufficient_bias_bands(table)
+        plot_elements = [el for el in (*config.RESIDUAL_ELEMENTS, "pH")
+                         if not residual_stats.exact_residuals(comp, statuses, el).empty]
+        if plot_elements:
+            element = st.selectbox("Residual band — element", plot_elements,
+                                   key=f"bias_elem_{selected_run}")
+            pts = residual_stats.exact_residuals(comp, statuses, element)
+            unit = dict((e, u) for e, _c, u in residual_stats.element_specs()).get(element, "mM")
+            band = bands.get(element)
+            st.pyplot(_bias_band_figure(pts, element, unit, band))
+            if band is None:
+                st.caption(
+                    "No shaded band drawn — the pooled estimate for this element has "
+                    f"fewer than {residual_stats.DEFAULT_MIN_N} exact pairs."
+                )
+
+
+def _residual_elements_with_data(comp: pd.DataFrame) -> list[str]:
+    """Elements (Ca/Si/Al/Fe/pH) that actually carry a numeric residual column."""
+    return [el for el in (*config.RESIDUAL_ELEMENTS, "pH")
+            if _has_numeric(comp, f"residual_{el}")]
+
+
+def _render_residual_correction(selected_run: str) -> None:
+    """"Residual correction (experimental)" — hard-gated GP, raw-vs-corrected only.
+
+    Shows gate progress per element (a train button only when the gate is met),
+    LOCO-vs-baseline honesty for trained models, and an **off-by-default** corrected
+    overlay that always draws raw PHREEQC + correction + measured together. Corrected
+    values never feed mapping/validity status or the comparison CSV.
+    """
+    comp_path = _run_comparison_path(selected_run)
+    if comp_path is None or not comp_path.exists():
+        return
+    comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    elements = _residual_elements_with_data(comp)
+    if not elements:
+        return
+
+    with app_ui.advanced_expander("Residual correction (experimental) — GP, raw-vs-corrected"):
+        try:
+            from flyash_phreeqc_ml.ml import residual_model as _rm  # lazy: optional sklearn
+        except Exception as exc:  # pragma: no cover - optional dependency
+            st.info(f"scikit-learn not available ({exc}). Install requirements to train "
+                    "a residual-correction model.")
+            return
+
+        st.caption(
+            "A Gaussian-process model of the residual (`measured − model`) from condition "
+            "metadata. **Experimental** — it is gated on data sufficiency, validated "
+            "leave-one-condition-out against the constant-bias baseline, and shown only as a "
+            "raw-vs-corrected overlay. " + _rm.NON_CLAIM_LINE
+        )
+
+        data = run_manager.read_data_file(selected_run)
+        mapping = run_manager.read_mapping(selected_run)
+        manifest = _manifest_if_available()
+        statuses = residual_stats.collect_sample_statuses(
+            data, mapping, comp, manifest=manifest)
+        try:
+            model_dir = run_manager.residual_model_dir(selected_run)
+        except run_manager.RunManagerError:
+            st.info("This run type has no residual-correction model.")
+            return
+        trained = _rm.load_residual_models(model_dir)
+
+        for element in elements:
+            gate = _rm.gate_status(comp, statuses, element)
+            st.markdown(f"**{element}** — {gate.progress_message()}")
+            if not gate.meets:
+                st.caption(
+                    f"Not enough exact-mapped data yet. Need ≥{gate.min_pairs} exact pairs "
+                    f"across ≥{gate.min_conditions} conditions before a model can be trained — "
+                    "use the systematic-bias bands above in the meantime."
+                )
+                continue
+
+            if st.button(f"Train residual-correction model — {element}",
+                         key=f"train_resid_{selected_run}_{element}"):
+                try:
+                    model = _rm.train_element_model(
+                        comp, statuses, element, run_name=selected_run)
+                    _rm.save_residual_model(model, model_dir)
+                    st.success(f"Trained + saved residual model for {element}.")
+                    trained = _rm.load_residual_models(model_dir)
+                except _rm.ResidualModelGateError as exc:  # pragma: no cover - gated above
+                    st.error(str(exc))
+                except Exception as exc:  # pragma: no cover - defensive
+                    st.error(f"Training failed: {exc}")
+
+            model = trained.get(element)
+            if model is None:
+                st.caption("Gate met — train a model to see LOCO validation and the overlay.")
+                continue
+
+            loco = model.card.get("loco") or {}
+            if "model_loco_rmse" in loco:
+                beats = bool(loco.get("beats_baseline"))
+                msg = (f"LOCO RMSE {loco['model_loco_rmse']:.3g} vs constant-bias baseline "
+                       f"{loco['baseline_loco_rmse']:.3g} ({loco['n_folds']} held-out conditions).")
+                if beats:
+                    app_ui.render_warning_panel(
+                        "Correction beats the constant-bias baseline (LOCO)", msg, level="exact")
+                else:
+                    app_ui.render_warning_panel(
+                        "Correction does NOT beat the constant-bias baseline — stay with bias bands",
+                        msg + " The leave-one-condition-out error is not lower than simply applying "
+                        "the mean bias, so the correction is not recommended for unseen conditions.",
+                        level="unsafe")
+            else:
+                st.caption("LOCO not available (need ≥2 evaluable conditions).")
+
+            show = st.checkbox(
+                f"Show 'Corrected (experimental)' overlay — {element}", value=False,
+                key=f"corr_overlay_{selected_run}_{element}",
+                help="Off by default. Draws raw PHREEQC, the correction, its 95% interval, "
+                     "and the measured value together — never the corrected value alone.")
+            if show:
+                cols = _rm.element_columns(element)
+                ann = replicates.annotate(comp, profiles.FLY_ASH_PROFILE)
+                ex_mask = residual_stats.exact_mask(ann, statuses).values
+                subset = ann[ex_mask].copy()
+                subset = subset[pd.to_numeric(subset[cols["phreeqc"]], errors="coerce").notna()]
+                if subset.empty:
+                    st.caption("No exact-mapped rows with a model prediction to overlay.")
+                else:
+                    overlay = _rm.corrected_overlay(model, subset)
+                    overlay["measured"] = pd.to_numeric(
+                        subset[cols["measured"]], errors="coerce").values
+                    st.pyplot(compare_plots.corrected_overlay_figure(
+                        overlay, element, model.unit))
+                    st.caption(
+                        "**Corrected = raw PHREEQC + predicted residual.** Display only — these "
+                        "corrected values do not change mapping status, validity status, or the "
+                        "comparison CSV's residual columns.")
+            st.divider()
 
 
 def _render_results_tab(selected_run: str | None) -> None:
@@ -3059,12 +3535,7 @@ def _render_results_tab(selected_run: str | None) -> None:
         "provenance, plus the validation and sustainability tables in `outputs/tables/`."
     )
 
-    # First plot family — measured data only, before/without any model comparison.
-    # Renders even when phreeqc_results.csv is missing and no mappings exist.
-    if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
-        _render_measured_overview(selected_run)
-        st.divider()
-
+    # The measured-data-only overview now lives in the **Validate** tab (relocation).
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
         _render_stale_results_warning(selected_run)
         data = run_manager.read_data_file(selected_run)
@@ -3085,37 +3556,81 @@ def _render_results_tab(selected_run: str | None) -> None:
     # above the residual figures.
     if summary_rt in run_manager.LAB_LIKE_RUN_TYPES and selected_run:
         _render_comparison_inclusion(selected_run)
+        _render_systematic_bias(selected_run)
+        _render_residual_correction(selected_run)
     _render_comparison_figures(selected_run)
     st.info(
         "📈 **Interpreting the plots:** if measured values vary while PHREEQC "
         "predictions stay constant, this usually means the mapping is too coarse or "
         "more PHREEQC simulations are needed."
     )
-
-    for label, name in [
-        ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
-        ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
-    ]:
-        path = config.TABLES_DIR / name
-        if path.exists():
-            with st.expander(f"{label} — {name}"):
-                st.dataframe(
-                    _read_csv(str(path), path.stat().st_mtime),
-                    use_container_width=True, height=300,
-                )
+    st.caption("Build a shareable report in the **Export** tab; data-quality + "
+               "calculation validation is in the **Validate** tab.")
 
 
-def _render_run_and_results_tab(selected_run: str | None) -> None:
-    """Combined workflow execution + results (the two used to be separate tabs)."""
-    app_ui.render_page_header(
-        "Run + Results — compare, validate, interpret",
-        "Run the workflow for the selected run, then read the measured-data overview, "
-        "the measured-vs-model comparison, residual analysis, and validation tables.",
-        eyebrow="Step 3 · Compare & validate",
+def _render_export_report(selected_run: str | None) -> None:
+    """"Export validation report" — build the self-contained bundle + offer a zip.
+
+    Lab-like runs only. Builds ``experiments/<run>/outputs/validation_report_<ts>/``
+    (report.html + CSVs + figures + MANIFEST.json), which itself logs an audit event,
+    then offers the folder as a zip download.
+    """
+    if not selected_run:
+        return
+    try:
+        rt = run_manager.load_run_config(selected_run).get("run_type")
+    except run_manager.RunManagerError:
+        return
+    if rt not in run_manager.LAB_LIKE_RUN_TYPES:
+        return
+
+    app_ui.section_header("Validation report",
+                          "a self-contained bundle a reviewer can open without the app")
+    st.caption(
+        "Builds `experiments/<run>/outputs/validation_report_<ts>/` — a self-contained "
+        "`report.html` (inline CSS + embedded figures), the supporting CSVs "
+        "(measured / predictions / mapping / residuals / excluded / needed simulations), "
+        "the audit log, and a `MANIFEST.json` of SHA-256 hashes. The report header always "
+        "carries the validity status. (PDF export is future work.)"
     )
+    if st.button("Export validation report", key=f"export_report_{selected_run}"):
+        with st.spinner("Building validation report…"):
+            try:
+                out = report.build_report(selected_run)
+            except Exception as exc:  # never let a build error crash the tab
+                st.error(f"Report build failed: {exc}")
+                return
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in sorted(out.iterdir()):
+                    if p.is_file():
+                        zf.write(p, arcname=f"{out.name}/{p.name}")
+            st.session_state[f"report_zip_{selected_run}"] = (out.name, buf.getvalue())
+            st.success(f"Built `{_rel(out)}`. Download below.")
+
+    blob = st.session_state.get(f"report_zip_{selected_run}")
+    if blob:
+        name, data_bytes = blob
+        st.download_button("⬇️ Download report (.zip)", data=data_bytes,
+                           file_name=f"{name}.zip", mime="application/zip",
+                           key=f"report_dl_{selected_run}")
+
+
+def _render_compare_tab(selected_run: str | None) -> None:
+    """Run the workflow and read the comparison results (+ interpretation tools)."""
+    app_ui.render_page_header(
+        "Compare — run the workflow and read the comparison",
+        f"Run the pipeline for this run, then read the measured-vs-{MODEL_NAME} "
+        "comparison: inclusion counts, residuals, systematic bias, and the validity line.",
+        eyebrow="Step 4 · Compare",
+    )
+    _render_next_step(selected_run)
+    if not selected_run:
+        st.info("Select or create a **lab_experiment** (or **plastic_composite**) run in the "
+                "sidebar, import data and add a mapping, then run the workflow here.")
+        return
     app_ui.render_workflow_steps(
-        ["Run workflow", "Measured overview", "Model comparison",
-         "Residual analysis", "Validation / audit"],
+        ["Run workflow", "Model comparison", "Residual analysis", "Interpret"],
         current=0,
     )
     app_ui.section_header("Run workflow", "execute the pipeline for this run")
@@ -3123,6 +3638,12 @@ def _render_run_and_results_tab(selected_run: str | None) -> None:
     st.divider()
     app_ui.section_header("Results", "this run's own outputs, provenance-stamped")
     _render_results_tab(selected_run)
+    st.divider()
+    _render_assistant(selected_run)
+    st.divider()
+    app_ui.section_header("Surrogate (experimental)",
+                          f"fast {MODEL_NAME} approximation — not a result path")
+    _render_surrogate_expander(selected_run)
 
 
 def _render_processed_viewer() -> None:
@@ -3145,7 +3666,7 @@ def _render_processed_viewer() -> None:
 
 def _render_legacy_global_form() -> None:
     st.write(
-        f"Submitting appends one row to `{MANUAL_ENTRY_PATH.relative_to(_PROJECT_ROOT)}` "
+        f"Submitting appends one row to `{_rel(MANUAL_ENTRY_PATH)}` "
         "(existing rows are never overwritten). Leave a field blank if not measured."
     )
     with st.form("experimental_entry", clear_on_submit=True):
@@ -3268,10 +3789,46 @@ def _render_residual_audit() -> None:
     )
 
 
+def _render_unit_registry() -> None:
+    """Molar-mass + conversion registries, rendered straight from units.py (one source)."""
+    st.markdown("**Unit registry** — the single conversion authority (`units.py`).")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.caption(f"Molar masses — {units.MOLAR_MASS_SOURCE}")
+        st.dataframe(pd.DataFrame(units.molar_mass_rows()), use_container_width=True,
+                     hide_index=True, height=240)
+    with cc2:
+        st.caption("Registered conversions (id · from → to · formula)")
+        st.dataframe(pd.DataFrame(units.conversion_registry_rows()), use_container_width=True,
+                     hide_index=True, height=240)
+
+
+def _render_conversion_verification(selected_run: str | None) -> None:
+    """Re-derive each converted column from its provenance companions and grade it."""
+    st.caption("Recomputes every converted `*_mM` column from its stored original value + "
+               "unit through the registry, catching a wrong molar mass or changed formula. "
+               "Legacy rows (imported before provenance existed) are flagged, not errored.")
+    if not selected_run:
+        st.info("Select a run to verify its unit conversions.")
+        return
+    try:
+        data = run_manager.read_data_file(selected_run)
+    except run_manager.RunManagerError:
+        st.info("This run has no data to verify.")
+        return
+    report = calculations.verify_conversions(data)
+    if report.empty:
+        st.info("No converted concentration columns with data in this run.")
+        return
+    display = report.copy()
+    display["status"] = display["status"].map(_AUDIT_STATUS_EMOJI).fillna(display["status"])
+    st.dataframe(display, use_container_width=True, hide_index=True, height=240)
+
+
 def _render_unit_calculator() -> None:
     st.markdown("**ICP unit conversion** — dilution correction then mg/L → mM.")
     c1, c2, c3 = st.columns(3)
-    element = c1.selectbox("Element", list(calculations.ATOMIC_MASSES), key="calc_unit_el")
+    element = c1.selectbox("Element", list(units.MOLAR_MASSES), key="calc_unit_el")
     reported = c2.number_input("Reported ICP (mg/L)", min_value=0.0, value=5.0,
                                step=1.0, key="calc_unit_mgl")
     dil = c3.number_input("Dilution factor", min_value=0.0, value=10.0,
@@ -3302,7 +3859,7 @@ def _render_ls_calculator() -> None:
         st.warning("Enter a fly-ash mass greater than 0 to compute L/S.")
 
 
-def _render_calc_verification_tab(dev_mode: bool) -> None:
+def _render_calc_verification_tab(dev_mode: bool, selected_run: str | None = None) -> None:
     st.subheader("Calculation verification / formula audit")
     st.info(
         "**PHREEQC is an equilibrium/speciation solver. This app does not rederive PHREEQC "
@@ -3314,6 +3871,14 @@ def _render_calc_verification_tab(dev_mode: bool) -> None:
     st.caption("Each formula, its inputs/outputs, units, and whether the app computes it or "
                "parses it from PHREEQC.")
     _render_formula_registry(dev_mode)
+
+    st.divider()
+    st.markdown("### Unit registry")
+    _render_unit_registry()
+
+    st.divider()
+    st.markdown("### Unit-conversion re-derivation check")
+    _render_conversion_verification(selected_run)
 
     st.divider()
     st.markdown("### Per-row residual audit")
@@ -3372,15 +3937,17 @@ def _render_help_tab() -> None:
     st.markdown(
         "1. **Start** — create or open a run in the sidebar (a 'save file' for one "
         "experiment set) and check the status + workflow checklist.\n"
-        "2. **Data** — add measured rows (lab), upload/enter literature rows, or add "
-        "synthetic demo rows, depending on run type.\n"
-        "3. **Match PHREEQC** (lab runs) — link each `sample_id` to the PHREEQC result row "
+        "2. **Import** — add measured rows (lab), upload/enter literature rows, or add "
+        "synthetic demo rows, depending on run type, and review unit conversions.\n"
+        "3. **Validate** — measured-data overview, data-quality validation, and "
+        "calculation verification (the formula/unit/conversion audit).\n"
+        "4. **Match** (lab runs) — link each `sample_id` to the model result row "
         "for the same chemistry.\n"
-        "4. **Run + Results** — export to the pipeline, run Phase 1 → validate → compare → "
-        "sustainability, then read the measured-vs-PHREEQC comparison, pH residuals, "
-        "validation, and sustainability proxies.\n"
-        "5. **Audit / Help** — formula audit, calculators, raw PHREEQC tables/figures, and "
-        "this reference."
+        "5. **Compare** — export to the pipeline, run Phase 1 → validate → compare → "
+        "sustainability, then read the measured-vs-model comparison, residuals, and "
+        "the validity line.\n"
+        "6. **Export** — build a shareable validation report, download the audit "
+        "trail, and read this user guide."
     )
 
     st.subheader("Run types")
@@ -3497,7 +4064,7 @@ def _render_surrogate_expander(selected_run: str | None) -> None:
             return
         models = _sur.load_surrogate(sdir)
         if not models:
-            st.info(f"No trained surrogate models in `{sdir.relative_to(_PROJECT_ROOT)}`. "
+            st.info(f"No trained surrogate models in `{_rel(sdir)}`. "
                     "Run scripts/10 to build a dataset, then train + save models there.")
             return
 
@@ -3539,36 +4106,219 @@ def _render_surrogate_expander(selected_run: str | None) -> None:
         st.caption("Surrogate approximation of PHREEQC — not a measurement, not a PHREEQC run.")
 
 
-def _render_audit_help_tab(dev_mode: bool, selected_run: str | None = None) -> None:
-    """Combined audit + reference tab: formula audit, calculators, raw PHREEQC
-    outputs (in an expander), the experimental surrogate, and the Help / Safety
-    reference."""
+def _render_audit_trail(selected_run: str | None) -> None:
+    """"Audit trail" — the run's append-only event log, filterable + downloadable.
+
+    The JSONL file is itself the export; the table just makes it readable (newest
+    first, filtered by event_type). The log records actions/ids/counts/hashes only —
+    never measured values.
+    """
+    app_ui.section_header("Audit trail",
+                          "append-only log of how this run's comparison was produced")
+    if not selected_run:
+        st.info("Select a run to see its audit trail.")
+        return
+    log = audit.read_audit(selected_run)
+    if log.empty:
+        st.caption("No audit events recorded for this run yet. Import data, accept "
+                   "mappings, and run the workflow to populate the trail.")
+        return
+
+    present = list(dict.fromkeys(log["event_type"].tolist()))
+    chosen = st.multiselect("Filter by event type", present, default=present,
+                            key=f"audit_filter_{selected_run}")
+    view = log[log["event_type"].isin(chosen)] if chosen else log
+    # Newest first, with the payload rendered as compact JSON text.
+    view = view.iloc[::-1].reset_index(drop=True)
+    display = view.copy()
+    display["payload"] = display["payload"].apply(
+        lambda p: json.dumps(p, ensure_ascii=False, default=str))
+    st.dataframe(display, use_container_width=True, height=320, hide_index=True)
+    st.caption(f"{len(log)} event(s) total · showing {len(view)} after filter. "
+               "The log is append-only — events are never edited or deleted.")
+
+    raw = audit.audit_log_path(selected_run)
+    if raw.exists():
+        st.download_button(
+            "⬇️ Download audit_log.jsonl",
+            data=raw.read_bytes(),
+            file_name=f"{selected_run}_audit_log.jsonl",
+            mime="application/x-ndjson",
+            key=f"audit_dl_{selected_run}",
+        )
+
+
+def _render_assistant_answer_trace(trace: list) -> None:
+    """The collapsed 'data used' panel: every tool call + its returned summary."""
+    if not trace:
+        return
+    with st.expander(f"Data used — {len(trace)} tool call(s)", expanded=False):
+        st.caption("Every number in the answer above comes from these read-only tool "
+                   "results, so the answer is auditable.")
+        for i, step in enumerate(trace, start=1):
+            st.markdown(f"**{i}. `{step.get('tool', '')}`**"
+                        + (f"  ·  input `{step.get('input')}`" if step.get("input") else ""))
+            st.caption(str(step.get("summary", "")))
+
+
+def _render_assistant(selected_run: str | None) -> None:
+    """"Ask the assistant" — grounded Q&A about the selected run (interpretation layer).
+
+    Scoped to the selected run, answers ONLY via the read-only tools in
+    :mod:`ai.assistant`, shows a collapsed "data used" trace under each answer, and is
+    gated by the same per-session data-leaves-machine consent as the import-assist.
+    Conversation lives in ``st.session_state`` only — never written to run files.
+    """
+    app_ui.section_header("Ask the assistant (experimental)",
+                          "grounded answers about this run — read-only, cites its sources")
+    if not selected_run:
+        st.info("Select a run in the sidebar to ask about it.")
+        return
+    if not ai_assistant.is_enabled():
+        st.caption(
+            "Disabled: set `ANTHROPIC_API_KEY` and install the `anthropic` SDK to enable the "
+            "assistant. It answers only from this run's own tool results — it never invents "
+            "numbers and never changes anything.")
+        return
+
+    st.caption(ai_assistant.ASSISTANT_DATA_NOTICE)
+    consent = st.checkbox(ai_assistant.ASSISTANT_CONSENT_LABEL, key="assistant_consent")
+
+    msgs_key = f"assistant_msgs_{selected_run}"
+    msgs = st.session_state.setdefault(msgs_key, [])  # session-only; never persisted
+
+    for m in msgs:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"]) if m["content"] else st.caption("(no answer)")
+            if m["role"] == "assistant":
+                if m.get("error"):
+                    st.error(m["error"])
+                _render_assistant_answer_trace(m.get("trace") or [])
+
+    with st.form(key=f"assistant_form_{selected_run}", clear_on_submit=True):
+        question = st.text_area(
+            "Ask about this run",
+            placeholder="e.g. Is this comparison validated? What should I test next?",
+            height=80, disabled=not consent)
+        submitted = st.form_submit_button("Ask", disabled=not consent)
+
+    if submitted and question.strip():
+        history = [{"role": m["role"], "content": m["content"]}
+                   for m in msgs if m.get("content")]
+        with st.spinner("Thinking (calling read-only tools)…"):
+            ans = ai_assistant.answer(selected_run, question.strip(), history=history)
+        msgs.append({"role": "user", "content": question.strip()})
+        msgs.append({"role": "assistant", "content": ans.text,
+                     "trace": ans.trace, "error": None if ans.ok else ans.error})
+        st.rerun()
+
+    if msgs:
+        if st.button("Clear conversation", key=f"assistant_clear_{selected_run}"):
+            st.session_state[msgs_key] = []
+            st.rerun()
+
+
+def _render_start_tab(selected_run: str | None) -> None:
+    """Start tab: the overview/status + a pointer to the in-app help."""
+    _render_overview(selected_run)
+    st.divider()
+    st.caption("📖 New here? The **Export** tab → *Help & user guide* has getting-started, "
+               "input formats, the mapping guide, how to read results, and data safety.")
+
+
+def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
+    """Validate tab: measured-data overview, data validation, and calculation audit."""
     app_ui.render_page_header(
-        "Audit & Help — transparency and reference",
-        "Verify every downstream calculation, browse model outputs, and read the "
-        "app philosophy, mapping-status definitions, and limitations.",
-        eyebrow="Reference",
+        "Validate — check the data and the calculations",
+        "Review the measured-data overview, the data-quality validation, and verify "
+        f"every downstream calculation before trusting a {MODEL_NAME} comparison.",
+        eyebrow="Step 3 · Validate",
     )
-    _render_calc_verification_tab(dev_mode)
+    _render_next_step(selected_run)
+    if not selected_run:
+        st.info("Select or create a run in the sidebar. Lab runs show a measured-data "
+                "overview and data validation here; calculation verification applies to any run.")
+        return
+    rt = run_manager.load_run_config(selected_run).get("run_type")
+    lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES
+
+    if lab_like:
+        app_ui.section_header("Measured-data overview",
+                              "measured data only — no model comparison")
+        _render_measured_overview(selected_run)
+        st.divider()
+        _render_basic_validation_summary(selected_run)
+        st.divider()
+    else:
+        st.info("This run type has no measured-data overview or lab validation. The "
+                "calculation verification below still applies.")
+
+    _render_calc_verification_tab(dev_mode, selected_run)
 
     st.divider()
-    st.subheader("PHREEQC raw outputs & model-only plots")
-    st.caption(
-        "These tables and figures are **PHREEQC model predictions**, not measured "
-        "experimental data."
-    )
-    with st.expander("Processed PHREEQC tables", expanded=False):
+    st.subheader("Model raw outputs & model-only plots")
+    st.caption(f"These tables and figures are **{MODEL_NAME} model predictions**, not "
+               "measured experimental data.")
+    with st.expander(f"Processed {MODEL_NAME} tables", expanded=False):
         _render_processed_viewer()
-    with st.expander("PHREEQC model-output figures", expanded=False):
+    with st.expander(f"{MODEL_NAME} model-output figures", expanded=False):
         _render_phreeqc_only_figures()
 
     st.divider()
-    app_ui.section_header("Surrogate (experimental)",
-                          "fast PHREEQC approximation — not a result path")
-    _render_surrogate_expander(selected_run)
+    app_ui.section_header("Validation & sustainability tables", "from the QA/QC scripts")
+    any_table = False
+    for label, name in [
+        ("Validation report", config.EXPERIMENTAL_VALIDATION_REPORT_CSV),
+        ("Sustainability score", config.SUSTAINABILITY_SCORE_CSV),
+    ]:
+        path = config.TABLES_DIR / name
+        if path.exists():
+            any_table = True
+            with st.expander(f"{label} — {name}"):
+                st.dataframe(_read_csv(str(path), path.stat().st_mtime),
+                             use_container_width=True, height=300)
+    if not any_table:
+        st.caption("No validation/sustainability tables yet — run the workflow in the "
+                   "**Compare** tab to generate them.")
+
+
+def _render_user_guide() -> None:
+    """Render the markdown user guide (docs/user_guide/) so docs live in one place."""
+    guide_dir = _PROJECT_ROOT / "docs" / "user_guide"
+    order = ["getting_started.md", "input_formats.md", "mapping_guide.md",
+             "interpreting_results.md", "data_safety.md", "faq.md"]
+    files = [f for f in order if (guide_dir / f).exists()]
+    files += sorted(p.name for p in guide_dir.glob("*.md") if p.name not in order) \
+        if guide_dir.exists() else []
+    if not files:
+        st.info("User guide not found (expected markdown in `docs/user_guide/`).")
+        return
+    titles = {f: f.replace("_", " ").replace(".md", "").title() for f in files}
+    choice = st.selectbox("Guide page", files, format_func=lambda f: titles[f],
+                          key="user_guide_choice")
+    st.markdown((guide_dir / choice).read_text(encoding="utf-8"))
+
+
+def _render_export_tab(selected_run: str | None) -> None:
+    """Export tab: validation report + downloads + audit trail + Help / user guide."""
+    app_ui.render_page_header(
+        "Export — share results and read the docs",
+        "Build a self-contained validation report, download the audit trail, and read "
+        "the user guide — everything a reviewer needs without the app.",
+        eyebrow="Step 5 · Export",
+    )
+    _render_next_step(selected_run)
+
+    _render_export_report(selected_run)
+    st.divider()
+    _render_audit_trail(selected_run)
 
     st.divider()
-    _render_help_tab()
+    app_ui.section_header("Help & user guide", "for someone using the app for the first time")
+    with st.expander("📖 User guide", expanded=False):
+        _render_user_guide()
+    with st.expander("Reference — design note, validation status & limitations", expanded=False):
+        _render_help_tab()
 
 
 # --------------------------------------------------------------------------- #
@@ -3597,20 +4347,22 @@ st.sidebar.divider()
 DEV_MODE = st.sidebar.checkbox(
     "🛠️ Developer explanation mode", value=False, key="dev_mode",
     help="Show deeper chemistry/statistics explanations, mainly in the "
-         "Calculation Verification tab.",
+         "Validate tab.",
 )
 
-tab_start, tab_data, tab_map, tab_run_results, tab_audit = st.tabs([
-    "Start", "Data", "Match PHREEQC", "Run + Results", "Audit / Help",
+tab_start, tab_import, tab_validate, tab_match, tab_compare, tab_export = st.tabs([
+    "Start", "Import", "Validate", "Match", "Compare", "Export",
 ])
 
 with tab_start:
-    _render_overview(SELECTED_RUN)
-with tab_data:
-    _render_data_entry_tab(SELECTED_RUN)
-with tab_map:
-    _render_mapping_tab(SELECTED_RUN)
-with tab_run_results:
-    _render_run_and_results_tab(SELECTED_RUN)
-with tab_audit:
-    _render_audit_help_tab(DEV_MODE, SELECTED_RUN)
+    _render_start_tab(SELECTED_RUN)
+with tab_import:
+    _render_import_tab(SELECTED_RUN)
+with tab_validate:
+    _render_validate_tab(SELECTED_RUN, DEV_MODE)
+with tab_match:
+    _render_match_tab(SELECTED_RUN)
+with tab_compare:
+    _render_compare_tab(SELECTED_RUN)
+with tab_export:
+    _render_export_tab(SELECTED_RUN)

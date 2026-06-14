@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import config
+from . import config, units
 
 # --------------------------------------------------------------------------- #
 # Vocabulary
@@ -266,6 +266,13 @@ def surrogate_dir(run_name: str) -> Path:
     return path
 
 
+def residual_model_dir(run_name: str) -> Path:
+    """Where this run's trained residual-correction models + cards live (gitignored)."""
+    path = run_outputs_dir(run_name) / "residual_model"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_exists(run_name: str) -> bool:
     return run_config_path(run_name).exists()
 
@@ -480,13 +487,19 @@ def missing_lab_required_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in LAB_REQUIRED_COLUMNS if c not in df.columns]
 
 
-def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace") -> Path:
+def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace",
+                       *, audit_context: dict | None = None) -> Path:
     """Write an uploaded DataFrame to a lab-type run's ``experimental_release.csv``.
 
     ``mode="replace"`` overwrites the run's CSV; ``mode="append"`` concatenates the
     new rows onto any existing ones. The frame is reindexed to the release schema
     (extra columns kept after the canonical ones). Raises :class:`RunTypeError` for
     non-lab runs, so literature/synthetic data can never land in a lab release file.
+
+    Appends one ``import`` event to the run's audit log (rows + mode + column names +
+    conversion ids — never any value). ``audit_context`` lets the caller add the file
+    name / sheet / column mapping it knows (the app does); omit it (the test does) and
+    a still-valid import event is logged.
     """
     if mode not in ("replace", "append"):
         raise ValueError(f"mode must be 'replace' or 'append', got {mode!r}")
@@ -503,6 +516,13 @@ def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace") -
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
+
+    from . import audit  # lazy: audit imports run_manager (no module-level cycle)
+    audit.log_import(run_name, n_rows=int(len(df)), mode=mode,
+                     columns=[c for c in df.columns
+                              if not units.is_conversion_provenance_column(c)],
+                     conversions=audit.conversions_from_frame(df),
+                     **(audit_context or {}))
     return path
 
 
@@ -758,7 +778,8 @@ def read_condition_mapping(run_name: str) -> pd.DataFrame:
 
 
 def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key: str,
-                          notes: str = "", override: bool = False) -> pd.DataFrame:
+                          notes: str = "", override: bool = False,
+                          mapping_status: str | None = None) -> pd.DataFrame:
     """Upsert one ``condition_key -> phreeqc_record_key`` link (+ optional notes).
 
     ``notes`` is free-text validation context (CO2/cover caveats, who mapped it,
@@ -784,6 +805,11 @@ def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key:
     path = condition_mapping_path(run_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
+
+    from . import audit  # lazy import (no module-level cycle)
+    audit.log_mapping_accepted(run_name, condition_key=ck, phreeqc_record_key=key,
+                               mapping_status=mapping_status, override=bool(override),
+                               has_notes=bool(str(notes or "").strip()))
     return out
 
 
@@ -796,8 +822,14 @@ def delete_condition_mapping_rows(run_name: str, row_indices) -> int:
     valid = sorted({int(i) for i in row_indices if 0 <= int(i) < len(df)})
     if not valid:
         return 0
+    removed_keys = (df.iloc[valid]["condition_key"].astype(str).tolist()
+                    if "condition_key" in df.columns else [])
     kept = df.drop(df.index[valid]).reset_index(drop=True)
     kept.to_csv(path, index=False)
+
+    from . import audit  # lazy import (no module-level cycle)
+    audit.log_mapping_deleted(run_name, scope="condition", n_deleted=len(valid),
+                              keys=removed_keys)
     return len(valid)
 
 
@@ -878,6 +910,11 @@ def apply_condition_mapping(run_name: str, *, use_replicate_solution: bool = Fal
 COMPARISON_FILENAME = config.COMPARISON_CSV  # comparison_measured_vs_phreeqc.csv
 COMPARISON_META_FILENAME = "comparison_meta.json"
 COMPARISON_FIGURES_DIRNAME = "figures"
+# Per-element/per-condition systematic-bias table, derived from the comparison +
+# the inclusion status join. It lives beside the comparison so the comparison's
+# provenance stamp (which fingerprints the *inputs* both are built from) already
+# covers its staleness — re-running on changed data/mapping/PHREEQC invalidates both.
+BIAS_TABLE_FILENAME = "systematic_bias.csv"
 
 # Human labels for the three provenance sources (used in stale-reason messages).
 _COMPARISON_SOURCE_LABELS = {
@@ -903,6 +940,16 @@ def comparison_meta_path(run_name: str) -> Path:
     """Path to a lab-like run's comparison provenance stamp (lab-like runs only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
     return run_outputs_dir(run_name) / COMPARISON_META_FILENAME
+
+
+def bias_table_path(run_name: str) -> Path:
+    """Path to a lab-like run's systematic-bias table (lab-like runs only).
+
+    Written alongside the comparison; its staleness is covered by the comparison's
+    provenance stamp because both derive from the same three inputs.
+    """
+    require_run_type(run_name, LAB_LIKE_RUN_TYPES)
+    return run_outputs_dir(run_name) / BIAS_TABLE_FILENAME
 
 
 def has_comparison(run_name: str) -> bool:

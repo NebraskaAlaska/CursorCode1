@@ -43,10 +43,28 @@ RESIDUAL_LABEL = {"final_pH": "pH", "Ca_mM": "Ca", "Si_mM": "Si", "Al_mM": "Al"}
 
 CONDITION_KEY_COLUMN = "condition_key"
 REPLICATE_ID_COLUMN = "replicate_id"
+BATCH_ID_COLUMN = "batch_id"
 
+# The three replicate *roles* — what a repeated sample_id actually means. This is the
+# notion the dataset profile distinguishes (see profiles.DatasetProfile batch fields).
+REPLICATE_ROLE_DEFINITIONS = {
+    "time_point":
+        "A different reaction time of the same condition. Separated by condition_key "
+        "(time_min is part of the key) — never averaged across times.",
+    "batch":
+        "A distinct preparation / batch of the same condition. Part of condition_key "
+        "only when the profile sets group_by_batch=True; otherwise it folds into the "
+        "condition like a true replicate.",
+    "true_replicate":
+        "A repeat measurement of the same condition (and batch). Averaged within the "
+        "condition as mean ± std / SEM; this is what condition-level mapping inherits.",
+}
+
+# Each value column gets mean / std / SEM (SEM = std/√n, n = non-null replicate count).
+_SUMMARY_STATS = ("mean", "std", "sem")
 REPLICATE_SUMMARY_COLUMNS = (
     [CONDITION_KEY_COLUMN, "number_of_replicates", "replicate_ids"]
-    + [f"{stat}_{col}" for col in VALUE_COLUMNS for stat in ("mean", "std")]
+    + [f"{stat}_{col}" for col in VALUE_COLUMNS for stat in _SUMMARY_STATS]
 )
 
 # Replicate / batch token in a sample_id: R1, rep_2, batch-3, replicate 1, …
@@ -100,8 +118,32 @@ def condition_key(sample: dict, profile=None) -> str:
     """
     profile = profile or profiles.default_dataset_profile()
     if getattr(profile, "grouping", "generic") == "fly_ash":
-        return _fly_ash_condition_key(sample)
-    return _generic_condition_key(sample, profile)
+        base = _fly_ash_condition_key(sample)
+    else:
+        base = _generic_condition_key(sample, profile)
+    # Batches are compared separately only when the profile asks for it; otherwise a
+    # batch folds into the condition like a true replicate.
+    if getattr(profile, "group_by_batch", False):
+        bid = batch_id(sample, profile)
+        if bid:
+            return f"{base}_batch{bid}"
+    return base
+
+
+def batch_id(sample: dict, profile=None) -> str:
+    """Batch id for a sample: the profile's ``batch_column`` value, else parsed from
+    ``sample_id`` with the profile's ``batch_pattern`` (group 1). ``''`` if neither.
+    """
+    profile = profile or profiles.default_dataset_profile()
+    col = getattr(profile, "batch_column", None)
+    if col and not _is_blank(sample.get(col)):
+        return str(sample.get(col)).strip()
+    pattern = getattr(profile, "batch_pattern", None)
+    if pattern:
+        m = re.search(pattern, str(sample.get("sample_id", "") or ""), re.IGNORECASE)
+        if m and m.groups():
+            return str(m.group(1)).strip()
+    return ""
 
 
 def _generic_condition_key(sample: dict, profile) -> str:
@@ -177,6 +219,11 @@ def annotate(df: pd.DataFrame, profile=None) -> pd.DataFrame:
     records = out.to_dict("records")
     out[CONDITION_KEY_COLUMN] = [condition_key(r, profile) for r in records]
     out[REPLICATE_ID_COLUMN] = [replicate_id(r) for r in records]
+    # Only add a batch_id column when the profile actually defines batches, so the
+    # fly-ash default (no batch config) keeps its existing column set unchanged.
+    p = profile or profiles.default_dataset_profile()
+    if getattr(p, "batch_column", None) or getattr(p, "batch_pattern", None):
+        out[BATCH_ID_COLUMN] = [batch_id(r, p) for r in records]
     return out
 
 
@@ -214,12 +261,13 @@ def infer_replicate_ids(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 # Feature 2 — replicate summary
 # --------------------------------------------------------------------------- #
 def replicate_summary(df: pd.DataFrame, profile=None) -> pd.DataFrame:
-    """Per-condition replicate count, ids, and mean ± std of the value columns.
+    """Per-condition replicate count, ids, and mean ± std ± SEM of the value columns.
 
-    ``std`` uses ddof=1, so a single-replicate condition has ``std = NaN`` (you
-    cannot estimate spread from one batch). ``profile`` selects the grouping (and,
-    for a non-fly-ash profile, the value columns); it defaults to the fly-ash profile
-    so existing callers are unchanged.
+    ``std`` uses ddof=1, so a single-replicate condition has ``std = NaN`` (you cannot
+    estimate spread from one measurement); ``sem = std / √n`` is also NaN there. SEM
+    uses ``n`` = the number of **non-null** replicate values for that column. ``profile``
+    selects the grouping (and, for a non-fly-ash profile, the value columns); it defaults
+    to the fly-ash profile so existing callers are unchanged.
     """
     ann = annotate(df, profile)
     # Fly-ash default keeps the canonical pH/Ca/Si/Al stat columns; a non-fly-ash
@@ -230,7 +278,7 @@ def replicate_summary(df: pd.DataFrame, profile=None) -> pd.DataFrame:
     else:
         value_cols = [c for c in profile.variable_columns if c in (df.columns if df is not None else [])]
         columns = ([CONDITION_KEY_COLUMN, "number_of_replicates", "replicate_ids"]
-                   + [f"{stat}_{c}" for c in value_cols for stat in ("mean", "std")])
+                   + [f"{stat}_{c}" for c in value_cols for stat in _SUMMARY_STATS])
     if ann.empty:
         return pd.DataFrame(columns=columns)
 
@@ -244,8 +292,11 @@ def replicate_summary(df: pd.DataFrame, profile=None) -> pd.DataFrame:
         }
         for col in value_cols:
             vals = pd.to_numeric(g[col], errors="coerce") if col in g.columns else pd.Series(dtype=float)
-            row[f"mean_{col}"] = vals.mean() if vals.notna().any() else float("nan")
-            row[f"std_{col}"] = vals.std(ddof=1) if vals.notna().sum() >= 2 else float("nan")
+            n_col = int(vals.notna().sum())
+            std = vals.std(ddof=1) if n_col >= 2 else float("nan")
+            row[f"mean_{col}"] = vals.mean() if n_col else float("nan")
+            row[f"std_{col}"] = std
+            row[f"sem_{col}"] = (std / (n_col ** 0.5)) if n_col >= 2 else float("nan")
         rows.append(row)
     return pd.DataFrame(rows, columns=columns)
 
@@ -341,20 +392,24 @@ def _manifest_predictions(manifest: pd.DataFrame) -> dict[str, dict]:
 
 
 def condition_mean_comparison(df: pd.DataFrame, condition_map, manifest: pd.DataFrame) -> pd.DataFrame:
-    """Condition-level comparison: replicate mean ± std vs PHREEQC, with residuals.
+    """Condition-level comparison: replicate mean ± std ± SEM vs PHREEQC, with residuals.
 
-    For every mapped condition, joins the replicate-mean of pH/Ca/Si/Al to the
-    mapped PHREEQC scenario's prediction and computes ``residual = mean − PHREEQC``.
-    Flags conditions with fewer than two replicates (no spread estimate).
+    For every mapped condition, joins the replicate-mean of pH/Ca/Si/Al to the mapped
+    PHREEQC scenario's prediction and computes ``residual = mean − PHREEQC``. The
+    measured **std and SEM** are carried through (per element) so comparison plots can
+    draw measured error bars; ``within_meas_std_<X>`` is True when ``|residual| ≤ std``
+    — i.e. the residual is *indistinguishable from the replicate spread* (only defined
+    when n ≥ 2). Conditions with fewer than two replicates are flagged (no spread).
     """
     summary = replicate_summary(df)
     cmap = _mapping_dict(condition_map)
     preds = _manifest_predictions(manifest)
 
     cols = (["condition_key", "n_replicates", "phreeqc_record_key"]
-            + [f"{s}_{c}" for c in VALUE_COLUMNS for s in ("mean", "std")]
+            + [f"{s}_{c}" for c in VALUE_COLUMNS for s in _SUMMARY_STATS]
             + [f"phreeqc_{RESIDUAL_LABEL[c]}" for c in VALUE_COLUMNS]
             + [f"residual_{RESIDUAL_LABEL[c]}" for c in VALUE_COLUMNS]
+            + [f"within_meas_std_{RESIDUAL_LABEL[c]}" for c in VALUE_COLUMNS]
             + ["warning"])
     rows: list[dict] = []
     for _, s in summary.iterrows():
@@ -366,14 +421,20 @@ def condition_mean_comparison(df: pd.DataFrame, condition_map, manifest: pd.Data
         for c in VALUE_COLUMNS:
             label = RESIDUAL_LABEL[c]
             mean = _to_float(s[f"mean_{c}"])
+            std = _to_float(s[f"std_{c}"])
             pcol = _to_float(pred.get(PREDICTION_COLUMN[c]))
+            resid = (mean - pcol) if (mean is not None and pcol is not None) else None
             row[f"mean_{c}"] = s[f"mean_{c}"]
             row[f"std_{c}"] = s[f"std_{c}"]
+            row[f"sem_{c}"] = s[f"sem_{c}"]
             row[f"phreeqc_{label}"] = pcol if pcol is not None else float("nan")
-            row[f"residual_{label}"] = (mean - pcol) if (mean is not None and pcol is not None) else float("nan")
+            row[f"residual_{label}"] = resid if resid is not None else float("nan")
+            # Only meaningful when a spread exists (n >= 2).
+            row[f"within_meas_std_{label}"] = (
+                bool(abs(resid) <= std) if (resid is not None and std is not None) else None)
         warn = []
         if int(s["number_of_replicates"]) < 2:
-            warn.append("n_replicates<2 (no std)")
+            warn.append("n_replicates<2 (no std/SEM)")
         if not rk:
             warn.append("condition not mapped")
         row["warning"] = "; ".join(warn)

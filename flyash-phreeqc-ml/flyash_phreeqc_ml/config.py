@@ -51,6 +51,9 @@ EXPERIMENTAL_ICP_DIR: Path = RAW_DIR / "experimental_icp"
 PHREEQC_INPUT_SOLUTIONS_CSV = "phreeqc_input_solutions.csv"
 PHREEQC_EQUILIBRIUM_PHASES_CSV = "phreeqc_input_equilibrium_phases.csv"
 PHREEQC_RESULTS_CSV = "phreeqc_results.csv"
+# A non-PHREEQC model's predictions (generic CSV contract). When present in
+# data/processed/, it is the manifest source (a model can replace PHREEQC).
+MODEL_PREDICTIONS_CSV = "model_predictions.csv"
 PHREEQC_SCENARIO_MANIFEST_CSV = "phreeqc_scenario_manifest.csv"  # mapping-assistant view
 PHREEQC_SI_CSV = "phreeqc_saturation_indices.csv"
 PHREEQC_ASSEMBLAGE_CSV = "phreeqc_phase_assemblage.csv"
@@ -188,7 +191,11 @@ EXPERIMENTAL_NUMERIC_COLUMNS = [
 # --------------------------------------------------------------------------- #
 # PHREEQC reports element totals as molality (mol/kgw). For dilute solutions
 # mol/kgw ~= mol/L, so multiplying by 1000 gives mM, matching the measured units.
-PHREEQC_MOLALITY_TO_MM = 1000.0
+# Defined once in flyash_phreeqc_ml.units (the single conversion authority) and
+# re-exported here so every multiply uses one number.
+from . import units as _units  # noqa: E402  (low-level module; no cycle — units imports nothing here)
+
+PHREEQC_MOLALITY_TO_MM = _units.MOLALITY_TO_MM_FACTOR
 
 # Each residual = measured - phreeqc, defined by (measured_col, phreeqc_source).
 # For elements, phreeqc_source is the molality column converted to mM; for pH it is

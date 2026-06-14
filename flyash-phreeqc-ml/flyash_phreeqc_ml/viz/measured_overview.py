@@ -29,7 +29,7 @@ TIME_COLUMN = profiles.FLY_ASH_PROFILE.time_column or "time_min"
 # Tidy plot-frame columns (``time_min`` is appended only when a numeric time exists).
 PLOT_COLUMNS = ["sample_id", "condition_key", "replicate_id", "value"]
 EXCLUDED_COLUMNS = ["sample_id", "condition_key", "value_raw", "reason"]
-GROUP_STAT_COLUMNS = ["condition_key", "n", "mean", "std"]
+GROUP_STAT_COLUMNS = ["condition_key", "n", "mean", "std", "sem"]
 
 
 def _is_blank(value) -> bool:
@@ -85,8 +85,8 @@ def prepare_overview(data: pd.DataFrame, variable: str, profile=None) -> dict:
     * ``excluded`` — rows dropped because the value is blank/missing or non-numeric,
       each with a human ``reason`` (so the counts always add up:
       ``n_shown + n_excluded == rows with a sample_id``);
-    * ``group_stats`` — per-condition ``n / mean / std`` (std ddof=1, NaN for a
-      single replicate) of the kept values;
+    * ``group_stats`` — per-condition ``n / mean / std / sem`` (std ddof=1; ``sem =
+      std/√n``; both NaN for a single replicate, never a fake 0) of the kept values;
     * ``has_time`` — whether a numeric ``time_min`` column is present (the app uses
       this to choose a time x-axis vs condition categories);
     * ``n_shown`` / ``n_excluded`` / ``n_conditions`` / ``replicate_counts``.
@@ -138,11 +138,10 @@ def prepare_overview(data: pd.DataFrame, variable: str, profile=None) -> dict:
         replicate_counts: dict = {}
     else:
         grp = plot.groupby("condition_key")["value"]
-        group_stats = pd.DataFrame({
-            "condition_key": list(grp.groups.keys()),
-        })
         stats = grp.agg(["count", "mean"]).reset_index()
         stats["std"] = grp.std(ddof=1).reset_index(drop=True)
+        # SEM = std / √n (NaN where std is NaN, i.e. a single replicate — never a fake 0).
+        stats["sem"] = stats["std"] / stats["count"].pow(0.5)
         group_stats = stats.rename(columns={"count": "n"})[GROUP_STAT_COLUMNS]
         replicate_counts = {str(k): int(v) for k, v in grp.count().items()}
 

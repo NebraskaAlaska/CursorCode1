@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from flyash_phreeqc_ml import calculations as calc
+from flyash_phreeqc_ml import units
 
 
 # --------------------------------------------------------------------------- #
@@ -27,7 +28,8 @@ def test_mgl_to_mM_worked_example_ca():
 
 
 def test_mgl_to_mM_unknown_element_raises():
-    with pytest.raises(KeyError):
+    # Now a typed error from the single conversion authority (no silent guess).
+    with pytest.raises(units.UnknownElementError):
         calc.mgl_to_mM(10.0, "Zz")
 
 

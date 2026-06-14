@@ -17,15 +17,12 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-# Atomic masses (g/mol) used for the ICP mg/L -> mM conversion.
-ATOMIC_MASSES: dict[str, float] = {
-    "Ca": 40.078,
-    "Si": 28.085,
-    "Al": 26.982,
-    "Fe": 55.845,
-    "Na": 22.990,
-    "K": 39.098,
-}
+from . import units
+
+# Atomic masses (g/mol) used for the ICP mg/L -> mM conversion. The single registry
+# lives in :mod:`flyash_phreeqc_ml.units`; this is a back-compat alias so existing
+# imports of ``calculations.ATOMIC_MASSES`` keep working but resolve to one source.
+ATOMIC_MASSES: dict[str, float] = units.MOLAR_MASSES
 
 # Audit status vocabulary.
 STATUS_PASS = "pass"
@@ -45,9 +42,11 @@ WARN_TOL = 1e-4
 def mgl_to_mM(mg_per_l: float, element: str) -> float:
     """Convert an ICP concentration in mg/L to mM using the element atomic mass.
 
-    ``mM = mg/L / atomic_mass_g_mol``. Raises ``KeyError`` for an unknown element.
+    ``mM = mg/L / atomic_mass_g_mol``. Routes through the single conversion authority
+    (:func:`units.convert`), so the formula + molar mass are defined in one place.
+    Raises :class:`units.UnknownElementError` for an unknown element.
     """
-    return mg_per_l / ATOMIC_MASSES[element]
+    return units.convert(mg_per_l, units.UNIT_MGL, units.UNIT_MM, element).value
 
 
 def apply_dilution(reported_concentration: float, dilution_factor: float) -> float:
@@ -311,3 +310,113 @@ def audit_comparison(df: pd.DataFrame,
                 "status": res["status"],
             })
     return pd.DataFrame(records, columns=AUDIT_COLUMNS)
+
+
+# --------------------------------------------------------------------------- #
+# Conversion audit (re-derive each converted column from its provenance companions)
+# --------------------------------------------------------------------------- #
+# This is the mechanism that catches a wrong molar mass or a changed conversion
+# formula *after the fact*: for every converted column X with provenance companions
+# (X_orig_value / X_orig_unit / X_conversion_id), recompute the conversion through the
+# single authority (units.convert) and compare to the stored converted value.
+VERIFY_CONVERSION_COLUMNS = [
+    "column", "element", "conversion_id", "from_unit", "molar_mass_used", "formula",
+    "n_rows", "n_pass", "n_warning", "n_fail", "n_not_available", "status",
+]
+
+STATUS_LEGACY = "legacy (no provenance)"
+
+
+def _unit_blank(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    s = str(value).strip()
+    return s == "" or s.lower() == "nan"
+
+
+def _element_from_mm_column(col: str) -> str | None:
+    """``Ca_mM`` -> ``Ca`` when it is a known element column, else ``None``."""
+    if col.endswith("_mM"):
+        el = col[:-3]
+        if el in units.MOLAR_MASSES:
+            return el
+    return None
+
+
+def verify_conversions(df: pd.DataFrame,
+                       pass_tol: float = PASS_TOL, warn_tol: float = WARN_TOL) -> pd.DataFrame:
+    """Re-derive every converted column from its provenance companions and grade it.
+
+    For each element concentration column ``X_mM`` present in ``df``:
+
+    * if its provenance companions (``X_mM_orig_value`` / ``_orig_unit`` /
+      ``_conversion_id``) exist, recompute ``units.convert(orig_value, orig_unit, mM,
+      element)`` per row and compare to the stored ``X_mM`` — counting pass / warning /
+      fail / not-available, with the overall column status = the worst seen;
+    * if the companions are absent but the column has data (an **existing run imported
+      before provenance existed**), it is reported with ``conversion_id =
+      "unknown(legacy)"`` and status ``legacy (no provenance)`` — flagged, never errored.
+
+    Returns one row per audited column (:data:`VERIFY_CONVERSION_COLUMNS`). This is what
+    catches a wrong molar mass or a changed formula after the data was saved.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=VERIFY_CONVERSION_COLUMNS)
+
+    rows: list[dict] = []
+    for col in df.columns:
+        element = _element_from_mm_column(col)
+        if element is None:
+            continue
+        val_col, unit_col, id_col = units.provenance_columns_for(col)
+        has_prov = all(c in df.columns for c in (val_col, unit_col, id_col))
+        has_data = pd.to_numeric(df[col], errors="coerce").notna().any()
+
+        if not has_prov:
+            if not has_data:
+                continue  # empty column, nothing to verify
+            rows.append({
+                "column": col, "element": element, "conversion_id": units.LEGACY_ID,
+                "from_unit": "", "molar_mass_used": None, "formula": "",
+                "n_rows": int(len(df)), "n_pass": 0, "n_warning": 0, "n_fail": 0,
+                "n_not_available": int(len(df)), "status": STATUS_LEGACY,
+            })
+            continue
+
+        n_pass = n_warn = n_fail = n_na = 0
+        seen_id = seen_from = seen_formula = ""
+        seen_mass = None
+        for _, r in df.iterrows():
+            stored = _to_float(r.get(col))
+            orig = _to_float(r.get(val_col))
+            ounit = r.get(unit_col)
+            if stored is None or orig is None or _unit_blank(ounit):
+                n_na += 1
+                continue
+            try:
+                res = units.convert(orig, str(ounit).strip(), units.UNIT_MM, element)
+            except units.UnitConversionError:
+                n_fail += 1
+                continue
+            seen_id, seen_from = res.conversion_id, res.from_unit
+            seen_formula, seen_mass = res.formula, res.molar_mass
+            status = classify(res.value, stored, pass_tol, warn_tol)
+            if status == STATUS_PASS:
+                n_pass += 1
+            elif status == STATUS_WARNING:
+                n_warn += 1
+            else:
+                n_fail += 1
+
+        overall = (STATUS_FAIL if n_fail else STATUS_WARNING if n_warn
+                   else STATUS_PASS if n_pass else STATUS_NA)
+        rows.append({
+            "column": col, "element": element,
+            "conversion_id": seen_id or units.LEGACY_ID, "from_unit": seen_from,
+            "molar_mass_used": seen_mass, "formula": seen_formula,
+            "n_rows": int(len(df)), "n_pass": n_pass, "n_warning": n_warn,
+            "n_fail": n_fail, "n_not_available": n_na, "status": overall,
+        })
+    return pd.DataFrame(rows, columns=VERIFY_CONVERSION_COLUMNS)

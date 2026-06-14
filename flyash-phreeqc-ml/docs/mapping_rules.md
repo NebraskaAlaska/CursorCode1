@@ -145,6 +145,47 @@ Status **needs new simulation** — generate a matching scenario before comparin
 
 ---
 
+## 5.5 Replicates, time points, and batches
+
+A mapping is made **per condition**, not per sample. A condition groups together the
+samples that share the same experimental setup; the three ways a sample id can repeat are
+distinguished by their *replicate role* (`replicates.REPLICATE_ROLE_DEFINITIONS`):
+
+| Role | Meaning | Effect on `condition_key` |
+| --- | --- | --- |
+| **time point** | a different reaction time of the same condition | **separate** condition (`time_min` is part of the key) — never averaged across times |
+| **batch** | a distinct preparation / batch of the same condition | part of the key **only** when the dataset profile sets `group_by_batch=True`; otherwise it folds in like a true replicate |
+| **true replicate** | a repeat measurement of the same condition (and batch) | **same** condition — averaged as mean ± std / SEM |
+
+### How replicates inherit a condition-level mapping
+
+You map a **condition** to one model result (e.g. in the Match tab). Every true replicate
+of that condition then **inherits** the same mapping — `replicates.expand_condition_mapping`
+expands one `condition_key → record_key` link into the per-sample
+`sample_id → record_key` map the comparison reads. So you map once per condition, not once
+per replicate, and all replicates of a condition compare against the same model prediction.
+The condition-level comparison reports the replicate **mean ± std ± SEM** vs the model
+(`replicates.condition_mean_comparison`), and `within_meas_std_<X>` flags when a residual is
+smaller than the replicate spread (i.e. indistinguishable from experimental noise). A
+condition with only **one** replicate has no spread: its std/SEM are `NaN` (never a fake 0)
+and the plots omit its error bar and label it `n=1`.
+
+### How batches differ
+
+Batches are **not** time points and **not** automatically true replicates — they are a
+separate preparation of the same nominal condition, which may carry a real batch-to-batch
+offset. Whether to compare them separately is **profile-configurable**:
+
+* set `DatasetProfile.batch_column` (read the batch id from a column) **or**
+  `DatasetProfile.batch_pattern` (parse it from the sample id, group 1), and
+* set `group_by_batch=True` to make the batch part of `condition_key` (each batch gets its
+  own condition + its own mapping), or leave it `False` to fold batches into one condition
+  and average across them like true replicates.
+
+The fly-ash default defines no batch, so batches fold in (current behaviour unchanged).
+
+---
+
 ## 6. Where this lives in code
 
 * Scoring + trace: `flyash_phreeqc_ml/scenarios.py` (`score_scenario`, `confidence_for`,
