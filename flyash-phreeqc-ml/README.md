@@ -39,6 +39,7 @@ supports what the matrix tests — no more.
 | d | Differently-formatted upload (renamed/reordered cols, mg/L) | resolves via the importer + **Prompt-16 unit contract** with conversion provenance | `test_d_reformatted_import.py` |
 | e | Alternate **non-fly-ash** dataset profile | grouping → suggestion → inclusion run from the profile alone (no PHREEQC) | `test_e_alternate_profile.py` |
 | f | **Non-PHREEQC** model via the prediction CSV contract | mapped + compared end-to-end through the same manifest; no PHREEQC parser involved | `test_f_generic_prediction.py` |
+| g | **Second material** (red mud) via a `MaterialProfile` | batch closure → (mocked) attribution → recovery run from the material's elements/phases/flag, hand-computed moles, zero fly-ash leak | `test_g_second_material.py` |
 
 A non-PHREEQC model supplies predictions through the documented **model-prediction CSV
 contract** (`docs/model_prediction_format.md`): `record_key`, `model_name`, and

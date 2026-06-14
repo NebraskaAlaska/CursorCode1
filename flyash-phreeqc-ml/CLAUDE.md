@@ -388,10 +388,11 @@ experiment — **not** a blind replacement for the chemistry.
   `tests/test_manifest_model_agnostic.py`). Data tab: an **"Import model predictions (CSV)"** path
   (same review-before-save as measured import; model name from the file; saved to
   `data/processed/model_predictions.csv` which takes manifest precedence over `phreeqc_results.csv`).
-  The **supported-dataset matrix** (`tests/matrix/`, named fixtures + one module per claim a–f: fly-ash+
+  The **supported-dataset matrix** (`tests/matrix/`, named fixtures + one module per claim a–g: fly-ash+
   PHREEQC, literature separation, hand-computed residuals, reformatted/units import, alternate non-fly-
-  ash profile, non-PHREEQC generic prediction end-to-end) pins what "supported" means; the **README**
-  claims match the matrix, no more. **Known leak (flagged, not blocking):** the manifest keeps the
+  ash profile, non-PHREEQC generic prediction end-to-end, **and (g) a second material — red mud — driving
+  batch closure → attribution → recovery from its `MaterialProfile`**) pins what "supported" means; the
+  **README** claims match the matrix, no more. **Known leak (flagged, not blocking):** the manifest keeps the
   historical column names `phreeqc_record_key` / `phreeqc_<X>_mM` (renaming touches every consumer) —
   they hold whatever model produced the numbers; documented in `docs/model_prediction_format.md`.
 
@@ -550,6 +551,32 @@ experiment — **not** a blind replacement for the chemistry.
   mass balance, so the live app shows the empty-state note). Covered by `tests/test_report.py` additions
   (each status reached, provenance flags render, the literature DOI/link shows, manifest classification,
   summary sort order).
+
+- **Batch + recovery across materials — `MaterialProfile`** (Prompt 28 — additive profile layer, no
+  package rename). Pushes material/reagent/phase specifics into the profile system so the Prompt-22–25 +
+  Prompt-27 batch chemistry runs for **any** material, not just fly ash. `profiles.MaterialProfile`
+  (frozen) declares `material_id` / `display_name`, `relevant_elements`, `mass_balance_elements`,
+  `candidate_phases` (phase→element), `precipitate_in_measured_solid`, `default_reagents`, and a
+  provenance-flagged `declared_assay` (`AssayValue`: `measured` / `literature-confirmed` usable;
+  `literature-proposed` **quarantined** — `is_usable` False — until confirmed, satisfying the Prompt-24/26
+  rule for a new material). `DatasetProfile` gains an additive `material` field, and module-level
+  **resolvers** (`mass_balance_elements` / `candidate_phases` / `precipitate_in_measured_solid` /
+  `default_reagents` / `usable_declared_assay`) read the material first, else the legacy DatasetProfile
+  batch fields. `mass_balance`, `attribution`, the `report` recovery section, and `incompleteness_model`
+  now read **elements/phases/flag from the active profile via these resolvers** — **none hard-codes a
+  fly-ash element or phase** (new guard `tests/test_material_profile_agnostic.py`, mirroring
+  `test_manifest_model_agnostic.py`). Ships `FLY_ASH_MATERIAL` (Ca/Si/Al/Fe/Na/K, NaOH; closure stays
+  OFF → unchanged) and a second-material stub `RED_MUD_MATERIAL` / `RED_MUD_PROFILE` (Ti/V/Fe/Al + REE,
+  anatase/rutile/hematite/… phases, **opposite** filtration flag, different reagents) to prove the
+  abstraction. A **no-code profile-creation path** (`dataset_profile_from_spec` /
+  `material_profile_from_dict` / `load_dataset_profile`; JSON always, YAML if PyYAML present) lets a
+  researcher define a material in one file — documented in `docs/defining_a_material.md` with a shipped
+  example `docs/examples/red_mud_material.json` (a literature-proposed declared assay is rejected from any
+  calculation; a literature provenance without a citation is rejected at load). Ti/V molar masses added to
+  `units.MOLAR_MASSES`. Matrix claim **(g)** `tests/matrix/test_g_second_material.py` runs red-mud batch
+  → closure (hand-computed Ti moles) → mocked attribution (anatase, material's precipitate flag) →
+  recovery section, asserting **zero fly-ash leak** (only Ti/V/Fe/Al rows). Covered also by
+  `tests/test_profiles.py` (resolvers, factory, JSON spec round-trip from disk, quarantine).
 
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
@@ -770,11 +797,30 @@ modules together and own all file I/O paths.
   `mapping_table.build_suggestion_table`/`condition_candidates`, `compare.inclusion.comparison_inclusion`
   (variable spec from `profile.comparison_variable_spec`; `inclusion.VARIABLE_SPEC` now references the
   profile), and `viz/measured_overview` (overview variables + time column from the profile). A second
-  synthetic profile drives the whole chain in `tests/test_profiles.py`. **Seams not yet threaded**
-  (noted for a future prompt): `overall_mapping_status` / `conditions_needing_simulation` /
-  `condition_mean_comparison` and the per-sample `id_column` still assume the fly-ash default; the
-  `mapping_status` acid/CO₂ conflict checks are fly-ash-specific (they simply no-op when those columns
-  are absent).
+  synthetic profile drives the whole chain in `tests/test_profiles.py`. **Material side (Prompt 28):**
+  a `MaterialProfile` (frozen) bundles the *material/reagent/phase* specifics — `material_id` /
+  `display_name`, `relevant_elements`, `mass_balance_elements`, `candidate_phases` (phase→element),
+  `precipitate_in_measured_solid`, `default_reagents`, and a provenance-flagged `declared_assay`
+  (`AssayValue` with `measured` / `literature-confirmed` / `literature-proposed`; a *proposed* assay is
+  **quarantined** — `is_usable` False — until a human confirms it). `DatasetProfile` gained an additive
+  `material` field; module-level **resolvers** (`profiles.mass_balance_elements` / `candidate_phases` /
+  `precipitate_in_measured_solid` / `default_reagents` / `usable_declared_assay`) read the material first
+  and fall back to the DatasetProfile's own batch fields (so material-less / legacy profiles are
+  unchanged). `mass_balance`, `attribution`, the `report` recovery section, and `incompleteness_model` all
+  call these resolvers — **none hard-codes a fly-ash element or phase** (guarded by
+  `tests/test_material_profile_agnostic.py`). `FLY_ASH_MATERIAL` (Ca/Si/Al/Fe/Na/K, NaOH; closure still
+  OFF) and a second-material stub `RED_MUD_MATERIAL` / `RED_MUD_PROFILE` (Ti/V/Fe/Al + REE, anatase/
+  hematite/… phases, the **opposite** filtration flag) prove the abstraction. A **no-code profile path**
+  (`dataset_profile_from_spec` / `material_profile_from_dict` / `load_dataset_profile`, JSON always + YAML
+  if PyYAML is present) lets a researcher define a new material in one file
+  (`docs/defining_a_material.md`, example `docs/examples/red_mud_material.json`); a literature-proposed
+  declared assay is rejected from any calculation until confirmed. Ti/V molar masses were added to
+  `units.MOLAR_MASSES`. **Seams not yet threaded** (noted for a future prompt): `overall_mapping_status`
+  / `conditions_needing_simulation` / `condition_mean_comparison` and the per-sample `id_column` still
+  assume the fly-ash default; the `mapping_status` acid/CO₂ conflict checks are fly-ash-specific (they
+  simply no-op when those columns are absent); and the on-demand PHREEQC `.pqi` generation still uses the
+  fly-ash NaOH/CO₂-cover templating (the measured closure / attribution arithmetic / recovery / training
+  frame are fully material-driven).
 
 - **`parsers/`** turn raw files into tidy DataFrames:
   - `pqo_parser.py` is the core. PHREEQC `.pqo` output is verbose text; the parser walks it

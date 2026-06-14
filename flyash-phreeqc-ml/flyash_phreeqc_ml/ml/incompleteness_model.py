@@ -139,7 +139,7 @@ def build_recovery_dataset(data: pd.DataFrame, profile=None, *, selected_outputs
     profile = profile or profiles.FLY_ASH_PROFILE
     if not mass_balance.is_enabled(profile) or data is None or data.empty:
         return pd.DataFrame()
-    elements = list(getattr(profile, "mass_balance_elements", ()) or ())
+    elements = list(profiles.mass_balance_elements(profile))
     selected_outputs = selected_outputs or {}
     sigmas_by_row = sigmas_by_row or {}
 

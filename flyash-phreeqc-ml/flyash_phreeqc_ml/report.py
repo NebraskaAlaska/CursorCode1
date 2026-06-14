@@ -226,7 +226,7 @@ def _mass_balance_attribution_status(data, profile) -> str | None:
     results = []
     for _, r in data.iterrows():
         row = r.to_dict()
-        for el in getattr(profile, "mass_balance_elements", ()) or ():
+        for el in profiles.mass_balance_elements(profile):
             results.append(attribution.attribution_unavailable(row, el, profile=profile))
     return attribution.overall_attribution_status(results)
 
@@ -392,7 +392,7 @@ def _recovery_records(data, profile, run_name=None, *, selected_outputs=None) ->
     if not mass_balance.is_enabled(profile) or data is None or data.empty:
         return []
     from .ai import literature  # lazy: optional AI layer, keep report import light
-    elements = list(getattr(profile, "mass_balance_elements", ()) or ())
+    elements = list(profiles.mass_balance_elements(profile))
     confirmed, overrides = [], {}
     if run_name:
         try:

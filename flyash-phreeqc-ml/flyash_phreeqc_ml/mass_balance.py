@@ -301,9 +301,9 @@ def closure_warnings(result: dict) -> list[dict]:
 # Frame helpers (for the UI / batch reporting)
 # --------------------------------------------------------------------------- #
 def is_enabled(profile=None) -> bool:
-    """True if the profile opts into the batch-reaction mass balance."""
+    """True if the profile (or its material) opts into the batch-reaction mass balance."""
     profile = profile or profiles.FLY_ASH_PROFILE
-    return bool(getattr(profile, "mass_balance_elements", ()) or ())
+    return bool(profiles.mass_balance_elements(profile))
 
 
 def closure_records(data: pd.DataFrame, profile=None,
@@ -313,7 +313,7 @@ def closure_records(data: pd.DataFrame, profile=None,
     ``sigmas_by_row`` (optional) maps a row's ``sample_id`` to a per-input sigma dict.
     """
     profile = profile or profiles.FLY_ASH_PROFILE
-    elements = list(getattr(profile, "mass_balance_elements", ()) or ())
+    elements = list(profiles.mass_balance_elements(profile))
     if not elements or data is None or data.empty:
         return []
     out: list[dict] = []

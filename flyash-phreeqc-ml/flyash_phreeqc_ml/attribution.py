@@ -85,8 +85,8 @@ def _num(value):
 
 
 def _element_phases(element: str, profile) -> list[str]:
-    """Candidate precipitate phases the profile maps to ``element``."""
-    phases = getattr(profile, "mass_balance_candidate_phases", {}) or {}
+    """Candidate precipitate phases the active profile (or its material) maps to ``element``."""
+    phases = profiles.candidate_phases(profile)
     return [ph for ph, el in phases.items() if str(el) == element]
 
 
@@ -135,7 +135,7 @@ def attribute_gap(row: dict, element: str, phreeqc_selected_output, *, profile=N
     gap = closure["gap"]
     gap_sigma = closure["gap_sigma"]
     gap_fraction = closure["gap_fraction"]
-    precip_in_solid = bool(getattr(profile, "precipitate_in_measured_solid", False))
+    precip_in_solid = profiles.precipitate_in_measured_solid(profile)
 
     so = _selected_output_row(phreeqc_selected_output)
     by_phase: dict[str, float] = {}
@@ -192,7 +192,7 @@ def attribution_unavailable(row: dict, element: str, *, profile=None) -> dict:
         status = STATUS_UNEXPLAINED
     return {
         "element": element, "provenance": PROVENANCE_MEASURED,
-        "precipitate_in_measured_solid": bool(getattr(profile, "precipitate_in_measured_solid", False)),
+        "precipitate_in_measured_solid": profiles.precipitate_in_measured_solid(profile),
         "measured": measured, "gap": gap, "gap_fraction": gap_fraction,
         "modeled_precipitated_moles": None, "by_phase": {},
         "modeled_solution_moles": None,
@@ -233,7 +233,7 @@ def _material_inputs(row: dict, profile) -> dict:
     out: dict[str, float] = {}
     if vol_mL in (None, 0):
         return out
-    for el in getattr(profile, "mass_balance_elements", ()) or ():
+    for el in profiles.mass_balance_elements(profile):
         c = mass_balance.closure(row, el, profile=profile)
         if c["status"] == mass_balance.STATUS_COMPLETE:
             total = c["n_in"] - c["n_solid"]
@@ -252,12 +252,12 @@ def build_attribution_inputs(row: dict, profile=None):
     """
     from . import config, replicates, scenarios
     profile = profile or profiles.FLY_ASH_PROFILE
-    elements = list(getattr(profile, "mass_balance_elements", ()) or ())
+    elements = list(profiles.mass_balance_elements(profile))
     if not elements or phreeqc_runner.generation_blocked_reason(row, profile):
         return []
 
     material_inputs = _material_inputs(row, profile)
-    phases = list(getattr(profile, "mass_balance_candidate_phases", {}) or {})
+    phases = list(profiles.candidate_phases(profile))
     naoh = phreeqc_runner._condition_naoh(row)
     ls = scenarios._to_float(row.get("liquid_solid_ratio"))
     temp = scenarios._to_float(row.get("temperature_C"))

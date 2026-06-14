@@ -164,3 +164,29 @@ def generic_prediction_dataset():
                             for s in measured["sample_id"]])
     return {"csv": csv, "parsed": parsed, "measured": measured, "mapping": mapping,
             "manifest": scenarios.build_scenario_manifest(parsed)}
+
+
+# --------------------------------------------------------------------------- #
+# (g) second material (red mud) — batch closure + attribution + recovery
+# --------------------------------------------------------------------------- #
+def _red_mud_batch() -> pd.DataFrame:
+    """One red-mud batch row, all four mass-balance elements complete.
+
+    Ti is the hand-checked element: 10 g material x 5 wt% -> 500 mg / M_Ti = n_in;
+    30 mM x 100 mL -> n_liquid; 8 g x 3 wt% -> 240 mg / M_Ti = n_solid.
+    """
+    return pd.DataFrame([{
+        "sample_id": "RM-1", "reagent": "NaOH", "reagent_conc_M": 2.0,
+        "liquid_solid_ratio": 10, "material_mass_g": 10.0, "liquid_volume_mL": 100.0,
+        "solid_mass_g": 8.0,
+        "Ti_starting_content": 5.0, "Ti_solid_residue": 3.0, "Ti_mM": 30.0,
+        "V_starting_content": 1.0, "V_solid_residue": 0.5, "V_mM": 4.0,
+        "Fe_starting_content": 30.0, "Fe_solid_residue": 28.0, "Fe_mM": 2.0,
+        "Al_starting_content": 10.0, "Al_solid_residue": 9.0, "Al_mM": 3.0,
+    }])
+
+
+@pytest.fixture()
+def red_mud_batch_dataset():
+    return {"profile": profiles.RED_MUD_PROFILE, "material": profiles.RED_MUD_MATERIAL,
+            "data": _red_mud_batch()}

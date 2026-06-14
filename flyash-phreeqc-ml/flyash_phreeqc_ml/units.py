@@ -61,6 +61,10 @@ MOLAR_MASSES: dict[str, float] = {
     "Fe": 55.845,
     "Na": 22.990,
     "K": 39.098,
+    # Added for non-fly-ash materials (e.g. bauxite residue / red mud): Ti 47.867,
+    # V 50.9415 (IUPAC 2021 abridged). Additive — the fly-ash conversions are unchanged.
+    "Ti": 47.867,
+    "V": 50.942,
 }
 MOLAR_MASS_SOURCE = "IUPAC standard atomic weights (2021 abridged), g/mol — CIAAW"
 

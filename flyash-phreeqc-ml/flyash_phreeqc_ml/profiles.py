@@ -95,6 +95,12 @@ class DatasetProfile:
     # for a protocol where precipitates are retained in the assayed solid (then they are
     # already in n_solid and do not reduce the gap). See docs/mass_balance.md.
     precipitate_in_measured_solid: bool = False
+    # --- Material side (Prompt 28; additive) ---------------------------------- #
+    # The material whose batch chemistry this dataset measures. When set, the
+    # material's elements / candidate phases / precipitate flag / reagents are the
+    # source of truth (read via the module-level resolvers below); when None the
+    # DatasetProfile's own batch fields above are used (legacy / fly-ash-as-built).
+    material: "MaterialProfile | None" = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,158 @@ class ModelProfile:
 
 
 # --------------------------------------------------------------------------- #
+# Material profile (Prompt 28) — push material/reagent/phase specifics into a profile
+# --------------------------------------------------------------------------- #
+# Provenance vocabulary for a declared assay (mirrors ai.literature so the quarantine
+# rule is the same): a literature-*proposed* assay is **never usable in a calculation**
+# until a human confirms it (then it becomes literature-confirmed).
+ASSAY_MEASURED = "measured"
+ASSAY_LITERATURE_CONFIRMED = "literature-confirmed"
+ASSAY_LITERATURE_PROPOSED = "literature-proposed"
+# Only these provenances may feed a closure; literature-proposed stays quarantined.
+USABLE_ASSAY_PROVENANCE = (ASSAY_MEASURED, ASSAY_LITERATURE_CONFIRMED)
+
+
+@dataclass(frozen=True)
+class AssayValue:
+    """A declared bulk element assay for a material, carrying its provenance.
+
+    ``provenance`` is one of :data:`ASSAY_MEASURED` / :data:`ASSAY_LITERATURE_CONFIRMED`
+    / :data:`ASSAY_LITERATURE_PROPOSED`. A *proposed* value is quarantined: it is kept
+    for display but :func:`is_usable` is False, so it can never enter a calculation until
+    a human confirms it (Prompt 24/26 rule).
+    """
+
+    element: str
+    value: float | None = None
+    unit: str = "wt%"
+    provenance: str = ASSAY_MEASURED
+    citation: str | None = None      # DOI/link required when provenance is literature-*
+
+    @property
+    def is_usable(self) -> bool:
+        return self.provenance in USABLE_ASSAY_PROVENANCE and self.value is not None
+
+
+@dataclass(frozen=True)
+class MaterialProfile:
+    """The material side of a batch-reaction dataset (Prompt 28; additive).
+
+    Bundles everything material/reagent/phase-specific that Prompts 22–25 + the
+    incompleteness model need, so the same code runs for a *new* material by swapping
+    this object — no fly-ash elements or phases are hard-coded anywhere downstream.
+    """
+
+    material_id: str
+    display_name: str
+    # All elements this material's chemistry cares about (display + docs).
+    relevant_elements: tuple = ()
+    # Subset used for the batch closure (opt-in; empty = mass balance OFF for it).
+    mass_balance_elements: tuple = ()
+    # Candidate precipitate phases for Prompt-24 attribution: PHREEQC phase -> element.
+    candidate_phases: dict = field(default_factory=dict)
+    # Prompt-23 filtration flag: does a predicted precipitate sit in the measured solid?
+    precipitate_in_measured_solid: bool = False
+    # Reagents typically used to leach/activate this material (e.g. ("NaOH",)).
+    default_reagents: tuple = ()
+    # Declared typical bulk assay per element, provenance-flagged (see AssayValue).
+    declared_assay: dict = field(default_factory=dict)
+    # Assay + liquid units and the batch column names (default to the config schema).
+    starting_content_unit: str = "wt%"
+    solid_residue_unit: str = "wt%"
+    liquid_conc_unit: str = "mM"
+    material_mass_column: str = "material_mass_g"
+    solid_mass_column: str = "solid_mass_g"
+    liquid_volume_column: str = "liquid_volume_mL"
+
+    def usable_assay(self, element: str) -> AssayValue | None:
+        """The declared assay for ``element`` **only if usable** (never a proposed one)."""
+        av = self.declared_assay.get(element)
+        return av if (av is not None and av.is_usable) else None
+
+
+# --------------------------------------------------------------------------- #
+# Resolvers — the active profile's material side (material first, legacy fallback)
+# --------------------------------------------------------------------------- #
+# Downstream modules (mass_balance, attribution, report recovery, incompleteness_model)
+# call THESE, never a hard-coded element/phase list. When a profile carries a material
+# the material is authoritative; otherwise the DatasetProfile's own batch fields are used
+# (so profiles built the old way — incl. the test profiles — are unchanged).
+def _material(profile):
+    return getattr(profile, "material", None)
+
+
+def mass_balance_elements(profile) -> tuple:
+    m = _material(profile)
+    if m is not None and getattr(m, "mass_balance_elements", ()):
+        return tuple(m.mass_balance_elements)
+    return tuple(getattr(profile, "mass_balance_elements", ()) or ())
+
+
+def candidate_phases(profile) -> dict:
+    m = _material(profile)
+    if m is not None and getattr(m, "candidate_phases", None):
+        return dict(m.candidate_phases)
+    return dict(getattr(profile, "mass_balance_candidate_phases", {}) or {})
+
+
+def precipitate_in_measured_solid(profile) -> bool:
+    m = _material(profile)
+    if m is not None:
+        return bool(m.precipitate_in_measured_solid)
+    return bool(getattr(profile, "precipitate_in_measured_solid", False))
+
+
+def relevant_elements(profile) -> tuple:
+    m = _material(profile)
+    if m is not None and getattr(m, "relevant_elements", ()):
+        return tuple(m.relevant_elements)
+    return mass_balance_elements(profile)
+
+
+def default_reagents(profile) -> tuple:
+    m = _material(profile)
+    return tuple(getattr(m, "default_reagents", ()) or ()) if m is not None else ()
+
+
+def material_display_name(profile) -> str | None:
+    m = _material(profile)
+    return getattr(m, "display_name", None) if m is not None else None
+
+
+def usable_declared_assay(profile, element: str) -> AssayValue | None:
+    """A material's declared assay for ``element``, only when usable (not proposed)."""
+    m = _material(profile)
+    return m.usable_assay(element) if m is not None else None
+
+
+def dataset_profile_from_material(material: MaterialProfile, *, name: str | None = None,
+                                  **dataset_kwargs) -> DatasetProfile:
+    """Build a :class:`DatasetProfile` whose batch fields are filled from ``material``.
+
+    The material is the single source of truth: its elements / phases / precipitate flag
+    / assay units / column names populate the corresponding DatasetProfile fields AND the
+    material is attached (so the resolvers above also see it). Any other DatasetProfile
+    kwargs (condition codes, important_fields, grouping, comparison spec, feature fields…)
+    are passed through unchanged.
+    """
+    return DatasetProfile(
+        name=name or material.display_name,
+        material=material,
+        mass_balance_elements=tuple(material.mass_balance_elements),
+        mass_balance_candidate_phases=dict(material.candidate_phases),
+        precipitate_in_measured_solid=bool(material.precipitate_in_measured_solid),
+        material_mass_column=material.material_mass_column,
+        solid_mass_column=material.solid_mass_column,
+        liquid_volume_column=material.liquid_volume_column,
+        starting_content_unit=material.starting_content_unit,
+        solid_residue_unit=material.solid_residue_unit,
+        liquid_conc_unit=material.liquid_conc_unit,
+        **dataset_kwargs,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Fly-ash dataset profile — populated from config.py (the single source of truth)
 # --------------------------------------------------------------------------- #
 # Experiment-side cup-cover codes (OA/PF/GS), referenced from the config dict.
@@ -150,11 +308,27 @@ _FLY_ASH_COMPARISON_SPEC = {
     **{f"{el}_mM": (f"{el}_mM", f"phreeqc_{el}_mM") for el in config.RESIDUAL_ELEMENTS},
 }
 
+# The fly-ash material side (Prompt 28). Closure stays OFF for fly ash (no
+# ``mass_balance_elements``), so behaviour is unchanged — but the material now declares
+# the elements its chemistry involves (Ca/Si/Al/Fe/Na/K) and its reagent (NaOH), so the
+# same material abstraction that drives a new material also describes fly ash.
+FLY_ASH_MATERIAL = MaterialProfile(
+    material_id="class_c_fly_ash",
+    display_name="Class C fly ash",
+    relevant_elements=("Ca", "Si", "Al", "Fe", "Na", "K"),
+    mass_balance_elements=(),                 # closure OFF for fly ash (unchanged)
+    candidate_phases={},
+    precipitate_in_measured_solid=False,
+    default_reagents=("NaOH",),
+    declared_assay={},                        # no committed typical assay shipped
+)
+
 FLY_ASH_PROFILE = DatasetProfile(
     name="Class C fly ash",
     id_column="sample_id",
     time_column="time_min",
     condition_column="CO2_condition",
+    material=FLY_ASH_MATERIAL,
     condition_codes=_FLY_ASH_CONDITION_CODES,
     variable_columns=tuple(config.EXPERIMENTAL_NUMERIC_COLUMNS),
     variable_units=_FLY_ASH_VARIABLE_UNITS,
@@ -206,3 +380,136 @@ def default_dataset_profile() -> DatasetProfile:
 def default_model_profile() -> ModelProfile:
     """The model profile assumed when a caller passes none."""
     return PHREEQC_PROFILE
+
+
+# --------------------------------------------------------------------------- #
+# Second material (stub) — bauxite residue / red mud — proves the abstraction
+# --------------------------------------------------------------------------- #
+# Illustrative, not a validated red-mud parameter set: different elements (Ti/V/Fe/Al,
+# with REE among the relevant set), different candidate phases (anatase / rutile /
+# hematite), a different reagent set, and the OPPOSITE filtration flag from fly ash —
+# so a fly-ash assumption leaking anywhere would change the answer. Ti/V molar masses
+# were added to units.MOLAR_MASSES. Declared assays carry provenance; the Ti value is
+# literature-PROPOSED → quarantined (never usable until confirmed).
+RED_MUD_MATERIAL = MaterialProfile(
+    material_id="red_mud",
+    display_name="Bauxite residue (red mud)",
+    relevant_elements=("Fe", "Al", "Ti", "V", "Na", "Ca", "REE"),
+    mass_balance_elements=("Ti", "V", "Fe", "Al"),
+    candidate_phases={"Anatase": "Ti", "Rutile": "Ti", "Hematite": "Fe",
+                      "Gibbsite": "Al", "Boehmite": "Al"},
+    precipitate_in_measured_solid=True,        # opposite of fly ash (stub assumption)
+    default_reagents=("NaOH", "H2SO4"),
+    declared_assay={
+        # measured → usable; literature-confirmed → usable (carries a DOI);
+        # literature-proposed → quarantined (is_usable False) until a human confirms it.
+        "Fe": AssayValue("Fe", value=30.0, unit="wt%", provenance=ASSAY_LITERATURE_CONFIRMED,
+                         citation="https://doi.org/10.0000/redmud-fe"),
+        "Ti": AssayValue("Ti", value=5.0, unit="wt%", provenance=ASSAY_LITERATURE_PROPOSED),
+    },
+)
+
+RED_MUD_PROFILE = dataset_profile_from_material(
+    RED_MUD_MATERIAL,
+    grouping="generic",
+    condition_column="reagent",
+    important_fields=("reagent", "reagent_conc_M", "liquid_solid_ratio"),
+    overview_variables=("Ti_mM", "V_mM", "Fe_mM", "Al_mM"),
+    comparison_variable_spec={f"{el}_mM": (f"{el}_mM", f"phreeqc_{el}_mM")
+                              for el in ("Ti", "V", "Fe", "Al")},
+    feature_numeric_fields=("reagent_conc_M", "liquid_solid_ratio"),
+    feature_categorical_fields=("reagent",),
+)
+
+
+# --------------------------------------------------------------------------- #
+# Profile-creation path (Prompt 28) — a researcher defines a material in JSON/YAML
+# --------------------------------------------------------------------------- #
+# A material/experiment is defined in a small JSON (no deps) or YAML (if PyYAML is
+# installed) file; see docs/defining_a_material.md. No code is needed to add a material.
+def assay_value_from_dict(element: str, d: dict) -> AssayValue:
+    """Build an :class:`AssayValue` from a plain dict (validates provenance + citation)."""
+    prov = str(d.get("provenance", ASSAY_MEASURED))
+    if prov not in (ASSAY_MEASURED, ASSAY_LITERATURE_CONFIRMED, ASSAY_LITERATURE_PROPOSED):
+        raise ValueError(
+            f"assay for {element!r}: provenance {prov!r} not recognized "
+            f"(use {ASSAY_MEASURED!r}, {ASSAY_LITERATURE_CONFIRMED!r}, or "
+            f"{ASSAY_LITERATURE_PROPOSED!r}).")
+    citation = d.get("citation")
+    if prov in (ASSAY_LITERATURE_CONFIRMED, ASSAY_LITERATURE_PROPOSED) and not citation:
+        raise ValueError(f"assay for {element!r}: a literature provenance needs a "
+                         "citation (DOI/URL).")
+    value = d.get("value")
+    return AssayValue(element=element, value=(None if value is None else float(value)),
+                      unit=str(d.get("unit", "wt%")), provenance=prov,
+                      citation=(str(citation) if citation else None))
+
+
+def material_profile_from_dict(spec: dict) -> MaterialProfile:
+    """Build a :class:`MaterialProfile` from a parsed JSON/YAML spec (no code needed).
+
+    Required: ``material_id``, ``display_name``. Everything else is optional and additive.
+    Declared assays are validated for provenance + citation; a ``literature-proposed``
+    assay is kept **quarantined** (``is_usable`` False) — it can never enter a calculation
+    until a human confirms it.
+    """
+    if not spec.get("material_id") or not spec.get("display_name"):
+        raise ValueError("a material spec needs 'material_id' and 'display_name'.")
+    assays_raw = spec.get("declared_assay") or {}
+    declared = {el: assay_value_from_dict(el, d) for el, d in assays_raw.items()}
+    return MaterialProfile(
+        material_id=str(spec["material_id"]),
+        display_name=str(spec["display_name"]),
+        relevant_elements=tuple(spec.get("relevant_elements", ()) or ()),
+        mass_balance_elements=tuple(spec.get("mass_balance_elements", ()) or ()),
+        candidate_phases=dict(spec.get("candidate_phases", {}) or {}),
+        precipitate_in_measured_solid=bool(spec.get("precipitate_in_measured_solid", False)),
+        default_reagents=tuple(spec.get("default_reagents", ()) or ()),
+        declared_assay=declared,
+        starting_content_unit=str(spec.get("starting_content_unit", "wt%")),
+        solid_residue_unit=str(spec.get("solid_residue_unit", "wt%")),
+        liquid_conc_unit=str(spec.get("liquid_conc_unit", "mM")),
+        material_mass_column=str(spec.get("material_mass_column", "material_mass_g")),
+        solid_mass_column=str(spec.get("solid_mass_column", "solid_mass_g")),
+        liquid_volume_column=str(spec.get("liquid_volume_column", "liquid_volume_mL")),
+    )
+
+
+def dataset_profile_from_spec(spec: dict) -> DatasetProfile:
+    """Build a full :class:`DatasetProfile` (material + dataset shape) from one spec dict.
+
+    ``spec["material"]`` defines the material (see :func:`material_profile_from_dict`);
+    ``spec["dataset"]`` carries the dataset-shape kwargs (condition column/codes,
+    important_fields, comparison_variable_spec, overview_variables, sample_id_pattern,
+    grouping, feature fields…), passed through to :class:`DatasetProfile` unchanged.
+    """
+    material = material_profile_from_dict(spec.get("material") or {})
+    dataset_kwargs = dict(spec.get("dataset") or {})
+    # JSON gives lists/dicts; the dataclass wants tuples for the *_fields entries.
+    for key in ("important_fields", "overview_variables", "variable_columns",
+                "feature_numeric_fields", "feature_categorical_fields"):
+        if key in dataset_kwargs and dataset_kwargs[key] is not None:
+            dataset_kwargs[key] = tuple(dataset_kwargs[key])
+    return dataset_profile_from_material(material, **dataset_kwargs)
+
+
+def load_material_spec(path) -> dict:
+    """Read a material spec file → a plain dict. JSON always; YAML if PyYAML is installed."""
+    import json
+    from pathlib import Path
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
+    if p.suffix.lower() in (".yaml", ".yml"):
+        try:
+            import yaml  # optional; not a hard dependency
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            raise RuntimeError(
+                "YAML material specs need PyYAML (`pip install pyyaml`), or use JSON "
+                "(`.json`), which needs no extra dependency.") from exc
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
+def load_dataset_profile(path) -> DatasetProfile:
+    """Load a material/dataset spec file and build its :class:`DatasetProfile`."""
+    return dataset_profile_from_spec(load_material_spec(path))
