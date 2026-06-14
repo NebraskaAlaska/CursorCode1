@@ -58,6 +58,7 @@ from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import mapping_table  # noqa: E402
 from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
+from flyash_phreeqc_ml import attribution  # noqa: E402  (PHREEQC gap attribution)
 from flyash_phreeqc_ml import mass_balance  # noqa: E402  (deterministic element closure)
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report)
@@ -4231,6 +4232,124 @@ def _mass_balance_bar(record: dict):
     return fig
 
 
+_ATTR_STATUS_STYLE = {
+    attribution.STATUS_CLOSED: "exact",
+    attribution.STATUS_MODEL_EXPLAINED: "scenario-level",
+    attribution.STATUS_PARTIAL: "preliminary",
+    attribution.STATUS_UNEXPLAINED: "unsafe",
+}
+
+
+def _attribution_three_way_figure(result: dict):
+    """Three never-merged provenance bands: measured | model attribution | unexplained."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    fig, ax = plt.subplots(figsize=(4.6, 3.6))
+    m = result["measured"]
+    liquid = max(m["n_liquid"] or 0.0, 0.0)
+    solid = max(m["n_solid"] or 0.0, 0.0)
+    gap = result["gap"] or 0.0
+
+    # Band 1 — MEASURED (liquid + solid + gap). Never mixed with modeled colours.
+    ax.bar(0, liquid, color="#4878CF", label="measured liquid")
+    ax.bar(0, solid, bottom=liquid, color="#6ACC64", label="measured solid")
+    ax.bar(0, gap, bottom=liquid + solid, color="#B0B0B0", hatch="//",
+           label="closure gap (measured)")
+
+    # Band 2 — MODEL ATTRIBUTION by phase + the unexplained residual (modeled split of
+    # the measured gap). Distinct hatch/colours so it reads as a different provenance.
+    by_phase = result.get("by_phase") or {}
+    bottom = 0.0
+    cmap = plt.get_cmap("tab10")
+    for i, (ph, mol) in enumerate(sorted(by_phase.items())):
+        seg = min(mol, max(gap, 0.0) - bottom) if gap > 0 else 0.0
+        if seg > 0:
+            ax.bar(1, seg, bottom=bottom, color=cmap(i % 10), hatch="..",
+                   label=f"model: {ph}")
+            bottom += seg
+    unexplained = result.get("gap_unexplained")
+    if unexplained and unexplained > 0:
+        ax.bar(1, unexplained, bottom=bottom, color="#D0402B", hatch="xx",
+               label="unexplained")
+
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(["measured", "model"], fontsize=8)
+    ax.set_ylabel("mmol")
+    ax.set_title(f"{result['element']} — gap attribution", fontsize=9)
+    ax.legend(fontsize=6, loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def _render_gap_attribution(selected_run: str, profile, data: pd.DataFrame,
+                            element: str) -> None:
+    """Explain the closure gap with PHREEQC — preview-before-run, degrade if unavailable.
+
+    Modeled attribution **never** overwrites the measured gap; all text says "model
+    attributes" / "predicted to precipitate".
+    """
+    with st.expander("Explain the gap with PHREEQC (attribution)"):
+        st.caption("Modeled attribution: **predicted to precipitate** — never 'the element "
+                   "was X'. The measured gap (above) is immutable; the model only *splits* "
+                   "it into attributed-to-phase vs still-unexplained.")
+        configured = phreeqc_runner.is_configured()
+        rows = [r.to_dict() for _, r in data.iterrows()]
+        # The first sample whose closure for this element is complete.
+        target = next((r for r in rows
+                       if mass_balance.closure(r, element, profile=profile)["status"]
+                       == mass_balance.STATUS_COMPLETE), None)
+        if target is None:
+            st.info(f"No complete {element} closure to attribute yet.")
+            return
+
+        if not configured:
+            res = attribution.attribution_unavailable(target, element, profile=profile)
+            st.warning("⚠️ " + res["note"])
+            st.pyplot(_attribution_three_way_figure(res))
+            st.caption(attribution.attribution_caption(res))
+            return
+
+        # Configured: preview the attribution .pqi, then run + attribute on demand.
+        inputs = attribution.build_attribution_inputs(target, profile)
+        if inputs:
+            with st.expander("Preview the attribution .pqi (before running)"):
+                st.code(inputs[0].pqi_text, language="text")
+        key = f"attr_result_{selected_run}_{element}"
+        if st.button(f"Run PHREEQC & attribute {element} gap",
+                     key=f"attr_run_{selected_run}_{element}"):
+            try:
+                sel = _run_attribution_and_parse(selected_run, inputs)
+                st.session_state[key] = attribution.attribute_gap(
+                    target, element, sel, profile=profile)
+            except Exception as exc:  # never crash the tab on a model failure
+                st.session_state[key] = attribution.attribution_unavailable(
+                    target, element, profile=profile)
+                st.error(f"Attribution run failed: {exc}")
+        res = st.session_state.get(key)
+        if res is None:
+            st.info("Build is ready — click **Run** to attribute the gap.")
+            return
+        status = res["status"]
+        app_ui.render_status_badge(f"attribution: {status}",
+                                   _ATTR_STATUS_STYLE.get(status, "preliminary"))
+        st.pyplot(_attribution_three_way_figure(res))
+        st.caption(attribution.attribution_caption(res))
+
+
+def _run_attribution_and_parse(run_name: str, inputs):
+    """Run the first attribution input and parse its SELECTED_OUTPUT (best-effort)."""
+    from flyash_phreeqc_ml.parsers.selected_output_parser import parse_selected_output
+    workdir = run_manager.generated_simulations_dir(run_name)
+    gi = inputs[0]
+    pqo = phreeqc_runner.run(gi.pqi_text, workdir, basename=gi.basename)
+    # PHREEQC writes USER_PUNCH to a sibling selected-output file.
+    for cand in (pqo.with_suffix(".sel"), workdir / "selected.out",
+                 pqo.parent / f"{gi.basename}.sel"):
+        if cand.exists():
+            return parse_selected_output(cand)
+    raise phreeqc_runner.PhreeqcRunError("no SELECTED_OUTPUT file produced by the run")
+
+
 def _render_mass_balance(selected_run: str) -> None:
     """Batch-reaction element closure (deterministic arithmetic; no model/AI/ML).
 
@@ -4303,6 +4422,9 @@ def _render_mass_balance(selected_run: str) -> None:
                 if rec["assumptions"]:
                     for a in rec["assumptions"]:
                         st.caption(f"⚠️ assumption: {a}")
+
+        # Explain the measured gap with PHREEQC (modeled; never overwrites the measured gap).
+        _render_gap_attribution(selected_run, profile, data, element)
 
 
 def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:

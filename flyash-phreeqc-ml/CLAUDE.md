@@ -436,6 +436,35 @@ experiment — **not** a blind replacement for the chemistry.
   on every term, incomplete + assumed-solid-mass handling, negative-gap warning, uncertainty vs a
   hand-check, FLY_ASH unchanged).
 
+- **PHREEQC gap attribution — explain the closure gap** (Prompt 24 — modeled explanation of the
+  Prompt-22 measured gap; the measured closure is **immutable input**). `flyash_phreeqc_ml/attribution.py`
+  (new) asks PHREEQC *which phases it predicts precipitated* and computes **how much of the measured
+  gap that accounts for**, never overwriting the measured numbers. `phreeqc_runner.build_single_input`
+  gained **additive** optional extras (byte-identical output when absent — golden test preserved):
+  `material_inputs` (dissolved batch material as SOLUTION inputs, flagged), `candidate_phases`
+  (profile-declared precipitates added to `EQUILIBRIUM_PHASES`), and `selected_output_elements`
+  (per-element `SELECTED_OUTPUT`/`USER_PUNCH` emitting solution + phase moles); `build_input`'s
+  OA→1 / PF-GS→2 behaviour is kept via `attribution.build_attribution_inputs`. `attribute_gap(row,
+  element, phreeqc_selected_output)` → `{modeled_precipitated_moles, by_phase, modeled_solution_moles,
+  gap, gap_explained, gap_unexplained, fraction_explained, status, provenance="phreeqc", measured{…}}`.
+  **The `precipitate_in_measured_solid` flag (CONFIRMED `False` for the fly-ash filtration protocol —
+  precipitate leaves with the filtrate, not in the assayed solid)** sets the arithmetic:
+  `False → attribution_to_gap = min(P, gap)` (precipitate explains the gap); `True → 0` (precipitate is
+  already in `n_solid`, explains the solid's composition not the gap). Profile-configurable
+  (`DatasetProfile.precipitate_in_measured_solid` + `mass_balance_candidate_phases` = phase→element);
+  documented in `docs/mass_balance.md`. **Status** (parallels mapping status): `closed` /
+  `model-explained` / `partially-explained` / `unexplained`, folded into the report's overall validity
+  (one source of truth — `report._overall_validity` accepts an `attribution_status` that caps a would-be
+  `valid` run at `preliminary` when the budget isn't measured-closed). **UI** (Validate tab): a
+  **three-way, never-merged** band display (measured liquid+solid+gap | model attribution by phase |
+  unexplained residual) + an honest caption ("model attributes N of M mmol… to calcite; P remain
+  unexplained"); **degrades** to the measured gap with "attribution unavailable — configure PHREEQC"
+  when the binary/db is absent. **Honesty:** all text is "model attributes" / "predicted to
+  precipitate", and no modeled value lands in a measured-labelled field. Covered by
+  `tests/test_attribution.py` (arithmetic on a synthetic selected-output, the flag both ways, all four
+  statuses, the degrade path, immutability of the measured block, validity feed) with the PHREEQC run
+  mocked.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

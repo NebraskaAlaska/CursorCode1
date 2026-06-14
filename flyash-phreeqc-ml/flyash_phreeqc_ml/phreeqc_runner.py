@@ -90,6 +90,9 @@ def _safe_stem(text: str) -> str:
 def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: float,
                        co2_scenario: str, *, ph: float | None = None,
                        time_min: float | None = None, label: str = "condition",
+                       material_inputs: dict | None = None,
+                       candidate_phases=None,
+                       selected_output_elements=None,
                        ) -> tuple[str, list[str]]:
     """Template one ``.pqi`` text + its list of assumptions for one CO₂ scenario.
 
@@ -97,6 +100,17 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
     alias (``atm``/``low``/``none``). The DATABASE line is intentionally omitted — the
     database is supplied to the CLI at run time (:func:`run`), so the same text works
     regardless of where CEMDATA18 lives.
+
+    Optional **mass-balance attribution** extras (Prompt 24; all additive — when a
+    parameter is ``None`` the output is byte-identical to the base template):
+
+    * ``material_inputs`` — ``{element: mol_per_L}`` of dissolved batch material added to
+      the SOLUTION (overriding the assumed stock for those elements), flagged as an
+      assumption in the header.
+    * ``candidate_phases`` — extra precipitate phases added to EQUILIBRIUM_PHASES (each
+      ``Phase 0 0``, allowed to precipitate), skipping any already present.
+    * ``selected_output_elements`` — emit, per element, moles in solution and per phase
+      moles via SELECTED_OUTPUT/USER_PUNCH (so the attribution can read them back).
     """
     scenario = config.CO2_SCENARIO_ALIASES.get(str(co2_scenario), str(co2_scenario))
     if scenario not in config.CO2_SCENARIO_ENCODING:
@@ -144,6 +158,15 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
     lines.append(f"    Si        {_fmt(stock['Si'])}   # ASSUMED stock")
     lines.append(f"    Al        {_fmt(stock['Al'])}   # ASSUMED stock")
     lines.append(f"    Ca        {_fmt(stock['Ca'])}   # ASSUMED stock")
+    # Dissolved batch material (mass-balance attribution) overrides the stock for the
+    # given elements; PHREEQC uses the later definition. Flagged, never buried.
+    if material_inputs:
+        for el, mol_l in material_inputs.items():
+            lines.append(f"    {el}        {_fmt(mol_l)}   # dissolved batch material (mol/L)")
+        assumptions.append(
+            "dissolved batch material added to SOLUTION (mol/L): "
+            + ", ".join(f"{el}={float(v):g}" for el, v in material_inputs.items())
+            + " — derived from the measured liquid + closure gap, overrides the stock")
     lines.append("    Cl        0 charge   # ASSUMED counter-ion (charge balance)")
     lines.append("")
     lines.append("EQUILIBRIUM_PHASES 1")
@@ -153,12 +176,51 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
         lines.append("    # no CO2(g) phase — sealed scenario")
     lines.append("    Cal           0      0")
     lines.append("    Portlandite   0      0")
+    if candidate_phases:
+        present = {"Cal", "Portlandite", "CO2(g)"}
+        for ph_name in candidate_phases:
+            if ph_name not in present:
+                lines.append(f"    {ph_name:<13} 0      0   # candidate precipitate")
+                present.add(ph_name)
     lines.append("")
+    if selected_output_elements:
+        lines.extend(_selected_output_block(selected_output_elements, candidate_phases or []))
+        lines.append("")
     lines.append("USE solution 1")
     lines.append("USE equilibrium_phases 1")
     lines.append("END")
     lines.append("")
     return "\n".join(lines), assumptions
+
+
+# Column-name conventions the attribution reads back from the selected output.
+def sol_moles_column(element: str) -> str:
+    return f"{element}_sol_mol"
+
+
+def phase_moles_column(phase: str) -> str:
+    return f"phase_{phase}_mol"
+
+
+def _selected_output_block(elements, phases) -> list[str]:
+    """SELECTED_OUTPUT + USER_PUNCH emitting per-element solution moles + per-phase moles.
+
+    ``TOT("El") * (mass of water)`` gives moles in solution; ``EQUI("Phase")`` gives
+    moles of each precipitated phase. The attribution reads these columns back.
+    """
+    headings: list[str] = []
+    punch: list[str] = []
+    n = 10
+    for el in elements:
+        headings.append(sol_moles_column(el))
+        punch.append(f"  {n} PUNCH TOT(\"{el}\") * TOT(\"water\")")
+        n += 10
+    for ph_name in phases:
+        headings.append(phase_moles_column(ph_name))
+        punch.append(f"  {n} PUNCH EQUI(\"{ph_name}\")")
+        n += 10
+    return (["SELECTED_OUTPUT", "    -reset false", "    -high_precision true",
+             "USER_PUNCH", "    -headings  " + "  ".join(headings)] + punch)
 
 
 def generation_blocked_reason(condition: dict, profile=None) -> str | None:

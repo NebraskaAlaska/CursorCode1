@@ -85,6 +85,16 @@ class DatasetProfile:
     starting_content_unit: str = "wt%"                # unit of {el}_starting_content
     solid_residue_unit: str = "wt%"                   # unit of {el}_solid_residue
     liquid_conc_unit: str = "mM"                      # unit of the measured liquid {el}_mM
+    # --- Gap attribution via PHREEQC (Prompt 24; additive) ---
+    # Candidate precipitate phases (PHREEQC phase name -> element) added to
+    # EQUILIBRIUM_PHASES and read back from the selected output.
+    mass_balance_candidate_phases: dict = field(default_factory=dict)
+    # CONFIRMED for the fly-ash filtration protocol = False: a PHREEQC-predicted
+    # precipitate leaves with the filtrate and is NOT in the measured solid residue, so
+    # it counts toward EXPLAINING the gap (attribution_to_gap = min(P, gap)). Set True
+    # for a protocol where precipitates are retained in the assayed solid (then they are
+    # already in n_solid and do not reduce the gap). See docs/mass_balance.md.
+    precipitate_in_measured_solid: bool = False
 
 
 @dataclass(frozen=True)

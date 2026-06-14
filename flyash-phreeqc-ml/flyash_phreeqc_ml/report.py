@@ -147,18 +147,46 @@ def _inclusion_by_variable(data, mapping, comparison_df, manifest, profile) -> d
     return out
 
 
-def _overall_validity(inclusions: dict) -> str:
-    """Aggregate per-variable validity (Prompt-4). 'valid' only if all are valid."""
+def _overall_validity(inclusions: dict, attribution_status: str | None = None) -> str:
+    """Aggregate per-variable validity (Prompt-4). 'valid' only if all are valid.
+
+    ``attribution_status`` (Prompt-24 mass-balance closure, optional) is folded in as a
+    one-source-of-truth rule: a run whose element budget is **not measured-closed**
+    (the attribution is anything other than ``closed`` — i.e. ``model-explained`` /
+    ``partially-explained`` / ``unexplained``) cannot be reported as ``valid``; it is
+    capped at ``preliminary``. ``None`` (no mass balance) preserves the prior behaviour.
+    """
     data_validities = [inc["validity"] for inc in inclusions.values()
                        if inc["validity"] != _inc.VALIDITY_NONE]
     if not data_validities:
-        return _inc.VALIDITY_NONE
-    if all(v == _inc.VALIDITY_VALID for v in data_validities):
-        return _inc.VALIDITY_VALID
-    for v in _WORST_ORDER:
-        if v in data_validities:
-            return v
-    return _inc.VALIDITY_PRELIMINARY
+        validity = _inc.VALIDITY_NONE
+    elif all(v == _inc.VALIDITY_VALID for v in data_validities):
+        validity = _inc.VALIDITY_VALID
+    else:
+        validity = next((v for v in _WORST_ORDER if v in data_validities),
+                        _inc.VALIDITY_PRELIMINARY)
+    if (validity == _inc.VALIDITY_VALID and attribution_status is not None
+            and attribution_status != "closed"):
+        return _inc.VALIDITY_PRELIMINARY
+    return validity
+
+
+def _mass_balance_attribution_status(data, profile) -> str | None:
+    """Worst measured mass-balance closure status, or None when the profile opts out.
+
+    The report has no live PHREEQC run, so it uses the *measured* status (closed vs.
+    unexplained open gap) from :mod:`attribution` — enough to keep a run with an open
+    element budget out of ``valid``. None when the profile declares no mass balance.
+    """
+    from . import attribution, mass_balance
+    if not mass_balance.is_enabled(profile) or data is None or data.empty:
+        return None
+    results = []
+    for _, r in data.iterrows():
+        row = r.to_dict()
+        for el in getattr(profile, "mass_balance_elements", ()) or ():
+            results.append(attribution.attribution_unavailable(row, el, profile=profile))
+    return attribution.overall_attribution_status(results)
 
 
 def _excluded_rows(inclusions: dict) -> pd.DataFrame:
@@ -521,7 +549,10 @@ def build_report(run_name: str, *, profile=None) -> Path:
 
     # --- derive ---------------------------------------------------------- #
     inclusions = _inclusion_by_variable(data, mapping, comparison_df, manifest, profile)
-    overall_validity = _overall_validity(inclusions)
+    # Mass-balance closure status (Prompt 24) folds into validity (one source of truth).
+    # Without a PHREEQC run the measured side is known: an open gap → not measured-closed.
+    attribution_status = _mass_balance_attribution_status(data, profile)
+    overall_validity = _overall_validity(inclusions, attribution_status=attribution_status)
     suggestion_table = mapping_table.build_suggestion_table(data, manifest, cond_map, profile)
     overall_status = replicates.overall_mapping_status(data, mapping, manifest)
     statuses = residual_stats.collect_sample_statuses(
