@@ -13,10 +13,12 @@ import json
 import pandas as pd
 import pytest
 
-from flyash_phreeqc_ml import (config, mapping_table, report, run_manager, scenarios)
+from flyash_phreeqc_ml import (attribution, config, mapping_table, profiles, report,
+                               run_manager, scenarios, units)
 from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 from flyash_phreeqc_ml.compare import inclusion as I
 from flyash_phreeqc_ml import phreeqc_runner
+from flyash_phreeqc_ml.ai import literature
 
 
 def _phreeqc() -> pd.DataFrame:
@@ -216,3 +218,152 @@ def test_needed_simulations_columns_match_prompt11_fields(built):
     # And a row with no molarity is refused for the right, explicit reason (not a crash).
     assert "No NaOH molarity" in phreeqc_runner.generation_blocked_reason(
         {"leachant": "NaOH", "concentration": "", "liquid_solid_ratio": 5})
+
+
+# --------------------------------------------------------------------------- #
+# Element recovery (Prompt 25)
+# --------------------------------------------------------------------------- #
+M_CA = units.MOLAR_MASSES["Ca"]
+
+# A profile that opts into the batch-reaction mass balance + a calcite candidate phase.
+BATCH_PROFILE = profiles.DatasetProfile(
+    name="batch recovery", grouping="fly_ash",
+    mass_balance_elements=("Ca",), starting_content_unit="wt%", solid_residue_unit="wt%",
+    mass_balance_candidate_phases={"Calcite": "Ca"}, precipitate_in_measured_solid=False,
+    overview_variables=("final_pH",),
+    comparison_variable_spec={"final_pH": ("final_pH", "phreeqc_pH")},
+    important_fields=("leachant", "NaOH_M", "acid_M", "CO2_condition", "time_min",
+                      "liquid_solid_ratio", "temperature_C"))
+
+
+def _batch_row(naoh, ca_mM, *, ca_start="2.0"):
+    """One batch condition row. material 5g, vol 50mL, solid 4g, residue 0.4 wt%."""
+    return {"sample_id": f"BATCH-{naoh}", "fly_ash_type": "Class C fly ash",
+            "leachant": "NaOH", "NaOH_M": naoh, "acid_M": "", "CO2_condition": "OA",
+            "liquid_solid_ratio": 5, "temperature_C": 25, "final_pH": 13.0,
+            "material_mass_g": 5.0, "liquid_volume_mL": 50.0, "solid_mass_g": 4.0,
+            "Ca_starting_content": ca_start, "Ca_solid_residue": 0.4, "Ca_mM": ca_mM}
+
+
+def _batch_data():
+    # closed: liquid+solid ≈ n_in (gap fraction < 5%);  unexplained: large open gap;
+    # literature: NO measured Ca starting assay (filled by a confirmed stand-in).
+    return pd.DataFrame([
+        _batch_row("0.5", 40.0),                       # gap ≈ 0.096 mmol → closed
+        _batch_row("1.0", 20.0),                       # gap ≈ 1.096 mmol → unexplained
+        _batch_row("1.5", 20.0, ca_start=""),          # literature stand-in fills the assay
+    ])
+
+
+def _confirm_literature_assay(run):
+    """Save + confirm a sourced Ca starting-assay stand-in for the run."""
+    cand = literature._candidate_from_dict({
+        "value": 2.0, "unit": "wt%", "quantity": "typical Ca content of Class C fly ash",
+        "material": "Class C fly ash", "element": "Ca",
+        "conditions": {}, "confidence": 0.8,
+        "conditions_match": {"matches": True, "mismatch_flags": []},
+        "citation": {"doi": "10.1016/j.flyash.2019.05", "title": "Fly ash bulk assays",
+                     "year": 2019, "supporting_quote": "Class C fly ash contains ~20 wt% CaO."},
+    }, kind="starting_assay")
+    literature.save_candidates(run, [cand])
+    literature.confirm_value(run, cand.candidate_id)
+    return "https://doi.org/10.1016/j.flyash.2019.05"
+
+
+@pytest.fixture()
+def recovery(tmp_path, monkeypatch):
+    """A batch run + a confirmed literature assay → a report built with BATCH_PROFILE."""
+    monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
+    proc = tmp_path / "processed"
+    proc.mkdir()
+    monkeypatch.setattr(config, "PROCESSED_DIR", proc)        # empty → no manifest
+    run = "recovery_run"
+    run_manager.create_run(run, "lab_experiment")
+    run_manager.save_lab_dataframe(run, _batch_data(), mode="replace")
+    doi_link = _confirm_literature_assay(run)
+    out = report.build_report(run, profile=BATCH_PROFILE)
+    return {"run": run, "out": out, "doi_link": doi_link,
+            "data": run_manager.read_data_file(run)}
+
+
+def test_recovery_csv_has_every_term_and_provenance(recovery):
+    csv = recovery["out"] / "element_recovery.csv"
+    assert csv.exists()
+    df = pd.read_csv(csv)
+    assert list(df.columns) == report.RECOVERY_CSV_COLUMNS
+    # Each closure is Ca; provenance flags carry both measured and literature-confirmed.
+    provs = set(df["starting_provenance"])
+    assert report.CLASS_MEASURED in provs
+    assert report.CLASS_LITERATURE in provs
+
+
+def test_recovery_hits_closed_and_unexplained_offline(recovery):
+    df = pd.read_csv(recovery["out"] / "element_recovery.csv")
+    statuses = set(df["recovery_status"])
+    # Offline (no live PHREEQC) the gap is either within uncertainty (closed) or open
+    # (unexplained) — both must appear from the synthetic dataset.
+    assert attribution.STATUS_CLOSED in statuses
+    assert attribution.STATUS_UNEXPLAINED in statuses
+
+
+def test_recovery_literature_value_shows_its_doi_link(recovery):
+    df = pd.read_csv(recovery["out"] / "element_recovery.csv")
+    lit_rows = df[df["starting_provenance"] == report.CLASS_LITERATURE]
+    assert not lit_rows.empty
+    assert (lit_rows["starting_citation"] == recovery["doi_link"]).all()
+    # The clickable DOI/link is rendered in the HTML too.
+    html = (recovery["out"] / "report.html").read_text(encoding="utf-8")
+    assert recovery["doi_link"] in html
+    assert "literature-confirmed stand-in" in html  # narrative provenance phrase
+
+
+def test_recovery_narrative_and_section_render(recovery):
+    html = (recovery["out"] / "report.html").read_text(encoding="utf-8")
+    assert "Element recovery" in html
+    assert "initially present" in html                 # the generated narrative line
+    assert "measured assay" in html                    # a measured-provenance starting amount
+
+
+def test_manifest_recovery_classification_tags_each_term(recovery):
+    man = json.loads((recovery["out"] / "MANIFEST.json").read_text())
+    cls = man["recovery_classification"]
+    assert cls["n_liquid_mmol"] == report.CLASS_MEASURED
+    assert cls["gap_mmol"] == report.CLASS_DERIVED
+    assert cls["gap_explained_mmol"] == report.CLASS_MODELED
+    assert cls["starting_citation"] == report.CLASS_LITERATURE
+    # n_in is measured OR literature-confirmed per row (both categories named).
+    assert report.CLASS_MEASURED in cls["n_in_mmol"]
+    assert report.CLASS_LITERATURE in cls["n_in_mmol"]
+
+
+def test_recovery_reaches_model_explained_and_partial_with_attribution(recovery):
+    """With a (mocked) PHREEQC selected output, attribution moves the status off
+    'unexplained' — model-explained when ~all the gap precipitates, partial otherwise."""
+    data = recovery["data"]
+    # The unexplained condition's key + its measured gap (mmol).
+    base = report._recovery_records(data, BATCH_PROFILE, recovery["run"])
+    unexpl = next(r for r in base if r["recovery_status"] == attribution.STATUS_UNEXPLAINED
+                  and r["closure_status"] == "complete")
+    ck, gap = unexpl["condition_key"], unexpl["gap"]
+    calcite = phreeqc_runner.phase_moles_column("Calcite")
+
+    explained = report._recovery_records(
+        data, BATCH_PROFILE, recovery["run"],
+        selected_outputs={ck: {calcite: gap / 1000.0}})        # ~all the gap → mol
+    r_exp = next(r for r in explained if r["condition_key"] == ck)
+    assert r_exp["recovery_status"] == attribution.STATUS_MODEL_EXPLAINED
+    assert r_exp["by_phase"]["Calcite"] == pytest.approx(gap)
+
+    partial = report._recovery_records(
+        data, BATCH_PROFILE, recovery["run"],
+        selected_outputs={ck: {calcite: (gap * 0.4) / 1000.0}})
+    r_part = next(r for r in partial if r["condition_key"] == ck)
+    assert r_part["recovery_status"] == attribution.STATUS_PARTIAL
+
+
+def test_recovery_summary_sorted_by_unexplained_fraction(recovery):
+    recs = report._recovery_records(recovery["data"], BATCH_PROFILE, recovery["run"])
+    summ = report._recovery_summary(recs)
+    assert list(summ.columns) == report.RECOVERY_SUMMARY_COLUMNS
+    fracs = pd.to_numeric(summ["unexplained_fraction"], errors="coerce").dropna().tolist()
+    assert fracs == sorted(fracs, reverse=True)         # weakest knowledge first

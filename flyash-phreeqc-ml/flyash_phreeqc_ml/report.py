@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import (__version__, audit, calculations, config, import_mapping,
-               mapping_table, profiles, replicates, run_manager, scenarios)
+from . import (__version__, attribution, audit, calculations, config, import_mapping,
+               mapping_table, mass_balance, profiles, replicates, run_manager, scenarios)
 from .compare import inclusion as _inc
 from .ml import residual_stats
 from .viz import compare_plots, measured_overview
@@ -53,6 +53,48 @@ NEEDED_SIM_COLUMNS = [
 # comparable variable to be valid (never overclaim from a single variable).
 _WORST_ORDER = [_inc.VALIDITY_UNSAFE, _inc.VALIDITY_NEEDS_NEW,
                 _inc.VALIDITY_PRELIMINARY, _inc.VALIDITY_SINGLE_SAMPLE]
+
+# --- Element recovery (Prompt 25) ---------------------------------------------
+# Provenance classification of each recovery term — surfaced in MANIFEST.json so a
+# reviewer can tell, per number, whether it is measured / derived / modeled /
+# literature-confirmed. (n_in is measured OR literature-confirmed per row — the row's
+# starting_provenance column is authoritative; the manifest notes both.)
+CLASS_MEASURED = "measured"
+CLASS_DERIVED = "derived"
+CLASS_MODELED = "modeled"
+CLASS_LITERATURE = "literature-confirmed"
+
+RECOVERY_TERM_CLASSIFICATION = {
+    "n_in_mmol": f"{CLASS_MEASURED}|{CLASS_LITERATURE}",   # see starting_provenance
+    "starting_provenance": CLASS_MEASURED,
+    "starting_citation": CLASS_LITERATURE,
+    "n_liquid_mmol": CLASS_MEASURED,
+    "n_solid_mmol": CLASS_MEASURED,
+    "gap_mmol": CLASS_DERIVED,
+    "gap_sigma_mmol": CLASS_DERIVED,
+    "modeled_precipitated_mmol": CLASS_MODELED,
+    "by_phase": CLASS_MODELED,
+    "gap_explained_mmol": CLASS_MODELED,
+    "gap_unexplained_mmol": CLASS_DERIVED,
+    "unexplained_fraction": CLASS_DERIVED,
+}
+
+# An element balance is only "explained" when closed or model-explained within
+# uncertainty (Prompt-4/24 honesty); the other two carry the standing caution.
+RECOVERY_EXPLAINED_STATUSES = {attribution.STATUS_CLOSED, attribution.STATUS_MODEL_EXPLAINED}
+
+# Full per-term CSV (one row per element × condition) — every term + provenance + citation.
+RECOVERY_CSV_COLUMNS = [
+    "condition_key", "element", "n_in_mmol", "starting_provenance", "starting_citation",
+    "n_liquid_mmol", "n_solid_mmol", "gap_mmol", "gap_sigma_mmol",
+    "modeled_precipitated_mmol", "by_phase", "gap_explained_mmol", "gap_unexplained_mmol",
+    "unexplained_fraction", "recovery_status", "closure_status",
+]
+# Summary table ("where knowledge is weakest"), sortable by unexplained fraction.
+RECOVERY_SUMMARY_COLUMNS = [
+    "condition_key", "element", "n_in_mmol", "gap_unexplained_mmol",
+    "unexplained_fraction", "recovery_status", "starting_provenance",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -270,6 +312,159 @@ def _needed_simulations(data, cond_map, manifest, comparison_df, profile) -> pd.
     return pd.DataFrame(rows, columns=NEEDED_SIM_COLUMNS)
 
 
+# --------------------------------------------------------------------------- #
+# Element recovery (Prompt 25) — integrate measured closure + attribution + literature
+# --------------------------------------------------------------------------- #
+def _present(value) -> bool:
+    """True for a non-blank, non-NaN cell (a measured starting assay actually present)."""
+    if value in (None, ""):
+        return False
+    try:
+        return not pd.isna(value)
+    except (TypeError, ValueError):  # pragma: no cover
+        return True
+
+
+def _pct(part, whole) -> str:
+    if part is None or whole in (None, 0):
+        return "—"
+    return f"{(part / whole) * 100:.0f}%"
+
+
+def _recovery_narrative(rec: dict) -> str:
+    """The generated per-element sentence (measured assay vs literature stand-in inline)."""
+    el = rec["element"]
+    if rec["closure_status"] != mass_balance.STATUS_COMPLETE:
+        miss = ", ".join(rec["missing_fields"]) or "inputs"
+        return f"{el}: closure incomplete — missing {miss}. Recovery not computed."
+    n_in, gap = rec["n_in"], rec["gap"]
+    if rec["starting_provenance"] == CLASS_LITERATURE:
+        link = rec["starting_citation"] or "no link"
+        start = f"literature-confirmed stand-in, {link}"
+    elif rec["starting_provenance"] == CLASS_MEASURED:
+        start = "measured assay"
+    else:
+        start = "starting assay missing"
+    base = (f"Of {n_in:.3g} mmol {el} initially present ({start}), "
+            f"{_pct(rec['n_liquid'], n_in)} in liquid, {_pct(rec['n_solid'], n_in)} in solid; "
+            f"{gap:.3g} mmol unaccounted")
+    if rec["attribution_available"] and rec["by_phase"]:
+        phases = ", ".join(sorted(rec["by_phase"]))
+        return (base + f", of which the model attributes {rec['gap_explained']:.3g} mmol to "
+                f"{phases}, leaving {rec['gap_unexplained']:.3g} mmol unexplained.")
+    if rec["attribution_available"]:
+        return (base + f"; the model attributes none to a candidate phase, leaving "
+                f"{rec['gap_unexplained']:.3g} mmol unexplained.")
+    return (base + "; model attribution unavailable (configure PHREEQC), so all "
+            f"{gap:.3g} mmol remain unexplained.")
+
+
+def _recovery_record(ck, el, closure, attr, starting_prov, citation) -> dict:
+    n_in, gap, gap_unexpl = closure["n_in"], closure["gap"], attr.get("gap_unexplained")
+    unexpl_frac = (gap_unexpl / n_in) if (n_in not in (None, 0) and gap_unexpl is not None) \
+        else None
+    rec = {
+        "condition_key": ck, "element": el,
+        "n_in": n_in, "starting_provenance": starting_prov, "starting_citation": citation,
+        "n_liquid": closure["n_liquid"], "n_solid": closure["n_solid"],
+        "gap": gap, "gap_sigma": closure["gap_sigma"],
+        "modeled_precipitated": attr.get("modeled_precipitated_moles"),
+        "by_phase": dict(attr.get("by_phase") or {}),
+        "gap_explained": attr.get("gap_explained"), "gap_unexplained": gap_unexpl,
+        "unexplained_fraction": unexpl_frac,
+        "recovery_status": attr["status"], "closure_status": closure["status"],
+        "attribution_available": attr.get("provenance") == attribution.PROVENANCE_MODEL,
+        "missing_fields": closure["missing_fields"],
+    }
+    rec["narrative"] = _recovery_narrative(rec)
+    return rec
+
+
+def _recovery_records(data, profile, run_name=None, *, selected_outputs=None) -> list[dict]:
+    """Per-element-per-condition recovery: starting amount, where it went, confidence.
+
+    Integrates the measured closure (Prompt 22), PHREEQC attribution (Prompt 24; only
+    available when a parsed selected output is supplied — the report has no live run, so
+    by default attribution is *unavailable* and the whole gap is unexplained), and
+    **confirmed** literature starting-assay stand-ins (provenance-flagged, with the
+    citation). Returns ``[]`` when the profile declares no mass balance.
+    """
+    if not mass_balance.is_enabled(profile) or data is None or data.empty:
+        return []
+    from .ai import literature  # lazy: optional AI layer, keep report import light
+    elements = list(getattr(profile, "mass_balance_elements", ()) or ())
+    confirmed, overrides = [], {}
+    if run_name:
+        try:
+            confirmed = literature.confirmed_records(run_name)
+            overrides = literature.confirmed_assay_overrides(confirmed, profile)
+        except Exception:
+            confirmed, overrides = [], {}
+
+    ann = replicates.annotate(data, profile)
+    selected_outputs = selected_outputs or {}
+    records: list[dict] = []
+    for ck, grp in ann.groupby(replicates.CONDITION_KEY_COLUMN):
+        ck = str(ck)
+        rep = grp.iloc[0].to_dict()
+        # Fill ONLY confirmed literature assays into blank starting-content cells.
+        new_row, badges = literature.row_with_confirmed_assays(rep, confirmed, profile)
+        sel = selected_outputs.get(ck)
+        for el in elements:
+            closure = mass_balance.closure(new_row, el, profile=profile)
+            attr = (attribution.attribute_gap(new_row, el, sel, profile=profile)
+                    if sel is not None
+                    else attribution.attribution_unavailable(new_row, el, profile=profile))
+            scol = f"{el}_starting_content"
+            if _present(rep.get(scol)):
+                starting_prov, citation = CLASS_MEASURED, ""
+            elif scol in badges:
+                ov = overrides.get(scol)
+                cite = (ov[1].get("citation") if ov else {}) or {}
+                starting_prov = CLASS_LITERATURE
+                citation = literature.resolvable_link(cite) or ""
+            else:
+                starting_prov, citation = "missing", ""
+            records.append(_recovery_record(ck, el, closure, attr, starting_prov, citation))
+    return records
+
+
+def _fmt_by_phase(by_phase: dict) -> str:
+    return "; ".join(f"{k}={v:.4g}" for k, v in sorted((by_phase or {}).items()))
+
+
+def _recovery_table(records: list[dict]) -> pd.DataFrame:
+    """Full per-term frame for ``element_recovery.csv`` (every term + provenance + citation)."""
+    rows = []
+    for r in records or []:
+        rows.append({
+            "condition_key": r["condition_key"], "element": r["element"],
+            "n_in_mmol": r["n_in"], "starting_provenance": r["starting_provenance"],
+            "starting_citation": r["starting_citation"],
+            "n_liquid_mmol": r["n_liquid"], "n_solid_mmol": r["n_solid"],
+            "gap_mmol": r["gap"], "gap_sigma_mmol": r["gap_sigma"],
+            "modeled_precipitated_mmol": r["modeled_precipitated"],
+            "by_phase": _fmt_by_phase(r["by_phase"]),
+            "gap_explained_mmol": r["gap_explained"],
+            "gap_unexplained_mmol": r["gap_unexplained"],
+            "unexplained_fraction": r["unexplained_fraction"],
+            "recovery_status": r["recovery_status"], "closure_status": r["closure_status"],
+        })
+    return pd.DataFrame(rows, columns=RECOVERY_CSV_COLUMNS)
+
+
+def _recovery_summary(records: list[dict]) -> pd.DataFrame:
+    """Cross-element summary sorted by unexplained fraction (weakest knowledge first)."""
+    full = _recovery_table(records)
+    if full.empty:
+        return pd.DataFrame(columns=RECOVERY_SUMMARY_COLUMNS)
+    summ = full[RECOVERY_SUMMARY_COLUMNS].copy()
+    # NaN unexplained fractions (incomplete closures) sort last.
+    summ["_sort"] = pd.to_numeric(summ["unexplained_fraction"], errors="coerce")
+    summ = summ.sort_values("_sort", ascending=False, na_position="last").drop(columns="_sort")
+    return summ.reset_index(drop=True)
+
+
 def _mapping_traces(data, suggestion_table, manifest, profile) -> list[dict]:
     """Per-condition compact Prompt-6 trace: matched / missing / conflicting fields."""
     traces = []
@@ -467,8 +662,50 @@ def _build_html(ctx: dict) -> str:
     for img in ctx["comparison_images"]:
         s.append(_embed_png(img))
 
-    # 7) Bias (Prompt 13) — only if present.
-    s.append("<h2>7 · Systematic bias (exact mappings only)</h2>")
+    # 7) Element recovery (Prompt 25) — measured closure + attribution + literature.
+    s.append("<h2>7 · Element recovery (per element, per condition)</h2>")
+    rec_records = ctx["recovery_records"]
+    if not rec_records:
+        s.append("<p class='muted'>This dataset profile declares no batch-reaction mass "
+                 "balance, so per-element recovery is not computed.</p>")
+    else:
+        s.append("<p class='muted'>For each element: how much was present, where it went "
+                 "(liquid / solid), the unaccounted closure gap (± σ), and how much the model "
+                 "attributes. A balance is called <b>explained</b> only when its status is "
+                 "<code>closed</code> or <code>model-explained</code> within uncertainty; "
+                 "<code>partially-explained</code> / <code>unexplained</code> are a workflow "
+                 "check, not a closed balance. Starting amount is flagged "
+                 "<b>measured assay</b> vs <b>literature-confirmed stand-in</b> (DOI/link "
+                 "inline).</p>")
+        # The same validity system (reused): an open element budget keeps a run out of valid.
+        s.append(f"<p>Overall validity (incl. element budget): "
+                 f"<span class='badge {_validity_class(status)}'>{_esc(status)}</span> — "
+                 f"an open element budget (<code>partially-explained</code> / "
+                 f"<code>unexplained</code>) caps a run at <code>preliminary</code>, never "
+                 f"<code>valid</code>.</p>")
+        for r in rec_records:
+            st = r["recovery_status"]
+            cls = ("tag-ok" if st in RECOVERY_EXPLAINED_STATUSES else
+                   "tag-miss" if st == attribution.STATUS_PARTIAL else "tag-bad")
+            cite = ""
+            if r["starting_provenance"] == CLASS_LITERATURE and r["starting_citation"]:
+                cite = (f" · <a href='{_esc(r['starting_citation'])}'>"
+                        f"{_esc(r['starting_citation'])}</a>")
+            s.append(f"<div class='trace'><b>{_esc(r['condition_key'])} · "
+                     f"{_esc(r['element'])}</b> <span class='tag {cls}'>{_esc(st)}</span>"
+                     f"<span class='tag tag-{'ok' if r['starting_provenance']==CLASS_MEASURED else 'miss'}'>"
+                     f"{_esc(r['starting_provenance'])}</span>{cite}<br>"
+                     f"{_esc(r['narrative'])}</div>")
+        s.append("<h3>Recovery summary (sorted by unexplained fraction — weakest knowledge "
+                 "first)</h3>")
+        s.append(_df_html(ctx["recovery_summary"]))
+        s.append("<p class='muted'>Full per-term table with provenance + citations: "
+                 "<code>element_recovery.csv</code>. Each term's classification "
+                 "(measured / derived / modeled / literature-confirmed) is in "
+                 "<code>MANIFEST.json</code>.</p>")
+
+    # 8) Bias (Prompt 13) — only if present.
+    s.append("<h2>8 · Systematic bias (exact mappings only)</h2>")
     if ctx["bias_table"] is not None and not ctx["bias_table"].empty:
         s.append(f"<p class='muted'>{_esc(residual_stats.NON_CLAIM_LINE)}</p>")
         s.append(_df_html(ctx["bias_table"]))
@@ -476,8 +713,8 @@ def _build_html(ctx: dict) -> str:
         s.append("<p class='muted'>No bias estimate — there are not enough exact-mapped "
                  "pairs yet (the gate is not met).</p>")
 
-    # 8) Validity + mapping-status summary (verbatim).
-    s.append("<h2>8 · Validity</h2>")
+    # 9) Validity + mapping-status summary (verbatim).
+    s.append("<h2>9 · Validity</h2>")
     s.append(_df_html(ctx["mapping_status_summary"]))
     s.append("<h3>Per-variable validity (stated verbatim)</h3><ul>")
     for var, msg in ctx["validity_lines"]:
@@ -486,15 +723,15 @@ def _build_html(ctx: dict) -> str:
     s.append(f"<p><b>Overall:</b> <span class='badge {_validity_class(status)}'>"
              f"{_esc(status)}</span></p>")
 
-    # 9) Warnings.
-    s.append("<h2>9 · Warnings generated</h2>")
+    # 10) Warnings.
+    s.append("<h2>10 · Warnings generated</h2>")
     if ctx["warnings"]:
         s.append("<ul>" + "".join(f"<li>{_esc(w)}</li>" for w in ctx["warnings"]) + "</ul>")
     else:
         s.append("<p class='muted'>No warnings recorded in the audit log.</p>")
 
-    # 10) Recommended next simulations.
-    s.append("<h2>10 · Recommended next simulations</h2>")
+    # 11) Recommended next simulations.
+    s.append("<h2>11 · Recommended next simulations</h2>")
     s.append("<p class='muted'>Conditions with no exact model result. The CSV "
              "<code>needed_simulations.csv</code> carries the fields the on-demand PHREEQC "
              "runner consumes, so the two interoperate.</p>")
@@ -583,6 +820,11 @@ def build_report(run_name: str, *, profile=None) -> Path:
     needed.to_csv(out / "needed_simulations.csv", index=False)
     if bias is not None and not bias.empty:
         bias.to_csv(out / "bias_table.csv", index=False)
+    # Element recovery (Prompt 25): measured closure + attribution + literature stand-ins.
+    recovery_records = _recovery_records(data, profile, run_name)
+    recovery_summary = _recovery_summary(recovery_records)
+    if recovery_records:
+        _recovery_table(recovery_records).to_csv(out / "element_recovery.csv", index=False)
 
     # Copy the audit log in (the events behind everything above).
     src_log = audit.audit_log_path(run_name)
@@ -630,6 +872,7 @@ def build_report(run_name: str, *, profile=None) -> Path:
         "inclusion_counts": inclusion_counts, "excluded_rows": excluded,
         "residuals": residuals, "comparison_images": comparison_images,
         "bias_table": bias,
+        "recovery_records": recovery_records, "recovery_summary": recovery_summary,
         "mapping_status_summary": status_summary, "validity_lines": validity_lines,
         "warnings": _warnings(audit_df, data),
         "needed_simulations": needed,
@@ -652,6 +895,10 @@ def build_report(run_name: str, *, profile=None) -> Path:
         "generated_at": ctx["generated_at"], "overall_validity": overall_validity,
         "stale": stale, "files": files,
     }
+    # Tag each element-recovery term measured / derived / modeled / literature-confirmed,
+    # so a reviewer can trace the provenance of every number in element_recovery.csv.
+    if recovery_records:
+        manifest_doc["recovery_classification"] = dict(RECOVERY_TERM_CLASSIFICATION)
     (out / MANIFEST_FILENAME).write_text(json.dumps(manifest_doc, indent=2), encoding="utf-8")
 
     audit.log_export(run_name, kind="validation_report", file_name=out.name,

@@ -499,6 +499,30 @@ experiment — **not** a blind replacement for the chemistry.
   search: uncited/quote-less dropped, DOI→doi.org, URL-only accepted, quarantine enforced into
   mass_balance, the mismatch double-ack gate, the "no value found" path, disabled-without-key).
 
+- **Per-element recovery report — present → where it went → confidence** (Prompt 25 — pure templating
+  extension of `report.build_report`, no new deps). Adds an **Element recovery** section that, *per
+  element per condition*, states the **starting amount** (provenance-flagged — measured assay vs a
+  Prompt-26 `literature-confirmed` stand-in, with the **DOI/link inline**), **measured liquid** + **solid**,
+  the **closure gap ± gap_sigma** (Prompt 22), the **PHREEQC attribution by phase** + **unexplained
+  residual** (Prompt 24), and a **recovery status** (the four attribution statuses). Helpers mirror the
+  existing ones (`_recovery_records` / `_recovery_table` / `_recovery_summary`, alongside
+  `_inclusion_by_variable` / `_needed_simulations`); a generated **narrative** per element ("Of N mmol Ca
+  initially present (measured assay), X% in liquid, Y% in solid; Z mmol unaccounted, of which the model
+  attributes W mmol to calcite, leaving V mmol unexplained"). Because the report has **no live PHREEQC**,
+  attribution is *unavailable* offline (whole gap unexplained) unless a parsed selected output is passed
+  to `_recovery_records(selected_outputs=...)` — the path the tests use to reach model-explained / partial.
+  New bundle CSV **`element_recovery.csv`** (every term + `starting_provenance` + `starting_citation`) and
+  a **summary table sorted by unexplained fraction** (the "where the tool's knowledge is weakest" view).
+  **MANIFEST.json** gains `recovery_classification`, tagging each term **measured / derived / modeled /
+  literature-confirmed** (n_in is measured **or** literature-confirmed per row — the `starting_provenance`
+  column is authoritative). **Honesty:** the section **reuses `_overall_validity` + `_validity_class`** —
+  an element balance is only "explained" when `closed` or `model-explained` within uncertainty;
+  `partially-explained` / `unexplained` carry the standing caution and an open element budget caps a run
+  at `preliminary`, never `valid`. The feature is **profile-gated** (FLY_ASH_PROFILE does not opt into
+  mass balance, so the live app shows the empty-state note). Covered by `tests/test_report.py` additions
+  (each status reached, provenance flags render, the literature DOI/link shows, manifest classification,
+  summary sort order).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -689,10 +713,16 @@ modules together and own all file I/O paths.
   Covered by `tests/test_literature.py`.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
-  layers (provenance, inclusion, traces, bias, conversions, audit) into a self-contained
-  `validation_report_<ts>/` (report.html + CSVs + figures + MANIFEST.json with SHA-256). Pure
-  composition — it adds no chemistry; the Prompt-4 validity rules drive all honesty wording. Gitignored
-  run output. Covered by `tests/test_report.py`.
+  layers (provenance, inclusion, traces, bias, **element recovery**, conversions, audit) into a
+  self-contained `validation_report_<ts>/` (report.html + CSVs + figures + MANIFEST.json with SHA-256).
+  Pure composition — it adds no chemistry; the Prompt-4 validity rules drive all honesty wording. The
+  **Element recovery** section (Prompt 25, `_recovery_records` / `_recovery_table` / `_recovery_summary`)
+  integrates measured closure (Prompt 22) + PHREEQC attribution (Prompt 24; *unavailable* offline → the
+  whole gap is unexplained unless a parsed selected output is supplied) + **confirmed** literature
+  starting-assay stand-ins (Prompt 26, provenance-flagged with the DOI/link), emitting per-element-per-
+  condition terms + a generated narrative + an `element_recovery.csv` and a summary sorted by unexplained
+  fraction; `MANIFEST.json` gains `recovery_classification` tagging each term measured / derived / modeled
+  / literature-confirmed. Gitignored run output. Covered by `tests/test_report.py`.
 
 - **`profiles.py`** — the **generalization layer** (additive; pure, no chemistry/ML). Two frozen
   dataclasses describe a dataset + model so the same code can serve more than fly ash + PHREEQC
