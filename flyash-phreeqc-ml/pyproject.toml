@@ -24,3 +24,10 @@ include = ["flyash_phreeqc_ml*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Heavy/long-running tests are marked @pytest.mark.slow and excluded from the default
+# run; include them with `pytest -m slow`. (No test is currently marked slow — the GP
+# fast mode keeps the ML tests quick — but the mechanism is in place for future ones.)
+addopts = "-m 'not slow'"
+markers = [
+    "slow: heavy/long-running test, excluded from the default run (use -m slow to include)",
+]

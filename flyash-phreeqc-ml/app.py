@@ -43,6 +43,13 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
+# Pure helpers extracted to the ui/ package (refactor prep; see docs/refactor_plan.md).
+# Re-imported under their historical underscore names so call sites are unchanged.
+from ui.formatters import (  # noqa: E402
+    has_numeric as _has_numeric,
+    is_present as _is_present,
+    nearest_manifest_row as _nearest_manifest_row,
+)
 from flyash_phreeqc_ml import audit  # noqa: E402  (append-only audit log)
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
@@ -1438,11 +1445,6 @@ _GENERIC_META_FIELDS = [
 ]
 
 
-def _is_present(v) -> bool:
-    """True if a cell value is a real, non-blank entry."""
-    return v not in (None, "") and str(v).strip().lower() != "nan"
-
-
 def _render_advanced_validation_metadata(sample: dict, scenario: dict | None) -> None:
     """Expander body — measured-side metadata (dynamic) + model-side PHREEQC metadata.
 
@@ -2081,11 +2083,6 @@ _COMPARISON_PREVIEW_SPEC = [
 ]
 
 _ICP_MEASURED_COLS = ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM", "Sc_ppb", "total_REE_ppb"]
-
-
-def _has_numeric(df: pd.DataFrame, col: str) -> bool:
-    """True if the column exists and has at least one numeric (non-NaN) value."""
-    return col in df.columns and bool(pd.to_numeric(df[col], errors="coerce").notna().any())
 
 
 def _looks_like_test(comp: pd.DataFrame) -> bool:
@@ -3417,7 +3414,8 @@ def _render_residual_correction(selected_run: str) -> None:
 
         st.caption(
             "A Gaussian-process model of the residual (`measured − model`) from condition "
-            "metadata. **Experimental** — it is gated on data sufficiency, validated "
+            "metadata. **Experimental — not for scientific claims until enough exact "
+            "measured–model pairs exist.** It is gated on data sufficiency, validated "
             "leave-one-condition-out against the constant-bias baseline, and shown only as a "
             "raw-vs-corrected overlay. " + _rm.NON_CLAIM_LINE
         )
@@ -4017,23 +4015,6 @@ def _render_help_tab() -> None:
         )
 
 
-def _nearest_manifest_row(manifest: pd.DataFrame, naoh: float, ls: float) -> dict | None:
-    """The batch PHREEQC scenario closest to (NaOH_M, L/S) — display context only."""
-    if manifest is None or manifest.empty:
-        return None
-    df = manifest.copy()
-    if "state" in df.columns:
-        batch = df[df["state"].astype(str).str.lower() == "batch"]
-        df = batch if not batch.empty else df
-    dist = (pd.to_numeric(df.get("NaOH_M"), errors="coerce") - naoh).abs().fillna(9e9) \
-        + (pd.to_numeric(df.get("liquid_solid_ratio"), errors="coerce") - ls).abs().fillna(9e9)
-    idx = df.index[0] if dist.isna().all() else dist.idxmin()
-    r = df.loc[idx]
-    cols = ["scenario_label", "NaOH_M", "liquid_solid_ratio", "CO2_condition",
-            "predicted_pH", "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM", "generated"]
-    return {c: r.get(c) for c in cols if c in df.columns}
-
-
 def _render_surrogate_expander(selected_run: str | None) -> None:
     """Experimental surrogate UI (Audit/Help only). Suggestion/what-if, never a result.
 
@@ -4043,9 +4024,10 @@ def _render_surrogate_expander(selected_run: str | None) -> None:
     """
     with app_ui.advanced_expander("Surrogate (experimental) — fast approximation of PHREEQC"):
         st.caption(
-            "**Surrogate approximation of PHREEQC — not a measurement, not a PHREEQC run.** "
-            "A trained statistical model approximating PHREEQC outputs for fast what-ifs. "
-            "Surrogate values never enter comparison CSVs, residuals, or mapping."
+            "**Experimental — not for scientific claims.** Surrogate approximation of PHREEQC "
+            "— not a measurement, not a PHREEQC run: a trained statistical model approximating "
+            "PHREEQC outputs for fast what-ifs. Surrogate values never enter comparison CSVs, "
+            "residuals, mapping status, or validity status."
         )
         if not selected_run:
             st.info("Select a run to load its surrogate. Build a dataset with "

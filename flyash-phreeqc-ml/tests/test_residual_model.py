@@ -15,6 +15,17 @@ from flyash_phreeqc_ml import replicates
 from flyash_phreeqc_ml.ml import residual_model as rm
 
 
+@pytest.fixture(autouse=True)
+def _fast_gp(monkeypatch):
+    """Skip GP hyperparameter optimization (the slow/nondeterministic part).
+
+    These tests assert the gate, LOCO mechanics, baseline comparison, and corrected-
+    overlay arithmetic — none of which depend on GP fit *quality* — so a fixed kernel
+    keeps them fast and deterministic without weakening any assertion.
+    """
+    monkeypatch.setenv("FLYASH_GP_FAST", "1")
+
+
 def _make_comp(per_condition, conditions=(0.5, 1.0, 2.0), *, seed=0,
                slope=0.0, base=0.4, noise=0.02, phreeqc=0.8):
     """Build a synthetic per-run comparison with exact-mapped Ca residuals.

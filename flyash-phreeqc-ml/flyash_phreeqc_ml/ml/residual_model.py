@@ -35,6 +35,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -147,11 +148,24 @@ def _matrix(feat: pd.DataFrame, numeric_cols, categorical_cols, categories, medi
     return np.hstack(parts) if parts else np.zeros((len(feat), 0))
 
 
+def _gp_optimizer():
+    """The GP hyperparameter optimizer, or ``None`` to skip it (fast/deterministic mode).
+
+    Fast mode (env ``FLYASH_GP_FAST=1``) fixes the kernel hyperparameters at their
+    initial values, skipping the expensive L-BFGS-B optimization — used by tests that
+    exercise the LOCO / corrected-overlay logic but **not** GP fit quality. Production
+    keeps the default optimizer.
+    """
+    return (None if os.environ.get("FLYASH_GP_FAST", "").lower() in ("1", "true", "yes")
+            else "fmin_l_bfgs_b")
+
+
 def _make_gp() -> Pipeline:
     kernel = (ConstantKernel(1.0, (1e-3, 1e3))
               * Matern(length_scale=1.0, length_scale_bounds=(1e-2, 1e3), nu=2.5)
               + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-8, 1e2)))
     gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True, alpha=1e-10,
+                                  optimizer=_gp_optimizer(),
                                   n_restarts_optimizer=0, random_state=0)
     return Pipeline([("scale", StandardScaler()), ("gp", gp)])
 
