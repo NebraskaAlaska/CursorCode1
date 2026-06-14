@@ -17,6 +17,7 @@ import pytest
 
 from flyash_phreeqc_ml import dissolution_workbook as dw
 from flyash_phreeqc_ml.calculations import ATOMIC_MASSES
+from tests.fixtures.synthetic.mix_design_workbook import write_dissolution_workbook
 
 TS = "2026-06-08T00:00:00"
 N = None  # blank cell
@@ -24,44 +25,12 @@ N = None  # blank cell
 
 @pytest.fixture()
 def workbook(tmp_path):
-    """Write a synthetic dissolution workbook (real horizontal layout)."""
-    hdr = [N, "Time", N, "NaOH-OA", "NaOH-PF", "NaOH-GS", N, "NaOH-OA", "NaOH-PF", "NaOH-GS"]
-    icp = [
-        [N, N, N, "mg/L", N, N, N, "mmol/l", N, N],            # global unit row
-        ["Calcium", N, N, N, N, N, N, N, N, N],
-        hdr,
-        [N, 10, N, 93.43, 5.74, 6.87, N, 2.5, 2.1, 1.8],       # mmol preferred over mg
-        [N, 60, N, 7.82, 11.66, 4.185, N, 3.0, 2.6, 2.2],
-        [N, 720, N, 20.25, "-", "-", N, 0.5, "-", "-"],        # PF/GS missing at 720
-        [N] * 10,
-        ["Silicon", N, N, N, N, N, N, N, N, N],
-        hdr,
-        [N, 10, N, 8.64, 20.31, 18.7, N, 1.2, 1.0, 0.8],
-        [N, 60, N, 51.76, 43.36, 32.81, N, 1.5, 1.3, 1.1],
-        [N] * 10,
-        ["Aluminum", N, N, N, N, N, N, N, N, N],
-        hdr,
-        [N, 10, N, 54.0, 79.5, 71.0, N, "-", 2.9, 2.6],        # OA mmol missing -> mg fallback
-        [N, 60, N, 60.0, 91.9, 69.9, N, 4.8, 3.4, 2.5],
-    ]
-    ph = [
-        ["Sample", "Time (min)", "pH", N, N, N, N, "pH", N, N],
-        ["0.5M NaOH-OA-10", 10, 13.1, N, N, "Time", N, "NaOH-OA", "NaOH-PF", "NaOH-GS"],
-        ["0.5M NaOH-OA-60", 60, 13.05, N, N, 10, N, 13.1, 14, 14],
-        ["0.5M NaOH-OA-720", 720, 12.7, N, N, 20, N, 13.15, 14, 13.99],   # 20-min only in matrix
-        ["0.5M NaOH-PF-10", 10, 14, N, N, 60, N, 13.05, 13.88, 13.89],
-        ["0.5M NaOH-PF-60", 60, 13.88, N, N, N, N, N, N, N],
-        ["0.5M NaOH-PF-720", 720, "-", N, N, N, N, N, N, N],             # pH "-" -> blank
-        ["0.5M NaOH-GS-10", 10, 14, N, N, N, N, N, N, N],
-        ["0.5M NaOH-GS-60", 60, 13.89, N, N, N, N, N, N, N],
-        ["0.5M NaOH-GS-720", 720, "-", N, N, N, N, N, N, N],
-        ["0.5M HCL-OA-10", 10, 3.21, N, N, N, N, N, N, N],
-    ]
-    path = tmp_path / "dissolution.xlsx"
-    with pd.ExcelWriter(path) as writer:
-        pd.DataFrame(icp).to_excel(writer, sheet_name="ICP OES", index=False, header=False)
-        pd.DataFrame(ph).to_excel(writer, sheet_name="pH", index=False, header=False)
-    return path
+    """Write a synthetic dissolution workbook (real horizontal layout).
+
+    The grid lives in the shared synthetic generator so no real research workbook is
+    needed for tests (see ``tests/fixtures/synthetic/mix_design_workbook.py``).
+    """
+    return write_dissolution_workbook(tmp_path / "dissolution.xlsx")
 
 
 def _row(df, needle):

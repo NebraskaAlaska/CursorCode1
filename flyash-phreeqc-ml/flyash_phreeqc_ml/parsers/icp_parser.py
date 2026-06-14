@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import (
+    BATCH_REACTION_COLUMNS,
     EXPERIMENTAL_ICP_DIR,
     EXPERIMENTAL_NON_DATA_FILES,
     EXPERIMENTAL_NUMERIC_COLUMNS,
@@ -189,16 +190,20 @@ def parse_experimental_release(
     df.columns = [str(c).strip() for c in df.columns]
 
     expected = list(EXPERIMENTAL_RELEASE_COLUMNS)
-    missing = [c for c in expected if c not in df.columns]
+    # The batch-reaction block is optional/additive — its absence is never an error.
+    optional = set(BATCH_REACTION_COLUMNS)
+    missing_required = [c for c in expected if c not in df.columns and c not in optional]
     extra = [c for c in df.columns if c not in expected]
 
-    if missing:
-        if strict:
-            raise ExperimentalSchemaError(
-                f"{path.name}: missing required column(s): {missing}"
-            )
-        for c in missing:
-            df[c] = np.nan  # tolerate partially-filled files
+    if missing_required and strict:
+        raise ExperimentalSchemaError(
+            f"{path.name}: missing required column(s): {missing_required}"
+        )
+    # Add any absent column (optional batch block, or — when not strict — a missing
+    # required one) as all-NaN so the canonical reindex below always succeeds.
+    for c in expected:
+        if c not in df.columns:
+            df[c] = np.nan
 
     # Coerce numeric columns; non-numeric entries become NaN.
     for col in EXPERIMENTAL_NUMERIC_COLUMNS:

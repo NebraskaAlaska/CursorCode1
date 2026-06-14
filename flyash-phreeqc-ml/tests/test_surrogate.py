@@ -10,8 +10,19 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from flyash_phreeqc_ml.ml import sampling, surrogate
+
+
+@pytest.fixture()
+def fast_gp(monkeypatch):
+    """Skip GP hyperparameter optimization (fast + deterministic).
+
+    For tests that exercise fit/predict/domain logic but NOT fit *quality*. The
+    coverage/RMSE test deliberately does **not** use this — it keeps the optimizer.
+    """
+    monkeypatch.setenv("FLYASH_GP_FAST", "1")
 
 
 # --------------------------------------------------------------------------- #
@@ -40,8 +51,8 @@ def _synthetic(n=140, seed=0) -> pd.DataFrame:
     return pd.DataFrame({"a": a, "b": b, "y": y})
 
 
-def test_train_round_trip_and_model_card(tmp_path):
-    df = _synthetic()
+def test_train_round_trip_and_model_card(tmp_path, fast_gp):
+    df = _synthetic(n=40)
     models = surrogate.train_surrogate(
         df, input_cols=["a", "b"], output_cols=["y"], categorical_cols=[],
         n_folds=4, seed=0, date="2026-01-01")
@@ -71,8 +82,8 @@ def test_train_round_trip_and_model_card(tmp_path):
     assert "y" in reloaded
 
 
-def test_extrapolation_flagged_outside_training_box():
-    df = _synthetic()
+def test_extrapolation_flagged_outside_training_box(fast_gp):
+    df = _synthetic(n=40)
     models = surrogate.train_surrogate(
         df, input_cols=["a", "b"], output_cols=["y"], categorical_cols=[])
     far = pd.DataFrame({"a": [1000.0], "b": [1.0]})       # a far beyond [0,10]
@@ -95,7 +106,7 @@ def test_validation_table_and_rough_coverage():
     assert row["rmse"] < 5.0  # the GP fits this well
 
 
-def test_train_skips_outputs_with_too_few_rows():
+def test_train_skips_outputs_with_too_few_rows(fast_gp):
     df = pd.DataFrame({"a": [1.0, 2.0], "b": [0.1, 0.2], "y": [1.0, 2.0]})
     models = surrogate.train_surrogate(
         df, input_cols=["a", "b"], output_cols=["y"], categorical_cols=[])

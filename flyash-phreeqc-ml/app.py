@@ -43,6 +43,13 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
+# Pure helpers extracted to the ui/ package (refactor prep; see docs/refactor_plan.md).
+# Re-imported under their historical underscore names so call sites are unchanged.
+from ui.formatters import (  # noqa: E402
+    has_numeric as _has_numeric,
+    is_present as _is_present,
+    nearest_manifest_row as _nearest_manifest_row,
+)
 from flyash_phreeqc_ml import audit  # noqa: E402  (append-only audit log)
 from flyash_phreeqc_ml import calculations  # noqa: E402
 from flyash_phreeqc_ml import config  # noqa: E402
@@ -51,6 +58,8 @@ from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import mapping_table  # noqa: E402
 from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
+from flyash_phreeqc_ml import attribution  # noqa: E402  (PHREEQC gap attribution)
+from flyash_phreeqc_ml import mass_balance  # noqa: E402  (deterministic element closure)
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report)
 from flyash_phreeqc_ml import run_manager  # noqa: E402
@@ -58,6 +67,7 @@ from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (grounded Q&A)
+from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -1438,11 +1448,6 @@ _GENERIC_META_FIELDS = [
 ]
 
 
-def _is_present(v) -> bool:
-    """True if a cell value is a real, non-blank entry."""
-    return v not in (None, "") and str(v).strip().lower() != "nan"
-
-
 def _render_advanced_validation_metadata(sample: dict, scenario: dict | None) -> None:
     """Expander body — measured-side metadata (dynamic) + model-side PHREEQC metadata.
 
@@ -2081,11 +2086,6 @@ _COMPARISON_PREVIEW_SPEC = [
 ]
 
 _ICP_MEASURED_COLS = ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM", "Sc_ppb", "total_REE_ppb"]
-
-
-def _has_numeric(df: pd.DataFrame, col: str) -> bool:
-    """True if the column exists and has at least one numeric (non-NaN) value."""
-    return col in df.columns and bool(pd.to_numeric(df[col], errors="coerce").notna().any())
 
 
 def _looks_like_test(comp: pd.DataFrame) -> bool:
@@ -3417,7 +3417,8 @@ def _render_residual_correction(selected_run: str) -> None:
 
         st.caption(
             "A Gaussian-process model of the residual (`measured − model`) from condition "
-            "metadata. **Experimental** — it is gated on data sufficiency, validated "
+            "metadata. **Experimental — not for scientific claims until enough exact "
+            "measured–model pairs exist.** It is gated on data sufficiency, validated "
             "leave-one-condition-out against the constant-bias baseline, and shown only as a "
             "raw-vs-corrected overlay. " + _rm.NON_CLAIM_LINE
         )
@@ -4017,23 +4018,6 @@ def _render_help_tab() -> None:
         )
 
 
-def _nearest_manifest_row(manifest: pd.DataFrame, naoh: float, ls: float) -> dict | None:
-    """The batch PHREEQC scenario closest to (NaOH_M, L/S) — display context only."""
-    if manifest is None or manifest.empty:
-        return None
-    df = manifest.copy()
-    if "state" in df.columns:
-        batch = df[df["state"].astype(str).str.lower() == "batch"]
-        df = batch if not batch.empty else df
-    dist = (pd.to_numeric(df.get("NaOH_M"), errors="coerce") - naoh).abs().fillna(9e9) \
-        + (pd.to_numeric(df.get("liquid_solid_ratio"), errors="coerce") - ls).abs().fillna(9e9)
-    idx = df.index[0] if dist.isna().all() else dist.idxmin()
-    r = df.loc[idx]
-    cols = ["scenario_label", "NaOH_M", "liquid_solid_ratio", "CO2_condition",
-            "predicted_pH", "predicted_Ca_mM", "predicted_Si_mM", "predicted_Al_mM", "generated"]
-    return {c: r.get(c) for c in cols if c in df.columns}
-
-
 def _render_surrogate_expander(selected_run: str | None) -> None:
     """Experimental surrogate UI (Audit/Help only). Suggestion/what-if, never a result.
 
@@ -4043,9 +4027,10 @@ def _render_surrogate_expander(selected_run: str | None) -> None:
     """
     with app_ui.advanced_expander("Surrogate (experimental) — fast approximation of PHREEQC"):
         st.caption(
-            "**Surrogate approximation of PHREEQC — not a measurement, not a PHREEQC run.** "
-            "A trained statistical model approximating PHREEQC outputs for fast what-ifs. "
-            "Surrogate values never enter comparison CSVs, residuals, or mapping."
+            "**Experimental — not for scientific claims.** Surrogate approximation of PHREEQC "
+            "— not a measurement, not a PHREEQC run: a trained statistical model approximating "
+            "PHREEQC outputs for fast what-ifs. Surrogate values never enter comparison CSVs, "
+            "residuals, mapping status, or validity status."
         )
         if not selected_run:
             st.info("Select a run to load its surrogate. Build a dataset with "
@@ -4226,6 +4211,384 @@ def _render_start_tab(selected_run: str | None) -> None:
                "input formats, the mapping guide, how to read results, and data safety.")
 
 
+def _mass_balance_bar(record: dict):
+    """Stacked bar for one element/sample: liquid / solid / unaccounted gap."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    fig, ax = plt.subplots(figsize=(3.6, 3.4))
+    liquid = max(record["n_liquid"], 0.0)
+    solid = max(record["n_solid"], 0.0)
+    gap = record["gap"]
+    ax.bar(0, liquid, color="#4878CF", label="liquid")
+    ax.bar(0, solid, bottom=liquid, color="#6ACC64", label="solid residue")
+    # The gap may be negative (over-recovery) — draw it from the top of liquid+solid.
+    ax.bar(0, gap, bottom=liquid + solid, color="#C0C0C0", hatch="//",
+           label="unaccounted (not yet attributed)")
+    ax.axhline(record["n_in"], color="black", lw=1.2, ls="--", label="charged (n_in)")
+    ax.set_xticks([])
+    ax.set_ylabel("mmol")
+    ax.set_title(f"{record['element']} · {record.get('sample_id', '')}", fontsize=9)
+    ax.legend(fontsize=7, loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+_ATTR_STATUS_STYLE = {
+    attribution.STATUS_CLOSED: "exact",
+    attribution.STATUS_MODEL_EXPLAINED: "scenario-level",
+    attribution.STATUS_PARTIAL: "preliminary",
+    attribution.STATUS_UNEXPLAINED: "unsafe",
+}
+
+
+def _attribution_three_way_figure(result: dict):
+    """Three never-merged provenance bands: measured | model attribution | unexplained."""
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+
+    fig, ax = plt.subplots(figsize=(4.6, 3.6))
+    m = result["measured"]
+    liquid = max(m["n_liquid"] or 0.0, 0.0)
+    solid = max(m["n_solid"] or 0.0, 0.0)
+    gap = result["gap"] or 0.0
+
+    # Band 1 — MEASURED (liquid + solid + gap). Never mixed with modeled colours.
+    ax.bar(0, liquid, color="#4878CF", label="measured liquid")
+    ax.bar(0, solid, bottom=liquid, color="#6ACC64", label="measured solid")
+    ax.bar(0, gap, bottom=liquid + solid, color="#B0B0B0", hatch="//",
+           label="closure gap (measured)")
+
+    # Band 2 — MODEL ATTRIBUTION by phase + the unexplained residual (modeled split of
+    # the measured gap). Distinct hatch/colours so it reads as a different provenance.
+    by_phase = result.get("by_phase") or {}
+    bottom = 0.0
+    cmap = plt.get_cmap("tab10")
+    for i, (ph, mol) in enumerate(sorted(by_phase.items())):
+        seg = min(mol, max(gap, 0.0) - bottom) if gap > 0 else 0.0
+        if seg > 0:
+            ax.bar(1, seg, bottom=bottom, color=cmap(i % 10), hatch="..",
+                   label=f"model: {ph}")
+            bottom += seg
+    unexplained = result.get("gap_unexplained")
+    if unexplained and unexplained > 0:
+        ax.bar(1, unexplained, bottom=bottom, color="#D0402B", hatch="xx",
+               label="unexplained")
+
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(["measured", "model"], fontsize=8)
+    ax.set_ylabel("mmol")
+    ax.set_title(f"{result['element']} — gap attribution", fontsize=9)
+    ax.legend(fontsize=6, loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def _render_gap_attribution(selected_run: str, profile, data: pd.DataFrame,
+                            element: str) -> None:
+    """Explain the closure gap with PHREEQC — preview-before-run, degrade if unavailable.
+
+    Modeled attribution **never** overwrites the measured gap; all text says "model
+    attributes" / "predicted to precipitate".
+    """
+    with st.expander("Explain the gap with PHREEQC (attribution)"):
+        st.caption("Modeled attribution: **predicted to precipitate** — never 'the element "
+                   "was X'. The measured gap (above) is immutable; the model only *splits* "
+                   "it into attributed-to-phase vs still-unexplained.")
+        configured = phreeqc_runner.is_configured()
+        rows = [r.to_dict() for _, r in data.iterrows()]
+        # The first sample whose closure for this element is complete.
+        target = next((r for r in rows
+                       if mass_balance.closure(r, element, profile=profile)["status"]
+                       == mass_balance.STATUS_COMPLETE), None)
+        if target is None:
+            st.info(f"No complete {element} closure to attribute yet.")
+            return
+
+        if not configured:
+            res = attribution.attribution_unavailable(target, element, profile=profile)
+            st.warning("⚠️ " + res["note"])
+            st.pyplot(_attribution_three_way_figure(res))
+            st.caption(attribution.attribution_caption(res))
+            return
+
+        # Configured: preview the attribution .pqi, then run + attribute on demand.
+        inputs = attribution.build_attribution_inputs(target, profile)
+        if inputs:
+            with st.expander("Preview the attribution .pqi (before running)"):
+                st.code(inputs[0].pqi_text, language="text")
+        key = f"attr_result_{selected_run}_{element}"
+        if st.button(f"Run PHREEQC & attribute {element} gap",
+                     key=f"attr_run_{selected_run}_{element}"):
+            try:
+                sel = _run_attribution_and_parse(selected_run, inputs)
+                st.session_state[key] = attribution.attribute_gap(
+                    target, element, sel, profile=profile)
+            except Exception as exc:  # never crash the tab on a model failure
+                st.session_state[key] = attribution.attribution_unavailable(
+                    target, element, profile=profile)
+                st.error(f"Attribution run failed: {exc}")
+        res = st.session_state.get(key)
+        if res is None:
+            st.info("Build is ready — click **Run** to attribute the gap.")
+            return
+        status = res["status"]
+        app_ui.render_status_badge(f"attribution: {status}",
+                                   _ATTR_STATUS_STYLE.get(status, "preliminary"))
+        st.pyplot(_attribution_three_way_figure(res))
+        st.caption(attribution.attribution_caption(res))
+
+
+def _run_attribution_and_parse(run_name: str, inputs):
+    """Run the first attribution input and parse its SELECTED_OUTPUT (best-effort)."""
+    from flyash_phreeqc_ml.parsers.selected_output_parser import parse_selected_output
+    workdir = run_manager.generated_simulations_dir(run_name)
+    gi = inputs[0]
+    pqo = phreeqc_runner.run(gi.pqi_text, workdir, basename=gi.basename)
+    # PHREEQC writes USER_PUNCH to a sibling selected-output file.
+    for cand in (pqo.with_suffix(".sel"), workdir / "selected.out",
+                 pqo.parent / f"{gi.basename}.sel"):
+        if cand.exists():
+            return parse_selected_output(cand)
+    raise phreeqc_runner.PhreeqcRunError("no SELECTED_OUTPUT file produced by the run")
+
+
+def _literature_experiment_conditions(selected_run: str) -> dict:
+    """A compact, representative condition dict for the conditions-match assessment."""
+    try:
+        data = run_manager.read_data_file(selected_run)
+    except Exception:
+        return {}
+    if data is None or data.empty:
+        return {}
+    row = data.iloc[0].to_dict()
+    out = {}
+    for k in ("leachant", "NaOH_M", "acid_M", "temperature_C", "final_pH", "fly_ash_type",
+              "material_id"):
+        v = row.get(k)
+        if v not in (None, "") and not (isinstance(v, float) and v != v):
+            out[k] = v
+    return out
+
+
+_LIT_KINDS = {
+    "Solubility constant (log Ksp)": "solubility_constant",
+    "Candidate precipitate phases (+ solubility)": "candidate_phase",
+    "Typical starting element assay (stand-in)": "starting_assay",
+    "Partition / distribution (Kd)": "partition",
+}
+
+
+def _lit_source_markdown(rec: dict) -> str:
+    """A clickable source label: '[Title (Year)](https://doi.org/…)' or the URL."""
+    cite = rec.get("citation") or {}
+    link = ai_literature.resolvable_link(cite)
+    label = cite.get("title") or "source"
+    yr = cite.get("year")
+    text = f"{label}{f' ({yr})' if yr else ''}"
+    return f"[{text}]({link})" if link else text
+
+
+def _render_literature_proposer(selected_run: str, profile) -> None:
+    """The query form: consent-gated, kind + material/element → propose → quarantine-save."""
+    if not ai_literature.is_enabled():
+        st.caption(
+            "AI literature retrieval is disabled. Set `ANTHROPIC_API_KEY` and "
+            "`pip install anthropic` to enable it. Confirming/reviewing any values already "
+            "saved below still works without it.")
+        return
+    st.caption(ai_literature.LITERATURE_DATA_NOTICE)
+    if not st.checkbox(ai_literature.LITERATURE_CONSENT_LABEL, key=f"lit_consent_{selected_run}"):
+        st.info("Tick the box above to allow a sourced web search for these optional values.")
+        return
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    kind_label = c1.selectbox("What to look up", list(_LIT_KINDS), key=f"lit_kind_{selected_run}")
+    kind = _LIT_KINDS[kind_label]
+    material = c2.text_input("Material", value="Class C fly ash", key=f"lit_mat_{selected_run}")
+    extra = c3.text_input("Element / phase", value="", key=f"lit_extra_{selected_run}")
+    if st.button("🔎 Search literature (sourced)", key=f"lit_go_{selected_run}"):
+        conds = _literature_experiment_conditions(selected_run)
+        with st.spinner("Searching the literature for sourced values…"):
+            if kind == "solubility_constant":
+                cands = ai_literature.propose_solubility_constants(
+                    material, extra or None, experiment_conditions=conds)
+            elif kind == "candidate_phase":
+                cands = ai_literature.propose_candidate_phases(
+                    material, experiment_conditions=conds)
+            elif kind == "starting_assay":
+                cands = ai_literature.propose_starting_assay(
+                    material, extra or "Ca", experiment_conditions=conds)
+            else:
+                cands = ai_literature.propose_partition_behavior(
+                    material, extra or "Ca", experiment_conditions=conds)
+        if not cands:
+            st.warning("No reliably-sourced value found (every result must carry a DOI/URL "
+                       "and a supporting quote). Nothing was saved.")
+        else:
+            added = ai_literature.save_candidates(selected_run, cands)
+            st.success(f"Found {len(cands)} sourced candidate(s); {len(added)} new added to "
+                       "the quarantine store below. Review and confirm before any use.")
+            st.rerun()
+
+
+def _render_literature_review(selected_run: str, profile) -> None:
+    """Review table for quarantined literature values — source-prominent, confirm-gated.
+
+    Every row shows the **clickable DOI/URL**, the supporting quote, and the
+    conditions-match warning. Confirmation moves a value to ``literature-confirmed`` (and
+    logs an audit event); a conditions-mismatched value needs a **second acknowledgement**.
+    """
+    with st.expander("📚 Literature values (AI-assisted, sourced) — quarantined until confirmed"):
+        st.caption(
+            "Proposed values are **source-bound** (DOI preferred, URL fallback) and "
+            "**quarantined**: nothing here enters a calculation until you confirm it, and "
+            "uncited results are dropped before they are ever shown.")
+        _render_literature_proposer(selected_run, profile)
+
+        store = ai_literature.read_store(selected_run)
+        if not store:
+            st.info("No literature values stored for this run yet.")
+            return
+
+        st.markdown("**Stored values** (newest last)")
+        for rec in store:
+            cid = str(rec.get("candidate_id"))
+            confirmed = bool(rec.get("confirmed"))
+            mismatch = ai_literature.has_conditions_mismatch(rec.get("conditions_match"))
+            tag = "✅ confirmed" if confirmed else "🔒 quarantined"
+            st.markdown(
+                f"**{rec.get('quantity', '')}** = `{rec.get('value')} {rec.get('unit', '')}` "
+                f"· {rec.get('material', '')}  —  {tag}")
+            st.markdown(f"Source: {_lit_source_markdown(rec)}")
+            cite = rec.get("citation") or {}
+            if cite.get("supporting_quote"):
+                st.caption(f"“{cite['supporting_quote']}”")
+            cm = rec.get("conditions_match") or {}
+            if mismatch:
+                flags = ", ".join(cm.get("mismatch_flags") or []) or "different conditions"
+                st.warning(f"⚠️ Conditions mismatch: {flags}. "
+                           f"{cm.get('assessment', '')}".strip())
+            elif cm.get("assessment"):
+                st.caption(f"Conditions: {cm['assessment']}")
+
+            if not confirmed:
+                ack = True
+                if mismatch:
+                    ack = st.checkbox(ai_literature.MISMATCH_ACK_LABEL,
+                                      key=f"lit_ack_{selected_run}_{cid}")
+                if st.button("Confirm this value", key=f"lit_confirm_{selected_run}_{cid}",
+                             disabled=mismatch and not ack):
+                    try:
+                        ai_literature.confirm_value(selected_run, cid, acknowledge_mismatch=ack)
+                        st.success("Confirmed and logged to the audit trail.")
+                        st.rerun()
+                    except ai_literature.ConditionsMismatchError:
+                        st.error("Tick the conditions-mismatch acknowledgement to confirm.")
+            st.divider()
+
+
+def _render_mass_balance(selected_run: str) -> None:
+    """Batch-reaction element closure (deterministic arithmetic; no model/AI/ML).
+
+    Renders only when the active dataset profile opts in (declares
+    ``mass_balance_elements``). The gap is element **not yet attributed** to liquid or
+    solid — a measured fact with no mechanism attached.
+    """
+    profile = profiles.FLY_ASH_PROFILE
+    with st.expander("Batch-reaction mass balance — element closure (arithmetic)",
+                     expanded=False):
+        st.caption(
+            "Deterministic closure: **gap = moles_in − moles_liquid − moles_solid** "
+            "(mmol). No model, AI, or ML — the gap is element *not yet attributed* to "
+            "liquid or solid, a measured fact with no mechanism attached."
+        )
+        if not mass_balance.is_enabled(profile):
+            st.info(
+                "This run's dataset profile does not declare batch-reaction mass-balance "
+                "columns, so no closure is computed. Mass balance is **opt-in per profile** "
+                "(set `mass_balance_elements` + the assay units). The schema reserves the "
+                "optional columns `material_mass_g`, `liquid_volume_mL`, `solid_mass_g`, and "
+                "per element `{el}_starting_content` / `{el}_solid_residue`."
+            )
+            return
+
+        data = run_manager.read_data_file(selected_run)
+        # Quarantine gate: fill ONLY confirmed literature starting-assay stand-ins into
+        # blank cells (never overwriting a measured value). Unconfirmed values are ignored.
+        lit_records = ai_literature.confirmed_records(selected_run)
+        lit_badges: dict = {}
+        if lit_records and not data.empty:
+            rows = []
+            for _, r in data.iterrows():
+                nr, b = ai_literature.row_with_confirmed_assays(r.to_dict(), lit_records, profile)
+                rows.append(nr)
+                lit_badges.update(b)
+            data = pd.DataFrame(rows)
+        records = mass_balance.closure_records(data, profile)
+        if not records:
+            st.info("No batch-reaction rows to close yet — enter the material mass, liquid "
+                    "volume, starting assay, and solid residue for this run's samples.")
+            return
+
+        elements = list(getattr(profile, "mass_balance_elements", ()))
+        element = st.selectbox("Element", elements, key=f"mb_el_{selected_run}")
+        el_records = [r for r in records if r["element"] == element]
+
+        # Badge any literature stand-in used for THIS element's starting assay (with source).
+        overrides = ai_literature.confirmed_assay_overrides(lit_records, profile)
+        ov = overrides.get(f"{element}_starting_content")
+        if ov:
+            _val, rec = ov
+            cite = rec.get("citation") or {}
+            link = ai_literature.resolvable_link(cite)
+            label = cite.get("title") or "source"
+            yr = cite.get("year")
+            src_md = f"[{label}{f' ({yr})' if yr else ''}]({link})" if link else label
+            st.warning(
+                f"⚠️ {element} starting assay is a **literature stand-in** "
+                f"(`{ai_literature.PROVENANCE_CONFIRMED}`), **not a measurement** — any "
+                f"closure/recovery below is computed from it. Source: {src_md}")
+
+        st.markdown("**Closure table** (mmol; provenance per cell below)")
+        st.dataframe(mass_balance.closure_table(el_records), use_container_width=True,
+                     height=200, hide_index=True)
+
+        # Stacked bars for the complete closures (gap labelled "unaccounted").
+        complete = [r for r in el_records if r["status"] == mass_balance.STATUS_COMPLETE]
+        if complete:
+            cols = st.columns(min(3, len(complete)))
+            for i, rec in enumerate(complete[:3]):
+                with cols[i]:
+                    st.pyplot(_mass_balance_bar(rec))
+
+        # Warnings (validation-surface style) — never silent fixes.
+        all_issues = [iss for r in el_records for iss in mass_balance.closure_warnings(r)]
+        if all_issues:
+            st.markdown("**Sanity warnings**")
+            for iss in all_issues:
+                msg = f"`{iss['column']}` — {iss['message']}"
+                (st.error if iss["severity"] == "error" else
+                 st.warning if iss["severity"] == "warning" else st.info)(msg)
+
+        # Provenance per cell — reuse the unit-conversion expander pattern.
+        with st.expander("Provenance — formula + molar mass per term"):
+            for rec in el_records:
+                st.markdown(f"**{rec.get('sample_id', '')} · {rec['element']}** "
+                            f"({rec['status']})")
+                for term, label in (("n_in", "charged"), ("n_liquid", "liquid"),
+                                    ("n_solid", "solid residue")):
+                    p = rec["provenance"][term]
+                    val = "—" if p["value"] is None else f"{p['value']:.4g} mmol"
+                    mm = "" if p["molar_mass"] is None else f" · M = {p['molar_mass']:g} g/mol"
+                    cid = p["conversion_id"] or "—"
+                    st.caption(f"{label}: {val} · `{cid}`{mm} · {p['formula']}")
+                if rec["assumptions"]:
+                    for a in rec["assumptions"]:
+                        st.caption(f"⚠️ assumption: {a}")
+
+        # Explain the measured gap with PHREEQC (modeled; never overwrites the measured gap).
+        _render_gap_attribution(selected_run, profile, data, element)
+
+
 def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
     """Validate tab: measured-data overview, data validation, and calculation audit."""
     app_ui.render_page_header(
@@ -4248,6 +4611,10 @@ def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
         _render_measured_overview(selected_run)
         st.divider()
         _render_basic_validation_summary(selected_run)
+        st.divider()
+        _render_mass_balance(selected_run)
+        st.divider()
+        _render_literature_review(selected_run, profiles.FLY_ASH_PROFILE)
         st.divider()
     else:
         st.info("This run type has no measured-data overview or lab validation. The "

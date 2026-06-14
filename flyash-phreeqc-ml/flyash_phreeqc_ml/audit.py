@@ -49,11 +49,13 @@ EVENT_SCRIPT_RUN = "script_run"
 EVENT_COMPARISON_GENERATED = "comparison_generated"
 EVENT_INCLUSION = "inclusion"
 EVENT_EXPORT = "export"
+EVENT_LITERATURE_PROPOSED = "literature_proposed"
+EVENT_LITERATURE_CONFIRMED = "literature_confirmed"
 
 EVENT_TYPES = (
     EVENT_IMPORT, EVENT_VALIDATION, EVENT_SUGGESTION_TABLE, EVENT_MAPPING_ACCEPTED,
     EVENT_MAPPING_DELETED, EVENT_SCRIPT_RUN, EVENT_COMPARISON_GENERATED,
-    EVENT_INCLUSION, EVENT_EXPORT,
+    EVENT_INCLUSION, EVENT_EXPORT, EVENT_LITERATURE_PROPOSED, EVENT_LITERATURE_CONFIRMED,
 )
 
 # The columns read_audit always returns (schema every event carries).
@@ -267,4 +269,43 @@ def log_export(run_name: str, *, kind: str, file_name: str | None = None,
     return log_event(run_name, EVENT_EXPORT, {
         "kind": str(kind), "file_name": file_name,
         "n_rows": None if n_rows is None else int(n_rows),
+    })
+
+
+def log_literature_proposed(run_name: str, *, n_candidates: int, kinds=None,
+                            materials=None, candidate_ids=None) -> bool:
+    """AI proposed sourced literature values (quarantined): counts + ids, never numbers."""
+    return log_event(run_name, EVENT_LITERATURE_PROPOSED, {
+        "n_candidates": int(n_candidates),
+        "kinds": [str(k) for k in (kinds or [])],
+        "materials": [str(m) for m in (materials or [])],
+        "candidate_ids": [str(c) for c in (candidate_ids or [])],
+    })
+
+
+def log_literature_confirmed(run_name: str, *, candidate_id: str, quantity: str,
+                             value=None, unit: str | None = None, element=None,
+                             kind: str | None = None, citation_link: str | None = None,
+                             doi: str | None = None, title: str | None = None,
+                             year=None, conditions_mismatch: bool = False,
+                             acknowledged_mismatch: bool = False) -> bool:
+    """A literature value was confirmed for use — the permanent, traceable record.
+
+    Carries the resolvable **DOI/link** + title + year so any downstream number this
+    value influences can be traced back to the exact paper. This is the one place a
+    confirmed literature value's source is preserved in the append-only trail.
+    """
+    return log_event(run_name, EVENT_LITERATURE_CONFIRMED, {
+        "candidate_id": str(candidate_id),
+        "quantity": str(quantity),
+        "value": value,
+        "unit": None if unit is None else str(unit),
+        "element": None if element is None else str(element),
+        "kind": None if kind is None else str(kind),
+        "citation_link": citation_link,
+        "doi": doi,
+        "title": None if title is None else str(title),
+        "year": None if year is None else int(year),
+        "conditions_mismatch": bool(conditions_mismatch),
+        "acknowledged_mismatch": bool(acknowledged_mismatch),
     })

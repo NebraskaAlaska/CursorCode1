@@ -35,14 +35,17 @@ TABLES_DIR: Path = OUTPUTS_DIR / "tables"
 # pipeline workflow. Run data is gitignored by default (see .gitignore).
 EXPERIMENT_RUNS_DIR: Path = PROJECT_ROOT / "experiments"
 
-# Raw sub-directories (names contain spaces, matching the delivered dataset).
+# Raw sub-directories (the PHREEQC folder names contain spaces, matching the
+# delivered dataset).
 PHREEQC_INPUT_DIR: Path = RAW_DIR / "PHREEQC inputs"
 PHREEQC_OUTPUT_DIR: Path = RAW_DIR / "PHREEQC outputs"
-ICP_DIR: Path = RAW_DIR / "experimental icp"  # the CFA+MK mix-design workbook
+# The CFA+MK mix-design workbook. Renamed from the fragile space-named
+# "experimental icp" folder to a distinct, no-space name (it differed from
+# EXPERIMENTAL_ICP_DIR only by a space, which was confusing and brittle).
+ICP_DIR: Path = RAW_DIR / "icp_mix_design"
 
 # Phase 2: measured experimental release data (filled from the lab/ICP results).
-# Note the underscore — this is a new directory, distinct from the space-named
-# "experimental icp" folder that holds the mix-design workbook.
+# A separate directory from ICP_DIR (mix-design inputs) — they hold different data.
 EXPERIMENTAL_ICP_DIR: Path = RAW_DIR / "experimental_icp"
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +204,39 @@ PHREEQC_MOLALITY_TO_MM = _units.MOLALITY_TO_MM_FACTOR
 # For elements, phreeqc_source is the molality column converted to mM; for pH it is
 # the PHREEQC pH directly.
 RESIDUAL_ELEMENTS = ["Ca", "Si", "Al", "Fe"]  # measured_<X>_mM vs phreeqc mol_<X>
+
+
+# --------------------------------------------------------------------------- #
+# Batch-reaction mass-balance block (optional / additive; arithmetic only)
+# --------------------------------------------------------------------------- #
+# A deterministic element-closure (n_in = n_liquid + n_solid + gap) for a batch
+# reaction (solid material + reagent → leached liquid + residual solid). These
+# columns are APPENDED to the release schema so they are recognised (not treated as
+# unknown) and survive import/save; a dataset that runs no batch reaction simply
+# leaves them blank, and a DatasetProfile opts in by declaring `mass_balance_elements`.
+# NOTE: deliberately NOT added to EXPERIMENTAL_NUMERIC_COLUMNS, so existing profiles'
+# variable_columns (and therefore FLY_ASH_PROFILE) are byte-for-byte unchanged; the
+# mass_balance module coerces its own numeric inputs.
+MASS_BALANCE_ELEMENTS = list(RESIDUAL_ELEMENTS)  # Ca, Si, Al, Fe
+
+BATCH_REACTION_METADATA_COLUMNS = [
+    "material_mass_g",       # solid material charged into the reactor
+    "material_id",           # which material (free text)
+    "reagent",               # reagent identity (free text, e.g. HCl / NaOH)
+    "reagent_conc_M",        # reagent concentration (mol/L)
+    "reagent_volume_mL",     # reagent volume added
+    "liquid_volume_mL",      # post-filtration liquid volume
+    "solid_mass_g",          # recovered solid mass (optional; flagged when absent)
+]
+# Per-element solid-phase assays: starting (pre-reaction) + residue (post-reaction).
+BATCH_REACTION_SOLID_COLUMNS = (
+    [f"{el}_starting_content" for el in MASS_BALANCE_ELEMENTS]
+    + [f"{el}_solid_residue" for el in MASS_BALANCE_ELEMENTS]
+)
+BATCH_REACTION_COLUMNS = BATCH_REACTION_METADATA_COLUMNS + BATCH_REACTION_SOLID_COLUMNS
+
+# Append to the recognised release schema (text material_id/reagent kept as-is).
+EXPERIMENTAL_RELEASE_COLUMNS = EXPERIMENTAL_RELEASE_COLUMNS + BATCH_REACTION_COLUMNS
 
 
 # --------------------------------------------------------------------------- #

@@ -253,6 +253,34 @@ experiment — **not** a blind replacement for the chemistry.
   Results tab gained a **"Residual correction (experimental)"** expander (per-element gate progress →
   train button when met → LOCO verdict → optional overlay). Covered by `tests/test_residual_model.py`.
 
+- **GP model-incompleteness estimator (experimental)** (Prompt 27 — model *where PHREEQC's mechanism is
+  systematically short*; only after Prompts 22–25 exist + data accumulates). `flyash_phreeqc_ml/ml/incompleteness_model.py`
+  (new) learns the **unexplained closure residual** (Prompt 24/25 — the gap PHREEQC could **not** attribute)
+  per element as a function of batch conditions, **reusing `residual_model`'s machinery verbatim** (feature
+  encoding, GP pipeline, `_loco`, training-hash/card helpers — imported, not reinvented). The output is
+  framed strictly as a **"predicted systematic shortfall of the PHREEQC attribution under these conditions"**
+  — never a measured amount, never fed into closure arithmetic (predictions live only in
+  `predicted_shortfall*` columns). **Gate** (typed `IncompletenessGateError` with counts): ≥30
+  **well-determined** rows across ≥3 conditions, where well-determined = closure-gap σ ≤
+  `GAP_SIGMA_REL_TOL`·|gap| **and** a trustworthy (complete-closure) recovery status **and**
+  `starting_provenance == "measured"` — so a row whose starting assay is a confirmed *or* proposed
+  **literature** stand-in is **excluded from training** (the constraint: trains on measured closure gaps +
+  modeled attributions only). **Noise guard** (`NoLearnablePatternError`): if the residual's reduced χ²
+  around its mean ≤ `NOISE_CHI2_MAX`, training refuses with *"consistent with measurement noise; no
+  learnable pattern"* rather than fitting noise. **LOCO** (leave-one-condition-out) vs the Prompt-13
+  constant-bias baseline via `residual_model._loco`; `use_model_recommended` is True only when it beats the
+  baseline (else stay with the bias bands). **Uses:** (a) `flag_underattributed_conditions` — the
+  active-learning hook (conditions predicted to be strongly under-attributed → candidates for new
+  experiments / better phase lists); (b) `incompleteness_overlay` — an off-by-default, clearly ml-predicted
+  shortfall overlay for the recovery report. Per-element **model card** (gate values, signal assessment,
+  LOCO-vs-baseline, training run names + set hash, library versions, date) + joblib persistence under
+  `run_manager.incompleteness_model_dir` (gitignored). `build_recovery_dataset` assembles the per-row
+  training frame from measured closure + modeled attribution + literature-provenance flags. Requires
+  scikit-learn (via `residual_model`); tests use `optimizer=None` fast-mode. Covered by
+  `tests/test_incompleteness_model.py` (gate 29-refused/30-accepted + ≥3-conditions, well-determined /
+  literature / status filters, noise-domination refusal, LOCO + baseline logic, prediction-only columns,
+  build-dataset target = measured gap − modeled attribution, persistence).
+
 - **Grounded "Ask the assistant"** (Prompt 15 — interpretation layer, read-only, no invented numbers).
   `flyash_phreeqc_ml/ai/assistant.py` (new) answers natural-language questions about the **selected
   run** using the Anthropic **tool-use** API, where every tool wraps an existing read-only function so
@@ -360,10 +388,11 @@ experiment — **not** a blind replacement for the chemistry.
   `tests/test_manifest_model_agnostic.py`). Data tab: an **"Import model predictions (CSV)"** path
   (same review-before-save as measured import; model name from the file; saved to
   `data/processed/model_predictions.csv` which takes manifest precedence over `phreeqc_results.csv`).
-  The **supported-dataset matrix** (`tests/matrix/`, named fixtures + one module per claim a–f: fly-ash+
+  The **supported-dataset matrix** (`tests/matrix/`, named fixtures + one module per claim a–g: fly-ash+
   PHREEQC, literature separation, hand-computed residuals, reformatted/units import, alternate non-fly-
-  ash profile, non-PHREEQC generic prediction end-to-end) pins what "supported" means; the **README**
-  claims match the matrix, no more. **Known leak (flagged, not blocking):** the manifest keeps the
+  ash profile, non-PHREEQC generic prediction end-to-end, **and (g) a second material — red mud — driving
+  batch closure → attribution → recovery from its `MaterialProfile`**) pins what "supported" means; the
+  **README** claims match the matrix, no more. **Known leak (flagged, not blocking):** the manifest keeps the
   historical column names `phreeqc_record_key` / `phreeqc_<X>_mM` (renaming touches every consumer) —
   they hold whatever model produced the numbers; documented in `docs/model_prediction_format.md`.
 
@@ -407,6 +436,147 @@ experiment — **not** a blind replacement for the chemistry.
   documented in `docs/mapping_rules.md` (§5.5). Covered by `tests/test_replicate_uncertainty.py` (SEM
   math, batch grouping from synthetic names + a column, std/SEM flowing into the comparison frame,
   n=1 NaN-not-zero degradation).
+
+- **Batch-reaction mass balance — deterministic element closure** (Prompt 23 — **arithmetic only;
+  works with zero model/AI/ML present**). `flyash_phreeqc_ml/mass_balance.py` (new, pure) computes, per
+  element, `gap = moles_in − moles_liquid − moles_solid` (mmol): `moles_in` = starting solid assay ×
+  material mass, `moles_liquid` = measured liquid mM × liquid volume, `moles_solid` = residue assay ×
+  recovered solid mass. The **gap is a measured fact** — element *not yet attributed* to liquid or
+  solid, with **no mechanism attached**. Honesty rules: all mass→amount conversions go through
+  `units.convert` (new `mg→mmol` registry entry, so every derived term carries a `conversion_id` +
+  molar mass); a **missing required term → `status=incomplete`** listing the fields (never a partial
+  number shown as real); an absent `solid_mass_g` is **assumed = material mass** with the assumption
+  recorded (never silently fabricated). `closure(row, element, *, profile, sigmas)` returns
+  `{n_in,n_liquid,n_solid,gap,gap_fraction,gap_sigma,uncertainty,status,missing_fields,assumptions,
+  provenance}`. **Uncertainty** is propagated (relative-quadrature for products, sum-in-quadrature for
+  the gap) only when per-input sigmas exist, else `gap_sigma=None` + `uncertainty="unknown"` (never
+  implied zero). `closure_warnings` emits validation-surface issues (negative gap beyond gap_sigma →
+  names a likely culprit; gap_fraction > 1.0; implausible over-recovery) — never silent fixes. **Schema
+  (additive):** the optional batch block is appended to `config.EXPERIMENTAL_RELEASE_COLUMNS`
+  (`material_mass_g`/`material_id`/`reagent`/`reagent_conc_M`/`reagent_volume_mL`/`liquid_volume_mL`/
+  `solid_mass_g` + per element `{el}_starting_content`/`{el}_solid_residue`) and the shipped template
+  regenerated to match; deliberately **not** added to `EXPERIMENTAL_NUMERIC_COLUMNS` so
+  `FLY_ASH_PROFILE.variable_columns` is unchanged, and the parser treats the block as **optional**
+  (absence is never an error). `DatasetProfile` gained additive batch fields (`mass_balance_elements`
+  empty = OFF — **FLY_ASH_PROFILE does not opt in and is unchanged**). UI: a **Validate-tab expander**
+  (per-element closure table with provenance, a liquid/solid/**"unaccounted (not yet attributed)"**
+  stacked bar, and the warnings) that renders only when the active profile opts in (else a clear
+  empty state). Covered by `tests/test_mass_balance.py` (closure vs hand-computed moles, conversion_id
+  on every term, incomplete + assumed-solid-mass handling, negative-gap warning, uncertainty vs a
+  hand-check, FLY_ASH unchanged).
+
+- **PHREEQC gap attribution — explain the closure gap** (Prompt 24 — modeled explanation of the
+  Prompt-22 measured gap; the measured closure is **immutable input**). `flyash_phreeqc_ml/attribution.py`
+  (new) asks PHREEQC *which phases it predicts precipitated* and computes **how much of the measured
+  gap that accounts for**, never overwriting the measured numbers. `phreeqc_runner.build_single_input`
+  gained **additive** optional extras (byte-identical output when absent — golden test preserved):
+  `material_inputs` (dissolved batch material as SOLUTION inputs, flagged), `candidate_phases`
+  (profile-declared precipitates added to `EQUILIBRIUM_PHASES`), and `selected_output_elements`
+  (per-element `SELECTED_OUTPUT`/`USER_PUNCH` emitting solution + phase moles); `build_input`'s
+  OA→1 / PF-GS→2 behaviour is kept via `attribution.build_attribution_inputs`. `attribute_gap(row,
+  element, phreeqc_selected_output)` → `{modeled_precipitated_moles, by_phase, modeled_solution_moles,
+  gap, gap_explained, gap_unexplained, fraction_explained, status, provenance="phreeqc", measured{…}}`.
+  **The `precipitate_in_measured_solid` flag (CONFIRMED `False` for the fly-ash filtration protocol —
+  precipitate leaves with the filtrate, not in the assayed solid)** sets the arithmetic:
+  `False → attribution_to_gap = min(P, gap)` (precipitate explains the gap); `True → 0` (precipitate is
+  already in `n_solid`, explains the solid's composition not the gap). Profile-configurable
+  (`DatasetProfile.precipitate_in_measured_solid` + `mass_balance_candidate_phases` = phase→element);
+  documented in `docs/mass_balance.md`. **Status** (parallels mapping status): `closed` /
+  `model-explained` / `partially-explained` / `unexplained`, folded into the report's overall validity
+  (one source of truth — `report._overall_validity` accepts an `attribution_status` that caps a would-be
+  `valid` run at `preliminary` when the budget isn't measured-closed). **UI** (Validate tab): a
+  **three-way, never-merged** band display (measured liquid+solid+gap | model attribution by phase |
+  unexplained residual) + an honest caption ("model attributes N of M mmol… to calcite; P remain
+  unexplained"); **degrades** to the measured gap with "attribution unavailable — configure PHREEQC"
+  when the binary/db is absent. **Honesty:** all text is "model attributes" / "predicted to
+  precipitate", and no modeled value lands in a measured-labelled field. Covered by
+  `tests/test_attribution.py` (arithmetic on a synthetic selected-output, the flag both ways, all four
+  statuses, the degrade path, immutability of the measured block, validity feed) with the PHREEQC run
+  mocked.
+
+- **AI-assisted literature value retrieval — sourced + quarantined by construction** (Prompt 26 —
+  suggestion-only; a literature value can **never** silently enter a calculation). `flyash_phreeqc_ml/ai/literature.py`
+  (new) *proposes* sourced literature values (solubility constants, typical element assays, partition
+  behaviour) via the Anthropic **web_search** server tool. `propose_literature_values(query) ->
+  list[LiteratureCandidate]` (+ wrappers `propose_solubility_constants` / `propose_candidate_phases` /
+  `propose_starting_assay` / `propose_partition_behavior`). `LiteratureCandidate` carries
+  value/unit/quantity/material/conditions/`conditions_match`/confidence + a `Citation`
+  (doi/url/title/authors/year/`supporting_quote`). **Validation in code (before display):** a candidate
+  is **dropped** unless it has a supporting quote **and** at least one of doi/url; a DOI is normalised to
+  `https://doi.org/<doi>`; the quote is truncated to ≤25 words (copyright). **Quarantine by
+  construction:** candidates are written `literature-proposed`, `confirmed=False` to a **separate per-run
+  store** `experiments/<run>/outputs/literature_values.jsonl` — never into measured data, the manifest, or
+  a comparison CSV. The **single chokepoint** into a calculation is `row_with_confirmed_assays(row,
+  records, profile)`, which injects **only** `confirmed=True` starting-assay stand-ins into *blank* cells
+  (never overwriting a measured value) and returns a per-column **source badge**; `mass_balance` /
+  `attribution` stay pure and never import literature, so an unconfirmed value is simply ignored by every
+  calculation (pinned by a test that runs a closure and shows the unconfirmed value does not enter it).
+  **Confirmation is deliberate + recorded:** `confirm_value(run, id, *, acknowledge_mismatch=False)` flips
+  the record to `literature-confirmed`, retains the citation permanently, and logs `audit.log_event`
+  (`literature_confirmed`, carrying the resolvable **DOI/link** + title + year, so the value's downstream
+  influence is traceable to the exact paper). A **conditions mismatch** (different material/T/ionic
+  strength, flagged by the model) makes `confirm_value` **refuse** unless the second acknowledgement
+  (`acknowledge_mismatch=True`, the UI's "I understand this value is from different conditions" checkbox) is
+  given — also logged. **System-prompt guards** (stored in the module): only values citable from search
+  with a resolvable DOI/URL + a ≤25-word quote; never fabricate from memory; say "no reliable sourced
+  value found" rather than guess; always report conditions even when mismatched. **UI** (Validate tab):
+  a consent-gated proposer + a **review table** showing the **clickable DOI/URL** (title + year), the
+  supporting quote, and the conditions-match warning with the double-ack gate; the mass-balance closure
+  **badges** any literature stand-in as "starting assay: literature-confirmed (DOI …), not a measurement".
+  Disabled cleanly without `ANTHROPIC_API_KEY` (reuses `import_assist`'s lazy client); per-session
+  data-leaves-machine consent before any query. Covered by `tests/test_literature.py` (mocked client +
+  search: uncited/quote-less dropped, DOI→doi.org, URL-only accepted, quarantine enforced into
+  mass_balance, the mismatch double-ack gate, the "no value found" path, disabled-without-key).
+
+- **Per-element recovery report — present → where it went → confidence** (Prompt 25 — pure templating
+  extension of `report.build_report`, no new deps). Adds an **Element recovery** section that, *per
+  element per condition*, states the **starting amount** (provenance-flagged — measured assay vs a
+  Prompt-26 `literature-confirmed` stand-in, with the **DOI/link inline**), **measured liquid** + **solid**,
+  the **closure gap ± gap_sigma** (Prompt 22), the **PHREEQC attribution by phase** + **unexplained
+  residual** (Prompt 24), and a **recovery status** (the four attribution statuses). Helpers mirror the
+  existing ones (`_recovery_records` / `_recovery_table` / `_recovery_summary`, alongside
+  `_inclusion_by_variable` / `_needed_simulations`); a generated **narrative** per element ("Of N mmol Ca
+  initially present (measured assay), X% in liquid, Y% in solid; Z mmol unaccounted, of which the model
+  attributes W mmol to calcite, leaving V mmol unexplained"). Because the report has **no live PHREEQC**,
+  attribution is *unavailable* offline (whole gap unexplained) unless a parsed selected output is passed
+  to `_recovery_records(selected_outputs=...)` — the path the tests use to reach model-explained / partial.
+  New bundle CSV **`element_recovery.csv`** (every term + `starting_provenance` + `starting_citation`) and
+  a **summary table sorted by unexplained fraction** (the "where the tool's knowledge is weakest" view).
+  **MANIFEST.json** gains `recovery_classification`, tagging each term **measured / derived / modeled /
+  literature-confirmed** (n_in is measured **or** literature-confirmed per row — the `starting_provenance`
+  column is authoritative). **Honesty:** the section **reuses `_overall_validity` + `_validity_class`** —
+  an element balance is only "explained" when `closed` or `model-explained` within uncertainty;
+  `partially-explained` / `unexplained` carry the standing caution and an open element budget caps a run
+  at `preliminary`, never `valid`. The feature is **profile-gated** (FLY_ASH_PROFILE does not opt into
+  mass balance, so the live app shows the empty-state note). Covered by `tests/test_report.py` additions
+  (each status reached, provenance flags render, the literature DOI/link shows, manifest classification,
+  summary sort order).
+
+- **Batch + recovery across materials — `MaterialProfile`** (Prompt 28 — additive profile layer, no
+  package rename). Pushes material/reagent/phase specifics into the profile system so the Prompt-22–25 +
+  Prompt-27 batch chemistry runs for **any** material, not just fly ash. `profiles.MaterialProfile`
+  (frozen) declares `material_id` / `display_name`, `relevant_elements`, `mass_balance_elements`,
+  `candidate_phases` (phase→element), `precipitate_in_measured_solid`, `default_reagents`, and a
+  provenance-flagged `declared_assay` (`AssayValue`: `measured` / `literature-confirmed` usable;
+  `literature-proposed` **quarantined** — `is_usable` False — until confirmed, satisfying the Prompt-24/26
+  rule for a new material). `DatasetProfile` gains an additive `material` field, and module-level
+  **resolvers** (`mass_balance_elements` / `candidate_phases` / `precipitate_in_measured_solid` /
+  `default_reagents` / `usable_declared_assay`) read the material first, else the legacy DatasetProfile
+  batch fields. `mass_balance`, `attribution`, the `report` recovery section, and `incompleteness_model`
+  now read **elements/phases/flag from the active profile via these resolvers** — **none hard-codes a
+  fly-ash element or phase** (new guard `tests/test_material_profile_agnostic.py`, mirroring
+  `test_manifest_model_agnostic.py`). Ships `FLY_ASH_MATERIAL` (Ca/Si/Al/Fe/Na/K, NaOH; closure stays
+  OFF → unchanged) and a second-material stub `RED_MUD_MATERIAL` / `RED_MUD_PROFILE` (Ti/V/Fe/Al + REE,
+  anatase/rutile/hematite/… phases, **opposite** filtration flag, different reagents) to prove the
+  abstraction. A **no-code profile-creation path** (`dataset_profile_from_spec` /
+  `material_profile_from_dict` / `load_dataset_profile`; JSON always, YAML if PyYAML present) lets a
+  researcher define a material in one file — documented in `docs/defining_a_material.md` with a shipped
+  example `docs/examples/red_mud_material.json` (a literature-proposed declared assay is rejected from any
+  calculation; a literature provenance without a citation is rejected at load). Ti/V molar masses added to
+  `units.MOLAR_MASSES`. Matrix claim **(g)** `tests/matrix/test_g_second_material.py` runs red-mud batch
+  → closure (hand-computed Ti moles) → mocked attribution (anatase, material's precipitate flag) →
+  recovery section, asserting **zero fly-ash leak** (only Ti/V/Fe/Al rows). Covered also by
+  `tests/test_profiles.py` (resolvers, factory, JSON spec round-trip from disk, quarantine).
 
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
@@ -459,11 +629,14 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
 
 - **No ML on the result path.** Do not wire any model into comparison/residual/mapping/validity.
   The experimental ML that exists (surrogate Prompt 12, bias stats Prompt 13, GP residual correction
-  Prompt 14) is deliberately isolated: the surrogate is Audit/Help-only; the residual correction is
-  **hard-gated** (≥30 exact pairs / ≥3 conditions, enforced by a typed error — never lower it) and
-  **display-only**. Real measured release data still does not exist in `data/raw/experimental_icp/`
-  (only the blank template), so for fly ash these models have **no data to train on yet** and Phase 2
-  comparison remains the scientific ceiling — the gate is what keeps that honest.
+  Prompt 14, GP model-incompleteness estimator Prompt 27) is deliberately isolated: the surrogate is
+  Audit/Help-only; the residual correction is **hard-gated** (≥30 exact pairs / ≥3 conditions, enforced
+  by a typed error — never lower it) and **display-only**; the incompleteness model is **hard-gated** the
+  same way (≥30 well-determined rows / ≥3 conditions), additionally **refuses to fit noise** (reduced-χ²
+  guard) and **never trains on literature-provenance rows**, and its output is a labelled "predicted
+  shortfall" estimate that never enters closure arithmetic. Real measured release data still does not exist
+  in `data/raw/experimental_icp/` (only the blank template), so for fly ash these models have **no data to
+  train on yet** and Phase 2 comparison remains the scientific ceiling — the gate is what keeps that honest.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
   `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by
@@ -473,6 +646,20 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
   The remote is confirmed **private**, and the existing `data/raw/` contents (UMass mix-design
   workbook, PHREEQC files) are approved to push there; re-confirm if the remote changes or any
   *new* raw dataset is added.
+- **The CFA+MK mix-design workbook lives in `data/raw/icp_mix_design/`** (config `ICP_DIR`). It was
+  renamed from the fragile space-named `experimental icp/` folder — which differed from the Phase-2
+  `experimental_icp/` (`EXPERIMENTAL_ICP_DIR`) only by a space. They are **two distinct folders for
+  different data** (mix-design inputs vs. measured release); do not merge them (`scripts/02_parse_icp`
+  globs `*.csv` in `ICP_DIR`, so the release CSVs must stay out of it). `.gitignore` ignores any
+  `*.xlsx/*.xls/*.csv` under `icp_mix_design/` with a `!`-re-include keeping **only** the one approved
+  UMass workbook tracked — so a *new* ICP file is never committed accidentally.
+- **Pre-commit data-safety hook.** `flyash-phreeqc-ml/scripts/hooks/pre-commit` (tracked) blocks
+  staged `*.xlsx`/`*.xls`, anything under `data/raw/experimental*`, `data/processed/`,
+  `experiments/*/outputs/`, and `*release*`/`*measured*` CSVs outside `tests/fixtures/synthetic/`
+  (the one approved UMass workbook is allowlisted). **Install it** (from the parent `CursorCode1`
+  repo root, since this is a subdir): `cp flyash-phreeqc-ml/scripts/hooks/pre-commit
+  .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`. Bypass a deliberate, reviewed exception
+  with `git commit --no-verify`. (The hook is not auto-installed — `.git/hooks/` is per-clone.)
 - **Measured release CSVs are gitignored by default.** `.gitignore` ignores `*release*.csv`,
   `20*_release*.csv`, `*measured*.csv`, the manual-entry file, the generated plan
   (`experiment_plan.csv`), and the generated `sample_phreeqc_map.csv` in
@@ -567,13 +754,33 @@ modules together and own all file I/O paths.
   `app_version`). No edit/delete API; logs ids/counts/statuses/hashes only (never values/contents);
   every call is defensive (warns, never raises). Instrumentation lives at the seams (`run_manager`
   data ops via lazy import, `scripts/05`, and app orchestration). The JSONL is gitignored under
-  `experiments/*/outputs/`. Covered by `tests/test_audit.py`.
+  `experiments/*/outputs/`. Covered by `tests/test_audit.py`. (It also carries the Prompt-26
+  `literature_proposed` / `literature_confirmed` events — the latter keeps the DOI/link + title + year so
+  a confirmed literature value's downstream influence is traceable to the exact paper.)
+
+- **`ai/literature.py` retrieves sourced literature values — quarantined by construction** (Prompt 26;
+  opt-in, suggestion-only). `propose_literature_values(query)` uses the Anthropic **web_search** tool to
+  propose `LiteratureCandidate`s, each **dropped in code** unless it has a supporting quote + a resolvable
+  DOI/URL (DOI → `https://doi.org/…`; quote ≤25 words). Candidates land `literature-proposed` /
+  `confirmed=False` in a **separate** per-run store `experiments/<run>/outputs/literature_values.jsonl`
+  (never measured data / manifest / comparison). The **only** path into a calculation is
+  `row_with_confirmed_assays` (confirmed-only, blank cells only, returns a source badge) — `mass_balance` /
+  `attribution` never import it, so unconfirmed values are inert. `confirm_value(..., acknowledge_mismatch)`
+  flips to `literature-confirmed` (citation retained, audit-logged) and **refuses** a conditions-mismatched
+  value without the second acknowledgement. Reuses `import_assist`'s lazy client (disabled without a key).
+  Covered by `tests/test_literature.py`.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
-  layers (provenance, inclusion, traces, bias, conversions, audit) into a self-contained
-  `validation_report_<ts>/` (report.html + CSVs + figures + MANIFEST.json with SHA-256). Pure
-  composition — it adds no chemistry; the Prompt-4 validity rules drive all honesty wording. Gitignored
-  run output. Covered by `tests/test_report.py`.
+  layers (provenance, inclusion, traces, bias, **element recovery**, conversions, audit) into a
+  self-contained `validation_report_<ts>/` (report.html + CSVs + figures + MANIFEST.json with SHA-256).
+  Pure composition — it adds no chemistry; the Prompt-4 validity rules drive all honesty wording. The
+  **Element recovery** section (Prompt 25, `_recovery_records` / `_recovery_table` / `_recovery_summary`)
+  integrates measured closure (Prompt 22) + PHREEQC attribution (Prompt 24; *unavailable* offline → the
+  whole gap is unexplained unless a parsed selected output is supplied) + **confirmed** literature
+  starting-assay stand-ins (Prompt 26, provenance-flagged with the DOI/link), emitting per-element-per-
+  condition terms + a generated narrative + an `element_recovery.csv` and a summary sorted by unexplained
+  fraction; `MANIFEST.json` gains `recovery_classification` tagging each term measured / derived / modeled
+  / literature-confirmed. Gitignored run output. Covered by `tests/test_report.py`.
 
 - **`profiles.py`** — the **generalization layer** (additive; pure, no chemistry/ML). Two frozen
   dataclasses describe a dataset + model so the same code can serve more than fly ash + PHREEQC
@@ -590,11 +797,30 @@ modules together and own all file I/O paths.
   `mapping_table.build_suggestion_table`/`condition_candidates`, `compare.inclusion.comparison_inclusion`
   (variable spec from `profile.comparison_variable_spec`; `inclusion.VARIABLE_SPEC` now references the
   profile), and `viz/measured_overview` (overview variables + time column from the profile). A second
-  synthetic profile drives the whole chain in `tests/test_profiles.py`. **Seams not yet threaded**
-  (noted for a future prompt): `overall_mapping_status` / `conditions_needing_simulation` /
-  `condition_mean_comparison` and the per-sample `id_column` still assume the fly-ash default; the
-  `mapping_status` acid/CO₂ conflict checks are fly-ash-specific (they simply no-op when those columns
-  are absent).
+  synthetic profile drives the whole chain in `tests/test_profiles.py`. **Material side (Prompt 28):**
+  a `MaterialProfile` (frozen) bundles the *material/reagent/phase* specifics — `material_id` /
+  `display_name`, `relevant_elements`, `mass_balance_elements`, `candidate_phases` (phase→element),
+  `precipitate_in_measured_solid`, `default_reagents`, and a provenance-flagged `declared_assay`
+  (`AssayValue` with `measured` / `literature-confirmed` / `literature-proposed`; a *proposed* assay is
+  **quarantined** — `is_usable` False — until a human confirms it). `DatasetProfile` gained an additive
+  `material` field; module-level **resolvers** (`profiles.mass_balance_elements` / `candidate_phases` /
+  `precipitate_in_measured_solid` / `default_reagents` / `usable_declared_assay`) read the material first
+  and fall back to the DatasetProfile's own batch fields (so material-less / legacy profiles are
+  unchanged). `mass_balance`, `attribution`, the `report` recovery section, and `incompleteness_model` all
+  call these resolvers — **none hard-codes a fly-ash element or phase** (guarded by
+  `tests/test_material_profile_agnostic.py`). `FLY_ASH_MATERIAL` (Ca/Si/Al/Fe/Na/K, NaOH; closure still
+  OFF) and a second-material stub `RED_MUD_MATERIAL` / `RED_MUD_PROFILE` (Ti/V/Fe/Al + REE, anatase/
+  hematite/… phases, the **opposite** filtration flag) prove the abstraction. A **no-code profile path**
+  (`dataset_profile_from_spec` / `material_profile_from_dict` / `load_dataset_profile`, JSON always + YAML
+  if PyYAML is present) lets a researcher define a new material in one file
+  (`docs/defining_a_material.md`, example `docs/examples/red_mud_material.json`); a literature-proposed
+  declared assay is rejected from any calculation until confirmed. Ti/V molar masses were added to
+  `units.MOLAR_MASSES`. **Seams not yet threaded** (noted for a future prompt): `overall_mapping_status`
+  / `conditions_needing_simulation` / `condition_mean_comparison` and the per-sample `id_column` still
+  assume the fly-ash default; the `mapping_status` acid/CO₂ conflict checks are fly-ash-specific (they
+  simply no-op when those columns are absent); and the on-demand PHREEQC `.pqi` generation still uses the
+  fly-ash NaOH/CO₂-cover templating (the measured closure / attribution arithmetic / recovery / training
+  frame are fully material-driven).
 
 - **`parsers/`** turn raw files into tidy DataFrames:
   - `pqo_parser.py` is the core. PHREEQC `.pqo` output is verbose text; the parser walks it

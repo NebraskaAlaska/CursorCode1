@@ -121,3 +121,84 @@ def test_measured_overview_generic_profile():
     assert ov["n_shown"] == 4
     assert ov["n_conditions"] == 2
     assert "day" in ov["plot"].columns
+
+
+# --------------------------------------------------------------------------- #
+# Material profile (Prompt 28) — resolvers, factory, JSON spec path, quarantine
+# --------------------------------------------------------------------------- #
+def test_material_resolvers_prefer_material_then_fall_back():
+    # Fly ash: a material is attached but mass balance stays OFF (unchanged behaviour).
+    assert profiles.FLY_ASH_PROFILE.material.material_id == "class_c_fly_ash"
+    assert profiles.mass_balance_elements(profiles.FLY_ASH_PROFILE) == ()
+    # Red mud: elements/phases/flag come from the material.
+    assert profiles.mass_balance_elements(profiles.RED_MUD_PROFILE) == ("Ti", "V", "Fe", "Al")
+    assert profiles.candidate_phases(profiles.RED_MUD_PROFILE)["Anatase"] == "Ti"
+    assert profiles.precipitate_in_measured_solid(profiles.RED_MUD_PROFILE) is True
+    assert "NaOH" in profiles.default_reagents(profiles.RED_MUD_PROFILE)
+    # A material-less profile still resolves from its own fields (back-compat).
+    legacy = profiles.DatasetProfile(name="legacy", mass_balance_elements=("Ca",))
+    assert profiles.mass_balance_elements(legacy) == ("Ca",)
+
+
+def test_dataset_profile_from_spec_builds_a_working_profile():
+    spec = {
+        "material": {
+            "material_id": "demo_ore", "display_name": "Demo ore",
+            "relevant_elements": ["Fe", "Al"], "mass_balance_elements": ["Fe", "Al"],
+            "candidate_phases": {"Hematite": "Fe"}, "precipitate_in_measured_solid": False,
+            "default_reagents": ["HCl"],
+            "declared_assay": {
+                "Fe": {"value": 40.0, "unit": "wt%", "provenance": "literature-confirmed",
+                       "citation": "https://doi.org/10.0/demo"}},
+        },
+        "dataset": {"grouping": "generic", "condition_column": "reagent",
+                    "important_fields": ["reagent", "liquid_solid_ratio"]},
+    }
+    profile = profiles.dataset_profile_from_spec(spec)
+    assert profile.material.material_id == "demo_ore"
+    assert profiles.mass_balance_elements(profile) == ("Fe", "Al")
+    assert profile.important_fields == ("reagent", "liquid_solid_ratio")   # list -> tuple
+    fe = profiles.usable_declared_assay(profile, "Fe")
+    assert fe is not None and fe.value == 40.0
+
+
+def test_literature_proposed_declared_assay_is_quarantined():
+    spec = {"material": {"material_id": "m", "display_name": "M",
+                         "declared_assay": {"Ti": {"value": 5.0, "provenance":
+                                                   "literature-proposed", "citation": "url"}}}}
+    profile = profiles.dataset_profile_from_spec(spec)
+    # The proposed assay is kept for display but is NOT usable in a calculation.
+    assert profile.material.declared_assay["Ti"].is_usable is False
+    assert profiles.usable_declared_assay(profile, "Ti") is None
+
+
+def test_spec_validation_rejects_bad_provenance_and_missing_citation():
+    import pytest
+    with pytest.raises(ValueError):
+        profiles.assay_value_from_dict("Fe", {"value": 1.0, "provenance": "guess"})
+    with pytest.raises(ValueError):   # literature provenance needs a citation
+        profiles.assay_value_from_dict("Fe", {"value": 1.0, "provenance": "literature-confirmed"})
+    with pytest.raises(ValueError):   # material needs id + display name
+        profiles.material_profile_from_dict({"display_name": "no id"})
+
+
+def test_load_shipped_red_mud_example_spec_runs_a_closure():
+    """The shipped docs/examples JSON loads from disk and drives a real closure."""
+    from pathlib import Path
+
+    import pandas as pd
+
+    from flyash_phreeqc_ml import mass_balance, units
+    spec_path = Path(__file__).resolve().parents[1] / "docs" / "examples" / "red_mud_material.json"
+    profile = profiles.load_dataset_profile(spec_path)
+    assert profile.material.material_id == "red_mud"
+    assert profiles.mass_balance_elements(profile) == ("Ti", "V", "Fe", "Al")
+    assert profiles.precipitate_in_measured_solid(profile) is True
+    # Ti declared assay is literature-proposed -> quarantined.
+    assert profiles.usable_declared_assay(profile, "Ti") is None
+
+    row = {"material_mass_g": 10.0, "liquid_volume_mL": 100.0, "solid_mass_g": 8.0,
+           "Ti_starting_content": 5.0, "Ti_solid_residue": 3.0, "Ti_mM": 30.0}
+    c = mass_balance.closure(row, "Ti", profile=profile)
+    assert c["status"] == mass_balance.STATUS_COMPLETE
+    assert c["n_in"] == 500.0 / units.MOLAR_MASSES["Ti"]
