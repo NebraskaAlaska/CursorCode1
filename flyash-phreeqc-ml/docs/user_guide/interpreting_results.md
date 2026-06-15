@@ -1,6 +1,6 @@
 # Interpreting results
 
-This page explains how to read the **Compare** tab: the residual sign, the counts panel,
+This page explains how to read the **Compare Results** tab: the residual sign, the counts panel,
 the scenario-level collapse warning, and — importantly — **what this app does not prove**.
 
 ## Residual sign convention
@@ -40,7 +40,7 @@ model results for the individual conditions — not that the model is precisely 
 
 ## The validity line
 
-The Compare tab ends with one **validity** status for the comparison:
+The Compare Results tab ends with one **validity** status for the comparison:
 
 - **valid** — the *only* status that means the model was validated for that variable
   (all plotted mappings are exact and there are enough rows);

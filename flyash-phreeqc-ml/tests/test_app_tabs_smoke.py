@@ -1,4 +1,4 @@
-"""Smoke test for the seven-tab UI (Start / Import / Validate / Match / Simulate / Compare / Export).
+"""Smoke test for the seven-tab UI (Start / Simulate / Import Data / Validate / Match / Compare Results / Export).
 
 Level achieved: **Streamlit AppTest harness** — the full app script runs end-to-end, so
 every tab's render function executes in one pass (st.tabs renders all tab bodies). We
@@ -23,7 +23,7 @@ from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
-EXPECTED_TABS = ["Start", "Import", "Validate", "Match", "Simulate", "Compare", "Export"]
+EXPECTED_TABS = ["Start", "Simulate", "Import Data", "Validate", "Match", "Compare Results", "Export"]
 APP = "app.py"
 
 
@@ -64,6 +64,9 @@ def test_app_boots_no_run_selected():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert at.exception is None or len(at.exception) == 0
     assert [t.label for t in at.tabs] == EXPECTED_TABS
+    # The renovated platform identity renders: the Start tab's three-mode product panel.
+    text = " ".join(str(m.value) for m in at.markdown)
+    assert "Three ways to use this platform" in text
 
 
 def _select_run(at, run):

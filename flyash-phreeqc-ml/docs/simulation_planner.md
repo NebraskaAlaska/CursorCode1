@@ -3,10 +3,10 @@
 The **Simulate** tab turns a plain-language experiment description into a structured,
 reviewable **scenario** and a **simulation plan/matrix**. It is a *planning layer only*.
 
-> **This version creates a simulation plan, not a scientific prediction.** No PHREEQC is
-> run, no measured data is touched, and nothing the planner produces becomes verified data.
-> Every generated matrix is labelled *"Simulation plan only — no PHREEQC result has been
-> generated yet."*
+> **This version creates a simulation plan, not a scientific prediction.** No deterministic
+> simulation (e.g. PHREEQC) is run, no measured data is touched, and nothing the planner produces
+> becomes verified data. Every generated matrix is labelled *"Simulation plan only — no
+> deterministic simulation has been run yet."*
 
 ## What it does (the flow)
 

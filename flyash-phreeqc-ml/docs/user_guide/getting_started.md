@@ -1,9 +1,12 @@
 # Getting started
 
-This app compares **measured experimental data** against **model predictions** and tells
-you, honestly, how far you are from a scientifically valid comparison. It is organized as
-a five-step workflow — **Import → Validate → Match → Compare → Export** — plus a **Start**
-overview. You don't need to be a programmer to use it.
+This app is an **AI-assisted platform for geochemical / material-leaching simulation and
+validation**. You describe an experiment and the variables you want; it extracts a structured
+scenario, flags missing info and assumptions, and generates a **simulation plan** — then, where
+you have measured data, it validates and corrects those predictions and tells you honestly how far
+you are from a scientifically valid comparison. It is organized as tabs — **Start** (overview),
+**Simulate** (describe an experiment → scenario → simulation plan), **Import Data**, **Validate**,
+**Match**, **Compare Results**, and **Export**. You don't need to be a programmer to use it.
 
 ## 1. Install and launch
 
@@ -24,7 +27,7 @@ app works fully without them.)
 A **run** is a save file for one experiment set. In the left **Experiment runs** sidebar,
 open the *Create run* panel, give it a name, and pick a **run type**:
 
-- **lab_experiment** — your measured ICP / pH data (the main case).
+- **lab_experiment** — your measured ICP / pH data (used to validate and correct predictions).
 - **literature_benchmark** — values reported by other papers, kept *separate* from your
   lab data.
 - **synthetic_demo** — fake data for testing the app only, never scientific output.
@@ -32,9 +35,9 @@ open the *Create run* panel, give it a name, and pick a **run type**:
 
 The sidebar always shows which run is active; every tab works on that run.
 
-## 3. Your first import (Import tab)
+## 3. Your first import (Import Data tab)
 
-Open the **Import** tab and upload a `.csv` / `.xlsx` / `.xls` file, or type rows in by
+Open the **Import Data** tab and upload a `.csv` / `.xlsx` / `.xls` file, or type rows in by
 hand. The importer:
 
 1. suggests how your columns map onto the app's fields (you confirm or fix the mapping);
@@ -50,9 +53,11 @@ until you tick the confirmation box.
 
 The top of every tab shows a **➡️ Next step** hint for your run. In short:
 
+- **Simulate** — describe an experiment in plain language and get a structured scenario plus a
+  simulation plan/matrix (the forward-looking core; no deterministic model is run yet).
 - **Validate** — look at your measured data on its own and check the calculations.
 - **Match** — link each measured record to the model result for the same conditions.
-- **Compare** — run the workflow and read the comparison (counts, residuals, validity).
+- **Compare Results** — run the workflow and read the comparison (counts, residuals, validity).
 - **Export** — build a self-contained report you can hand to an advisor or committee.
 
 Read **Mapping guide** and **Interpreting results** next — they explain what the statuses

@@ -1,10 +1,11 @@
 # Input formats
 
-The app accepts two kinds of input: **measured data** (what you measured) and **model
-predictions** (what a model predicts). Each has a documented contract so the app never has
-to guess.
+The **Import Data** tab accepts two kinds of file input: **measured data** (what you measured)
+and **model predictions** (what a model predicts) — separate from the plain-language experiment
+description used by the **Simulate** tab. Each has a documented contract so the app never has to
+guess.
 
-## Measured data (Import tab)
+## Measured data (Import Data tab)
 
 - **Files:** `.csv`, `.xlsx`, `.xls`. For Excel you pick one sheet; the sheet has one
   header row.
@@ -21,7 +22,7 @@ to guess.
 The full, exact rules live in [`docs/input_format.md`](../input_format.md) — the supported
 units table, the conversion-provenance columns, and what happens to unknown columns.
 
-## Model predictions (Import tab → "Import model predictions (CSV)")
+## Model predictions (Import Data tab → "Import model predictions (CSV)")
 
 The app is **not tied to one model**. Any model can supply predictions through a simple
 CSV contract:
