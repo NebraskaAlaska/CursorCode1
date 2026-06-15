@@ -488,6 +488,12 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     mtx = st.session_state.get("sim_matrix")
     if mtx is not None:
         st.success(sim_schema.PLAN_ONLY_LABEL)
+        st.info(
+            "ℹ️ **Changing simulation-plan values does not update result graphs** (pH, "
+            "residuals, measured-vs-model) until a deterministic model is executed. The "
+            "Simulate tab produces a **plan table only** — it runs no model, writes no output "
+            "file, and draws no result graph. The pH/residual graphs in **Validate** and "
+            "**Compare Results** are driven by measured data + model results, not by this plan.")
         st.dataframe(mtx, use_container_width=True, height=160, hide_index=True)
         st.download_button(
             "Download plan (CSV)", mtx.to_csv(index=False), file_name="simulation_plan.csv",
@@ -2555,6 +2561,26 @@ def _single_sample_comparison(run_name: str | None) -> bool:
     return int(mapped) == 1
 
 
+# Provenance labels for result graphs (UI labels only — no science change). They let a user
+# see a figure's source + age and make explicit that the Simulate tab is plan-only and does
+# NOT regenerate any result graph.
+_LIVE_COMPARE_NOTE = ("Live measured-vs-model figure — drawn fresh from this run's data + "
+                      "comparison each render; **not affected by the Simulate tab** (plan-only).")
+_LIVE_MEASURED_NOTE = ("Live measured-data-only figure — drawn fresh from this run's measured "
+                       "data each render; **not affected by the Simulate tab** (plan-only).")
+
+
+def _png_provenance_caption(path: Path, kind: str) -> str:
+    """Provenance line for a static PNG result figure: source path + generated time + type +
+    the fact that the Simulate tab does not regenerate it. (UI label only.)"""
+    try:
+        ts = pd.Timestamp.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        ts = "unknown"
+    return (f"Source figure: `{_rel(path)}` · generated {ts} · {kind} · static image — "
+            "regenerated only by re-running the workflow, **not** by the Simulate tab.")
+
+
 def _render_comparison_figures(run_name: str | None) -> None:
     """Measured-vs-PHREEQC + residual plots for the selected run (per-run figures)."""
     fig_dir = _run_comparison_figures_dir(run_name)
@@ -2568,8 +2594,12 @@ def _render_comparison_figures(run_name: str | None) -> None:
     # The single-sample caveat is folded into the validity line of the inclusion
     # section above, so it is not repeated here.
     for png in comparison:
+        kind = ("measured-vs-model comparison (Ca/Si/Al/Fe/**pH**)"
+                if png.name == "measured_vs_phreeqc.png"
+                else "residual plot, measured − model (Ca/Si/Al/Fe/**pH**)")
         st.image(str(png), use_container_width=True)
         st.caption(_FIGURE_CAPTIONS.get(png.name, png.name))
+        st.caption(_png_provenance_caption(png, kind))
 
 
 def _render_phreeqc_only_figures() -> None:
@@ -2590,6 +2620,8 @@ def _render_phreeqc_only_figures() -> None:
     chosen = next(p for p in phreeqc_only if p.name == choice)
     st.image(str(chosen), use_container_width=True)
     st.caption(f"{choice} — PHREEQC model output, not a measurement.")
+    st.caption(_png_provenance_caption(
+        chosen, "existing PHREEQC-only model output (e.g. `pH.png` = pH by solution state)"))
 
 
 # --------------------------------------------------------------------------- #
@@ -3367,6 +3399,7 @@ def _render_condition_errorbar(comp: pd.DataFrame, metric: str, err_kind: str = 
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+    st.caption(_LIVE_COMPARE_NOTE)
     n1 = sub.loc[~has_err, "condition_key"].astype(str).tolist()
     if n1:
         st.caption(f"n=1 (no error bar): {', '.join(f'`{c}`' for c in n1)}.")
@@ -3430,6 +3463,7 @@ def _render_overview_plot(ov: dict, variable: str, overlay: bool,
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+    st.caption(_LIVE_MEASURED_NOTE)
     return n1
 
 
@@ -3561,6 +3595,7 @@ def _render_comparison_inclusion(selected_run: str) -> None:
         st.caption("**Measured vs model prediction** — points near the dashed 1:1 line "
                    "indicate agreement *only if the mapping is scientifically valid*.")
         st.pyplot(compare_plots.comparison_scatter_figure(inc["plotted"], variable))
+        st.caption(_LIVE_COMPARE_NOTE)
 
     if inc["collapse_warning"]:
         st.warning(
@@ -3676,6 +3711,7 @@ def _render_systematic_bias(selected_run: str) -> None:
             unit = dict((e, u) for e, _c, u in residual_stats.element_specs()).get(element, "mM")
             band = bands.get(element)
             st.pyplot(_bias_band_figure(pts, element, unit, band))
+            st.caption(_LIVE_COMPARE_NOTE)
             if band is None:
                 st.caption(
                     "No shaded band drawn — the pooled estimate for this element has "
