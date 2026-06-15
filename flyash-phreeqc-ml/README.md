@@ -208,6 +208,19 @@ output must be reviewed. No keys are hard-coded, shown, or logged. Full setup (i
 Streamlit Cloud secrets and the resolution precedence) is in
 [`docs/ai_configuration.md`](docs/ai_configuration.md).
 
+## Simulation planner (Simulate tab, experimental)
+
+The **Simulate** tab turns a plain-language experiment description (e.g. *"2 g of Class C
+fly ash in 10 mL of 0.5 M HCl for 60 min; measure pH, Ca, Si, Al, Fe"*) into a structured,
+reviewable **scenario** and a **simulation plan matrix**. It is a **planning layer only**:
+it never runs PHREEQC, never overwrites measured data, and nothing it produces becomes
+verified data — every matrix is labelled *"Simulation plan only — no PHREEQC result has been
+generated yet."* Parsing uses AI when a key is configured **and** you consent, otherwise a
+deterministic **rule-based fallback** (low confidence); the scientific caveats (missing
+fields, precipitation cannot be proven from liquid data alone, unsupported-leachant warning)
+are computed by code, not the AI. You review, edit, and confirm before any matrix is built.
+Details in [`docs/simulation_planner.md`](docs/simulation_planner.md).
+
 ## Calculation verification / formula audit
 
 The **Calculation Verification** view in the **Audit / Help** tab (backed by

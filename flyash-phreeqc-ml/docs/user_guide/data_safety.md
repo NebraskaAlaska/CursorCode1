@@ -26,6 +26,10 @@ when you enable them (an API key) and consent in the app:
   grounded questions. It is read-only and never changes your data.
 - **Literature retrieval** — sends your search request (the quantity, material, and
   conditions) for a sourced web search; every result is quarantined until you confirm it.
+- **Simulation planner (Simulate tab)** — when you consent, sends your experiment
+  *description* to extract a structured scenario you then review and confirm. It never runs
+  PHREEQC, overwrites measured data, or becomes verified data; without a key (or consent) it
+  uses an offline rule-based parser instead.
 
 Each shows a one-time notice and a consent checkbox before anything leaves the machine, and
 all stay hidden if no API key is configured.

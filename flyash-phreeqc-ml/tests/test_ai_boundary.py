@@ -106,3 +106,42 @@ def test_runtime_override_does_not_touch_inclusion_module():
         assert not hasattr(inclusion, "is_enabled")
     finally:
         ai_config.clear_runtime_overrides()
+
+
+# --------------------------------------------------------------------------- #
+# Simulation planner boundary — a planning layer only (no PHREEQC, off the result path)
+# --------------------------------------------------------------------------- #
+PLANNER_MODULES = [
+    "simulation/scenario_schema.py",
+    "simulation/safety.py",
+    "simulation/rule_parser.py",
+    "simulation/matrix.py",
+    "ai/scenario_parser.py",
+]
+
+
+def test_planner_does_not_execute_phreeqc():
+    """The NL planner must never run PHREEQC — no planner module imports the runner."""
+    for mod in PLANNER_MODULES:
+        offenders = _mentions(_import_targets(mod), ("phreeqc_runner",))
+        assert not offenders, f"{mod} imports phreeqc_runner: {offenders}"
+
+
+def test_planner_does_not_import_result_path():
+    """The planner must not import the comparison/residual/mapping/validation code."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "residual_model",
+                 "incompleteness", "surrogate")
+    for mod in PLANNER_MODULES:
+        offenders = _mentions(_import_targets(mod), forbidden)
+        assert not offenders, f"{mod} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_planner():
+    """The result path must not import the planner (it is off the scientific path)."""
+    markers = ("scenario_parser", "scenario_schema")
+    for mod in RESULT_PATH_MODULES:
+        targets = _import_targets(mod)
+        offenders = _mentions(targets, markers) + [
+            t for t in targets if t in ("..simulation", ".simulation")
+            or t.startswith("..simulation.") or t.startswith(".simulation.")]
+        assert not offenders, f"{mod} imports the planner: {offenders}"
