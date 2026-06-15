@@ -187,6 +187,27 @@ global entry form appends to
 gitignored); per-run entry writes into the selected run's own `experiments/<name>/data/`.
 See the **Audit / Help** tab for limitations.
 
+## AI configuration (optional, experimental)
+
+A few **optional** AI helpers (import suggestions, a grounded Q&A assistant, sourced
+literature retrieval) are **off by default** — the app runs fully without them. Enable them
+by installing the optional `anthropic` SDK and providing an API key via **either** the
+`ANTHROPIC_API_KEY` environment variable (local) **or** a Streamlit secret of the same name
+(deployment); the environment wins if both are set. Optionally set `ANTHROPIC_MODEL`, or
+pick a model in the sidebar **🤖 AI settings** panel, which shows the live status (enabled,
+provider, model, key detected yes/no — never the key, SDK available).
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # never commit this
+streamlit run app.py
+```
+
+AI is **suggestion / interpretation only**: it cannot change mapping, residuals, validation
+status, or the comparison data, and **cannot validate the science by itself** — every AI
+output must be reviewed. No keys are hard-coded, shown, or logged. Full setup (including
+Streamlit Cloud secrets and the resolution precedence) is in
+[`docs/ai_configuration.md`](docs/ai_configuration.md).
+
 ## Calculation verification / formula audit
 
 The **Calculation Verification** view in the **Audit / Help** tab (backed by

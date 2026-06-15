@@ -65,6 +65,7 @@ from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
+from flyash_phreeqc_ml.ai import config as ai_config  # noqa: E402  (AI settings/status authority)
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (grounded Q&A)
 from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
@@ -230,6 +231,54 @@ def _render_run_sidebar() -> str | None:
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
     st.sidebar.info("➡️ Open the **Compare** tab to execute this run.")
     return selected
+
+
+def _render_ai_settings_panel() -> None:
+    """Sidebar 'AI settings' panel — status + provider/model selection.
+
+    Read-only with respect to the science: it shows whether the optional AI layer is
+    enabled and lets the user pick the provider/model used for *suggestions*. It never
+    affects mapping, residuals, validation status, or the comparison data, and it never
+    shows or accepts the API key (the key comes only from the environment or Streamlit
+    secrets — see :mod:`flyash_phreeqc_ml.ai.config`).
+    """
+    with st.sidebar.expander("🤖 AI settings", expanded=False):
+        # The base model from env / secrets / default, ignoring any prior UI override —
+        # so the picker defaults to it and a no-op selection never clobbers ANTHROPIC_MODEL.
+        ai_config.clear_runtime_overrides()
+        base_model = ai_config.resolve_config().model
+
+        provider = st.selectbox(
+            "Provider", list(ai_config.SUPPORTED_PROVIDERS), index=0,
+            key="ai_provider_choice", help="Only Anthropic is supported today.")
+
+        options = list(dict.fromkeys([base_model, *ai_config.SUGGESTED_MODELS]))
+        picked = st.selectbox(
+            "Model (suggested)", options, index=0, key="ai_model_pick",
+            help="Used for AI suggestions only. Overrides ANTHROPIC_MODEL for this session.")
+        custom = st.text_input(
+            "…or enter a model id", key="ai_model_custom",
+            help="Leave blank to use the selected model above.").strip()
+        effective_model = custom or picked
+
+        # Apply the choice for this process so the AI helpers + the status below use it.
+        ai_config.set_runtime_overrides(provider=provider, model=effective_model)
+        cfg = ai_config.resolve_config()
+
+        st.markdown(f"**Status:** {'🟢 enabled' if cfg.enabled else '⚪ disabled'}")
+        st.markdown(f"- Provider: `{cfg.provider}`")
+        st.markdown(f"- Model: `{cfg.model}`")
+        st.markdown(
+            f"- API key detected: **{'yes' if cfg.key_present else 'no'}**"
+            + (f" · {cfg.key_source}" if cfg.key_present else ""))
+        st.markdown(f"- SDK available: **{'yes' if cfg.sdk_available else 'no'}**")
+        st.caption(f"Role: {ai_config.AI_ROLE_LINE}.")
+        if not cfg.enabled:
+            st.caption(f"Disabled — {cfg.disabled_reason()}.")
+        st.caption(
+            "The API key is read only from the `ANTHROPIC_API_KEY` environment variable "
+            "or a Streamlit secret — it is never entered or shown here.")
+        st.warning(ai_config.AI_EXPERIMENTAL_WARNING)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
@@ -4716,6 +4765,8 @@ DEV_MODE = st.sidebar.checkbox(
     help="Show deeper chemistry/statistics explanations, mainly in the "
          "Validate tab.",
 )
+
+_render_ai_settings_panel()
 
 tab_start, tab_import, tab_validate, tab_match, tab_compare, tab_export = st.tabs([
     "Start", "Import", "Validate", "Match", "Compare", "Export",

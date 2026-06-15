@@ -30,19 +30,21 @@ this module (and the whole package) never requires ``anthropic`` to be installed
 from __future__ import annotations
 
 import json
-import os
 import re
 
 from .. import profiles, replicates, config
+from . import client as ai_client      # shared, key-safe client wrapper
+from . import config as ai_config      # shared AI configuration authority
 
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-API_KEY_ENV = "ANTHROPIC_API_KEY"
-MODEL_ENV = "ANTHROPIC_MODEL"
-# Default to the most capable model; override per-deployment with ANTHROPIC_MODEL
-# (e.g. a smaller model for cost) without code changes.
-DEFAULT_MODEL = "claude-opus-4-8"
+# Key / model / provider resolution now lives in ai/config.py + ai/client.py. The names
+# below are re-exported (and the helpers delegate) so this module stays the stable import
+# surface for assistant.py + literature.py and nothing downstream needs to change.
+API_KEY_ENV = ai_config.API_KEY_ENV
+MODEL_ENV = ai_config.MODEL_ENV
+DEFAULT_MODEL = ai_config.DEFAULT_MODEL
 
 # Hard caps on what we send — "minimum needed", never the full dataset.
 MAX_SAMPLE_ROWS = 10      # rows of a preview sent to the model
@@ -81,38 +83,26 @@ CONSENT_LABEL = "I understand and allow sending headers + a preview to the API f
 # Enablement + client resolution
 # --------------------------------------------------------------------------- #
 def is_enabled() -> bool:
-    """True only when an API key is set *and* the ``anthropic`` SDK is importable.
+    """True only when an API key *and* the ``anthropic`` SDK are available.
 
-    Checks the key first so the common disabled case never imports anything.
+    Delegates to the shared AI config so the key/model/provider rules live in one place.
     """
-    if not os.environ.get(API_KEY_ENV):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except Exception:
-        return False
-    return True
+    return ai_config.is_enabled()
 
 
 def _model(model: str | None = None) -> str:
-    return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+    """Resolve the model id (arg > UI override > env > Streamlit secret > default)."""
+    return ai_config.resolve_model(model)
 
 
 def _resolve_client(client):
     """Return a usable client: the injected one, a real one, or ``None`` (disabled).
 
-    Tests inject a fake client; the app passes ``None`` and we build a real one
-    only when :func:`is_enabled`. Any construction failure degrades to ``None``.
+    Tests inject a fake client (returned as-is); the app passes ``None`` and a real client
+    is built only when enabled. Delegates to the shared, key-safe client wrapper; any
+    construction failure degrades to ``None``.
     """
-    if client is not None:
-        return client
-    if not is_enabled():
-        return None
-    try:
-        import anthropic
-        return anthropic.Anthropic()
-    except Exception:
-        return None
+    return ai_client.resolve_client(client)
 
 
 # --------------------------------------------------------------------------- #
