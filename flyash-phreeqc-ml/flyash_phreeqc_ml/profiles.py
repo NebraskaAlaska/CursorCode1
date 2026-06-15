@@ -89,12 +89,21 @@ class DatasetProfile:
     # Candidate precipitate phases (PHREEQC phase name -> element) added to
     # EQUILIBRIUM_PHASES and read back from the selected output.
     mass_balance_candidate_phases: dict = field(default_factory=dict)
-    # CONFIRMED for the fly-ash filtration protocol = False: a PHREEQC-predicted
-    # precipitate leaves with the filtrate and is NOT in the measured solid residue, so
-    # it counts toward EXPLAINING the gap (attribution_to_gap = min(P, gap)). Set True
-    # for a protocol where precipitates are retained in the assayed solid (then they are
-    # already in n_solid and do not reduce the gap). See docs/mass_balance.md.
-    precipitate_in_measured_solid: bool = False
+    # Filtration convention (Prompt 28 correction). Default **True** for the fly-ash
+    # protocol: secondary precipitates are retained on the filter, so they are part of
+    # the measured solid residue (already in n_solid) and a predicted precipitate explains
+    # the solid's composition, NOT the measured gap → attribution_to_gap = 0. False means
+    # the precipitate leaves with the filtrate (NOT in n_solid) and so EXPLAINS the gap →
+    # attribution_to_gap = min(P, gap). See docs/mass_balance.md.
+    precipitate_in_measured_solid: bool = True
+    # Per-element override of the flag above (Prompt 28): {element -> True|False|"uncertain"}.
+    # Empty -> every element uses the profile-level default. "uncertain" means the element
+    # may form colloids/complexes that can pass the filter, so its retention is NOT verified;
+    # the gap math treats it conservatively (as retained → 0 gap-closure) but flags it.
+    precipitate_in_measured_solid_overrides: dict = field(default_factory=dict)
+    # Filter pore-size cutoff (µm) used by the protocol — None until recorded. Documents
+    # what the colloid-former overrides depend on (confirm with filtrate vs ultrafiltrate).
+    filter_cutoff_um: float | None = None
     # --- Material side (Prompt 28; additive) ---------------------------------- #
     # The material whose batch chemistry this dataset measures. When set, the
     # material's elements / candidate phases / precipitate flag / reagents are the
@@ -181,8 +190,13 @@ class MaterialProfile:
     mass_balance_elements: tuple = ()
     # Candidate precipitate phases for Prompt-24 attribution: PHREEQC phase -> element.
     candidate_phases: dict = field(default_factory=dict)
-    # Prompt-23 filtration flag: does a predicted precipitate sit in the measured solid?
-    precipitate_in_measured_solid: bool = False
+    # Filtration flag (Prompt 28): does a predicted precipitate sit in the measured solid?
+    # Default True (retained on the filter → explains the solid, not the gap).
+    precipitate_in_measured_solid: bool = True
+    # Per-element override: {element -> True|False|"uncertain"}; empty -> use the default.
+    precipitate_in_measured_solid_overrides: dict = field(default_factory=dict)
+    # Filter pore-size cutoff (µm) the protocol uses — None until recorded.
+    filter_cutoff_um: float | None = None
     # Reagents typically used to leach/activate this material (e.g. ("NaOH",)).
     default_reagents: tuple = ()
     # Declared typical bulk assay per element, provenance-flagged (see AssayValue).
@@ -226,11 +240,63 @@ def candidate_phases(profile) -> dict:
     return dict(getattr(profile, "mass_balance_candidate_phases", {}) or {})
 
 
+# Three-valued filtration state for a precipitate (Prompt 28).
+PRECIP_RETAINED = True       # in the measured solid → explains the solid, not the gap
+PRECIP_PASSES = False        # leaves with the filtrate → explains the gap
+PRECIP_UNCERTAIN = "uncertain"  # retention unverified (e.g. a colloid that may pass)
+
+
+def _normalize_precip(value):
+    """Coerce a flag/override value to True / False / ``PRECIP_UNCERTAIN`` (never guesses
+    a bool for an unrecognized value — those become ``uncertain``, the safe state)."""
+    if value is True or value is False:
+        return value
+    s = str(value).strip().lower()
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    return PRECIP_UNCERTAIN
+
+
 def precipitate_in_measured_solid(profile) -> bool:
+    """The profile-level filtration default (a plain bool; per-element via the resolver below)."""
     m = _material(profile)
     if m is not None:
         return bool(m.precipitate_in_measured_solid)
-    return bool(getattr(profile, "precipitate_in_measured_solid", False))
+    return bool(getattr(profile, "precipitate_in_measured_solid", True))
+
+
+def precipitate_in_measured_solid_for(profile, element: str):
+    """Per-element filtration state: ``True`` (retained) / ``False`` (passes) / ``"uncertain"``.
+
+    An explicit per-element override wins; otherwise the profile-level default applies.
+    The material side is authoritative when a material is attached (matching the other
+    resolvers). ``"uncertain"`` means retention is **not verified** for this element
+    (a colloid/complex that may pass the filter) — the gap math treats it conservatively
+    as retained but flags it.
+    """
+    m = _material(profile)
+    if m is not None:
+        ov = getattr(m, "precipitate_in_measured_solid_overrides", {}) or {}
+        if element in ov:
+            return _normalize_precip(ov[element])
+        return _normalize_precip(getattr(m, "precipitate_in_measured_solid", True))
+    ov = getattr(profile, "precipitate_in_measured_solid_overrides", {}) or {}
+    if element in ov:
+        return _normalize_precip(ov[element])
+    return _normalize_precip(getattr(profile, "precipitate_in_measured_solid", True))
+
+
+def filter_cutoff_um(profile) -> float | None:
+    """The protocol's filter pore-size cutoff (µm), or None if not recorded yet."""
+    m = _material(profile)
+    val = (getattr(m, "filter_cutoff_um", None) if m is not None
+           else getattr(profile, "filter_cutoff_um", None))
+    try:
+        return None if val is None else float(val)
+    except (TypeError, ValueError):
+        return None
 
 
 def relevant_elements(profile) -> tuple:
@@ -272,6 +338,9 @@ def dataset_profile_from_material(material: MaterialProfile, *, name: str | None
         mass_balance_elements=tuple(material.mass_balance_elements),
         mass_balance_candidate_phases=dict(material.candidate_phases),
         precipitate_in_measured_solid=bool(material.precipitate_in_measured_solid),
+        precipitate_in_measured_solid_overrides=dict(
+            material.precipitate_in_measured_solid_overrides),
+        filter_cutoff_um=material.filter_cutoff_um,
         material_mass_column=material.material_mass_column,
         solid_mass_column=material.solid_mass_column,
         liquid_volume_column=material.liquid_volume_column,
@@ -312,13 +381,26 @@ _FLY_ASH_COMPARISON_SPEC = {
 # ``mass_balance_elements``), so behaviour is unchanged — but the material now declares
 # the elements its chemistry involves (Ca/Si/Al/Fe/Na/K) and its reagent (NaOH), so the
 # same material abstraction that drives a new material also describes fly ash.
+# Filtration convention (Prompt 28, corrected): the fly-ash protocol retains secondary
+# precipitates on the filter (0.45 µm syringe filter), so they are part of the measured
+# solid residue → default True. EXCEPTION: the colloid-formers — Si and Al (colloidal
+# silica / aluminosilicate gels) and Fe (nanocolloids) — can pass a 0.45 µm filter, so
+# their retention is NOT verified; they are marked "uncertain" (the gap math treats them
+# conservatively as retained but flags them in the attribution + recovery output). Knowing
+# the cutoff is 0.45 µm does NOT resolve this — that pore size is exactly where these
+# colloids may pass — so the True/False resolution for Si/Al/Fe stays a PLACEHOLDER pending
+# a filtrate-vs-ultrafiltrate comparison.
+FLY_ASH_COLLOID_FORMERS = ("Si", "Al", "Fe")
 FLY_ASH_MATERIAL = MaterialProfile(
     material_id="class_c_fly_ash",
     display_name="Class C fly ash",
     relevant_elements=("Ca", "Si", "Al", "Fe", "Na", "K"),
     mass_balance_elements=(),                 # closure OFF for fly ash (unchanged)
     candidate_phases={},
-    precipitate_in_measured_solid=False,
+    precipitate_in_measured_solid=True,       # crystalline precipitates retained on filter
+    precipitate_in_measured_solid_overrides={
+        el: PRECIP_UNCERTAIN for el in FLY_ASH_COLLOID_FORMERS},
+    filter_cutoff_um=0.45,                     # recorded; Si/Al/Fe stay uncertain at this cutoff
     default_reagents=("NaOH",),
     declared_assay={},                        # no committed typical assay shipped
 )
@@ -387,9 +469,10 @@ def default_model_profile() -> ModelProfile:
 # --------------------------------------------------------------------------- #
 # Illustrative, not a validated red-mud parameter set: different elements (Ti/V/Fe/Al,
 # with REE among the relevant set), different candidate phases (anatase / rutile /
-# hematite), a different reagent set, and the OPPOSITE filtration flag from fly ash —
-# so a fly-ash assumption leaking anywhere would change the answer. Ti/V molar masses
-# were added to units.MOLAR_MASSES. Declared assays carry provenance; the Ti value is
+# hematite), and a different reagent set — so a fly-ash assumption leaking anywhere would
+# change the answer. Filtration flag True (precipitates retained, no per-element overrides
+# here) — the stub exercises the retained → 0 gap-closure branch. Ti/V molar masses were
+# added to units.MOLAR_MASSES. Declared assays carry provenance; the Ti value is
 # literature-PROPOSED → quarantined (never usable until confirmed).
 RED_MUD_MATERIAL = MaterialProfile(
     material_id="red_mud",
@@ -445,6 +528,22 @@ def assay_value_from_dict(element: str, d: dict) -> AssayValue:
                       citation=(str(citation) if citation else None))
 
 
+def _validate_precip_override(element: str, value) -> object:
+    """Accept only ``true`` / ``false`` / ``"uncertain"`` for a per-element filtration override."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    if s == PRECIP_UNCERTAIN:
+        return PRECIP_UNCERTAIN
+    raise ValueError(
+        f"precipitate override for {element!r}: {value!r} not recognized "
+        f"(use true, false, or {PRECIP_UNCERTAIN!r}).")
+
+
 def material_profile_from_dict(spec: dict) -> MaterialProfile:
     """Build a :class:`MaterialProfile` from a parsed JSON/YAML spec (no code needed).
 
@@ -457,13 +556,18 @@ def material_profile_from_dict(spec: dict) -> MaterialProfile:
         raise ValueError("a material spec needs 'material_id' and 'display_name'.")
     assays_raw = spec.get("declared_assay") or {}
     declared = {el: assay_value_from_dict(el, d) for el, d in assays_raw.items()}
+    overrides = {el: _validate_precip_override(el, v)
+                 for el, v in (spec.get("precipitate_in_measured_solid_overrides") or {}).items()}
     return MaterialProfile(
         material_id=str(spec["material_id"]),
         display_name=str(spec["display_name"]),
         relevant_elements=tuple(spec.get("relevant_elements", ()) or ()),
         mass_balance_elements=tuple(spec.get("mass_balance_elements", ()) or ()),
         candidate_phases=dict(spec.get("candidate_phases", {}) or {}),
-        precipitate_in_measured_solid=bool(spec.get("precipitate_in_measured_solid", False)),
+        precipitate_in_measured_solid=bool(spec.get("precipitate_in_measured_solid", True)),
+        precipitate_in_measured_solid_overrides=overrides,
+        filter_cutoff_um=(None if spec.get("filter_cutoff_um") is None
+                          else float(spec["filter_cutoff_um"])),
         default_reagents=tuple(spec.get("default_reagents", ()) or ()),
         declared_assay=declared,
         starting_content_unit=str(spec.get("starting_content_unit", "wt%")),

@@ -187,6 +187,40 @@ global entry form appends to
 gitignored); per-run entry writes into the selected run's own `experiments/<name>/data/`.
 See the **Audit / Help** tab for limitations.
 
+## AI configuration (optional, experimental)
+
+A few **optional** AI helpers (import suggestions, a grounded Q&A assistant, sourced
+literature retrieval) are **off by default** — the app runs fully without them. Enable them
+by installing the optional `anthropic` SDK and providing an API key via **either** the
+`ANTHROPIC_API_KEY` environment variable (local) **or** a Streamlit secret of the same name
+(deployment); the environment wins if both are set. Optionally set `ANTHROPIC_MODEL`, or
+pick a model in the sidebar **🤖 AI settings** panel, which shows the live status (enabled,
+provider, model, key detected yes/no — never the key, SDK available).
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # never commit this
+streamlit run app.py
+```
+
+AI is **suggestion / interpretation only**: it cannot change mapping, residuals, validation
+status, or the comparison data, and **cannot validate the science by itself** — every AI
+output must be reviewed. No keys are hard-coded, shown, or logged. Full setup (including
+Streamlit Cloud secrets and the resolution precedence) is in
+[`docs/ai_configuration.md`](docs/ai_configuration.md).
+
+## Simulation planner (Simulate tab, experimental)
+
+The **Simulate** tab turns a plain-language experiment description (e.g. *"2 g of Class C
+fly ash in 10 mL of 0.5 M HCl for 60 min; measure pH, Ca, Si, Al, Fe"*) into a structured,
+reviewable **scenario** and a **simulation plan matrix**. It is a **planning layer only**:
+it never runs PHREEQC, never overwrites measured data, and nothing it produces becomes
+verified data — every matrix is labelled *"Simulation plan only — no PHREEQC result has been
+generated yet."* Parsing uses AI when a key is configured **and** you consent, otherwise a
+deterministic **rule-based fallback** (low confidence); the scientific caveats (missing
+fields, precipitation cannot be proven from liquid data alone, unsupported-leachant warning)
+are computed by code, not the AI. You review, edit, and confirm before any matrix is built.
+Details in [`docs/simulation_planner.md`](docs/simulation_planner.md).
+
 ## Calculation verification / formula audit
 
 The **Calculation Verification** view in the **Audit / Help** tab (backed by

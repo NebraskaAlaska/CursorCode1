@@ -1,8 +1,8 @@
-"""Smoke test for the six-tab UI (Start / Import / Validate / Match / Compare / Export).
+"""Smoke test for the seven-tab UI (Start / Import / Validate / Match / Simulate / Compare / Export).
 
 Level achieved: **Streamlit AppTest harness** — the full app script runs end-to-end, so
 every tab's render function executes in one pass (st.tabs renders all tab bodies). We
-assert no exception and the six tab labels, in two states:
+assert no exception and the seven tab labels, in two states:
 
 * no run selected (every tab must show its empty state, not crash);
 * a populated synthetic lab run selected (data + mapping + comparison present, so the
@@ -23,7 +23,7 @@ from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
-EXPECTED_TABS = ["Start", "Import", "Validate", "Match", "Compare", "Export"]
+EXPECTED_TABS = ["Start", "Import", "Validate", "Match", "Simulate", "Compare", "Export"]
 APP = "app.py"
 
 
@@ -82,8 +82,8 @@ def test_app_boots_with_populated_run(synthetic_run):
     assert synthetic_run in text
 
 
-def test_all_six_tabs_render_each_run_type(tmp_path, monkeypatch):
-    # Each run type must render all six tabs without crashing (empty/typed states).
+def test_all_tabs_render_each_run_type(tmp_path, monkeypatch):
+    # Each run type must render all tabs without crashing (empty/typed states).
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
     for rt in ("lab_experiment", "literature_benchmark", "synthetic_demo"):
         run = f"r_{rt}"

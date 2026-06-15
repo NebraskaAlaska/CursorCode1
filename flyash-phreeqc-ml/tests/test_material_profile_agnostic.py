@@ -46,7 +46,7 @@ def test_reads_elements_from_profile_resolver(module):
 
 
 def test_attribution_reads_phases_and_flag_from_profile():
-    """Attribution specifically resolves candidate phases + the precipitate flag."""
+    """Attribution resolves candidate phases + the PER-ELEMENT precipitate flag (Prompt 28)."""
     src = inspect.getsource(attribution)
     assert "profiles.candidate_phases(" in src
-    assert "profiles.precipitate_in_measured_solid(" in src
+    assert "profiles.precipitate_in_measured_solid_for(" in src

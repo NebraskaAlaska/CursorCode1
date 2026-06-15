@@ -71,23 +71,33 @@ model). The shipped `RED_MUD_PROFILE` is the same object built in code.
 | `relevant_elements` | every element the material's chemistry cares about (display/docs). |
 | `mass_balance_elements` | the subset that gets a batch closure. **Empty = mass balance OFF** (the fly-ash default). |
 | `candidate_phases` | `{ "<PHREEQC phase>": "<element>" }` — the phases attribution looks for. |
-| `precipitate_in_measured_solid` | **Prompt-23 filtration flag** (see below). |
+| `precipitate_in_measured_solid` | **filtration flag**, default `true` (retained); see below. |
+| `precipitate_in_measured_solid_overrides` | `{ "<element>": true \| false \| "uncertain" }` — per-element exceptions. |
+| `filter_cutoff_um` | the filter pore-size cutoff (µm) the protocol uses; documents what the colloid-former overrides depend on. |
 | `default_reagents` | reagents typically used to leach/activate the material. |
 | `declared_assay` | a typical bulk assay per element, each `{value, unit, provenance, citation}`. |
 | `*_unit`, `*_column` | assay/liquid units and the batch column names (default to the shipped schema). |
 
-### The filtration flag (`precipitate_in_measured_solid`)
+### The filtration flag (`precipitate_in_measured_solid` + per-element overrides)
 
 This decides how a PHREEQC-predicted precipitate `P` affects the **measured gap**
-(`gap = n_in − n_liquid − n_solid`):
+(`gap = n_in − n_liquid − n_solid`), **per element**:
 
+- `true` (default) — the precipitate is **retained in the assayed solid** (already in
+  `n_solid`), so it explains the solid's *composition*, **not** the gap:
+  `attribution_to_gap = 0`.
 - `false` — the precipitate leaves with the **filtrate** (not in the assayed solid), so it
-  **explains** the gap: `attribution_to_gap = min(P, gap)` (this is the fly-ash protocol).
-- `true` — the precipitate is **retained in the assayed solid** (already in `n_solid`), so
-  it explains the solid's *composition*, **not** the gap: `attribution_to_gap = 0`.
+  **explains** the gap: `attribution_to_gap = min(P, gap)`.
+- `"uncertain"` — retention not verified (a colloid/complex that may pass the filter).
+  Credited **conservatively as retained** (`0`) but **flagged** in the attribution +
+  recovery output, with `gap_explained_if_passes` showing what it could explain if it
+  passes. Resolve it to `true`/`false` once you confirm your filter cutoff (ideally by a
+  filtrate-vs-ultrafiltrate comparison).
 
-Pick the value your filtration/recovery protocol actually implements; it is recorded and
-drives the recovery status. See [`mass_balance.md`](mass_balance.md).
+Set `precipitate_in_measured_solid` to the value your protocol implements for *most*
+elements, then add `precipitate_in_measured_solid_overrides` for the exceptions. The
+fly-ash profile ships `true` with `{Si: "uncertain", Al: "uncertain", Fe: "uncertain"}`
+(the colloid-formers). See [`mass_balance.md`](mass_balance.md).
 
 ### Declared-assay provenance (the quarantine rule)
 

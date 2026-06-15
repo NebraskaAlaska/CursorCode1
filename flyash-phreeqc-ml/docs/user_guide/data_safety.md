@@ -24,9 +24,24 @@ when you enable them (an API key) and consent in the app:
 - **Ask the assistant** — sends your question plus **numeric summaries** of the selected
   run (counts, statuses, hashes — never measured values or file contents) to answer
   grounded questions. It is read-only and never changes your data.
+- **Literature retrieval** — sends your search request (the quantity, material, and
+  conditions) for a sourced web search; every result is quarantined until you confirm it.
+- **Simulation planner (Simulate tab)** — when you consent, sends your experiment
+  *description* to extract a structured scenario you then review and confirm. It never runs
+  PHREEQC, overwrites measured data, or becomes verified data; without a key (or consent) it
+  uses an offline rule-based parser instead.
 
-Both show a one-time notice and a consent checkbox before anything leaves the machine, and
-both stay hidden if no API key is configured.
+Each shows a one-time notice and a consent checkbox before anything leaves the machine, and
+all stay hidden if no API key is configured.
+
+## Your API key
+
+Your Anthropic API key is read **only** from the `ANTHROPIC_API_KEY` environment variable
+or a Streamlit secret — it is never entered in, displayed by, logged by, or stored by the
+app. The sidebar **🤖 AI settings** panel reports only whether a key was *detected* (yes/no)
+and its *source*, never the key itself. AI output is **suggestion / interpretation only**
+and cannot change mapping, residuals, validation status, or the comparison data — AI cannot
+validate the science by itself. Setup details: [`ai_configuration.md`](../ai_configuration.md).
 
 ## The audit log records actions, not data
 

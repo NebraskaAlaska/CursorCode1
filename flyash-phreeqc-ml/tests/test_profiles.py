@@ -202,3 +202,25 @@ def test_load_shipped_red_mud_example_spec_runs_a_closure():
     c = mass_balance.closure(row, "Ti", profile=profile)
     assert c["status"] == mass_balance.STATUS_COMPLETE
     assert c["n_in"] == 500.0 / units.MOLAR_MASSES["Ti"]
+
+
+def test_spec_parses_per_element_overrides_and_filter_cutoff():
+    spec = {"material": {
+        "material_id": "m", "display_name": "M",
+        "mass_balance_elements": ["Ca", "Si", "Al"],
+        "precipitate_in_measured_solid": True,
+        "precipitate_in_measured_solid_overrides": {"Si": "uncertain", "Al": False},
+        "filter_cutoff_um": 0.45}}
+    profile = profiles.dataset_profile_from_spec(spec)
+    assert profiles.precipitate_in_measured_solid_for(profile, "Ca") is True      # default
+    assert profiles.precipitate_in_measured_solid_for(profile, "Si") == profiles.PRECIP_UNCERTAIN
+    assert profiles.precipitate_in_measured_solid_for(profile, "Al") is False
+    assert profiles.filter_cutoff_um(profile) == 0.45
+
+
+def test_spec_rejects_bad_override_value():
+    import pytest
+    with pytest.raises(ValueError):
+        profiles.material_profile_from_dict({
+            "material_id": "m", "display_name": "M",
+            "precipitate_in_measured_solid_overrides": {"Si": "maybe"}})

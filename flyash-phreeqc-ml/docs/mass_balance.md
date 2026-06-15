@@ -47,21 +47,42 @@ profile-declared candidate-precipitate list in `EQUILIBRIUM_PHASES`, and a per-e
 `SELECTED_OUTPUT`/`USER_PUNCH`). `attribute_gap` reports **how much of the measured gap**
 the predicted precipitation accounts for.
 
-### Filtration convention (CONFIRMED for the fly-ash protocol)
+### Filtration convention (per element)
 
 Whether a PHREEQC-predicted precipitate reduces the gap depends on whether it is in the
-**measured solid residue** (`n_solid`). This is the profile flag
-`precipitate_in_measured_solid`:
+**measured solid residue** (`n_solid`). The state is **per element** — a profile-level
+default `precipitate_in_measured_solid` plus a `precipitate_in_measured_solid_overrides`
+dict (`{element -> True | False | "uncertain"}`):
 
-| Flag | Meaning | Gap arithmetic |
+| State | Meaning | Gap arithmetic |
 | --- | --- | --- |
-| **`False`** — *fly-ash default (confirmed)* | precipitate leaves with the **filtrate**, NOT in the assayed solid | `attribution_to_gap = min(P, gap)` — the precipitate **explains** the gap |
-| `True` | precipitate is retained in the assayed solid (already in `n_solid`) | `attribution_to_gap = 0` — the precipitate explains the solid's *composition*, not the gap |
+| **`True`** — *retained* | precipitate is in the assayed solid (already in `n_solid`) | `attribution_to_gap = 0` — it explains the solid's *composition*, **not** the gap |
+| `False` — *passes* | precipitate leaves with the **filtrate**, NOT in the assayed solid | `attribution_to_gap = min(P, gap)` — it **explains** the gap |
+| `"uncertain"` | retention **not verified** (a colloid/complex that may pass the filter) | credited **conservatively as retained** (`0`), but the result is **flagged** (`filtration_uncertain`) and carries `gap_explained_if_passes` (what it *could* explain if it passes) |
 
-For fly ash we use **`False`**: filtration carries the secondary precipitates out with
-the liquid/filtrate, so they are not double-counted in the measured solid residue and
-they legitimately attribute the unaccounted element. (Set `True` only for a protocol
-where precipitates are demonstrably retained in the assayed solid.)
+**Fly-ash default = `True`.** Set to `True` for the fly-ash protocol **per the
+experimenter's filtration procedure** (secondary precipitates are retained on the filter,
+so they are part of the assayed solid). The crystalline precipitates — Ca as
+calcite/portlandite (micron-scale) — are reliably retained.
+
+**Colloid-former overrides (`Si`, `Al`, `Fe`) = `"uncertain"`.** Si and Al form colloidal
+silica / aluminosilicate gels and Fe forms nanocolloids that **can pass the 0.45 µm
+filter** this protocol uses (`filter_cutoff_um = 0.45`), so their retention is *not*
+verified. They are marked `"uncertain"`: the gap math does **not** credit them (treated as
+retained → `0`), but every rendering flags the assumption so a reviewer knows those
+elements' gap attribution is unverified. **Knowing the cutoff is 0.45 µm does not resolve
+this** — that pore size is exactly where these colloids may pass — so the `True`/`False`
+resolution for Si/Al/Fe remains a **placeholder** pending the comparison below.
+
+> **These colloid-former overrides should be confirmed by a filtrate-vs-ultrafiltrate
+> comparison** (e.g. 0.45 µm vs ~3–10 kDa) if any Si/Al/Fe conclusion depends on whether
+> their precipitates explain the gap. Until then, treat the `"uncertain"` flag as a
+> standing caveat.
+>
+> Filtration procedure confirmed by: ______________________  (date: __________)
+
+(No part of the code asserts this is confirmed — the line above is for the experimenter
+to fill in; the tool only records the flag and surfaces the uncertainty.)
 
 ### Status (parallels the mapping-status system)
 

@@ -65,9 +65,13 @@ from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
+from flyash_phreeqc_ml.ai import config as ai_config  # noqa: E402  (AI settings/status authority)
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (grounded Q&A)
 from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
+from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: E402  (NL simulation planner)
+from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
+from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -230,6 +234,219 @@ def _render_run_sidebar() -> str | None:
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
     st.sidebar.info("➡️ Open the **Compare** tab to execute this run.")
     return selected
+
+
+def _render_ai_settings_panel() -> None:
+    """Sidebar 'AI settings' panel — status + provider/model selection.
+
+    Read-only with respect to the science: it shows whether the optional AI layer is
+    enabled and lets the user pick the provider/model used for *suggestions*. It never
+    affects mapping, residuals, validation status, or the comparison data, and it never
+    shows or accepts the API key (the key comes only from the environment or Streamlit
+    secrets — see :mod:`flyash_phreeqc_ml.ai.config`).
+    """
+    with st.sidebar.expander("🤖 AI settings", expanded=False):
+        # The base model from env / secrets / default, ignoring any prior UI override —
+        # so the picker defaults to it and a no-op selection never clobbers ANTHROPIC_MODEL.
+        ai_config.clear_runtime_overrides()
+        base_model = ai_config.resolve_config().model
+
+        provider = st.selectbox(
+            "Provider", list(ai_config.SUPPORTED_PROVIDERS), index=0,
+            key="ai_provider_choice", help="Only Anthropic is supported today.")
+
+        options = list(dict.fromkeys([base_model, *ai_config.SUGGESTED_MODELS]))
+        picked = st.selectbox(
+            "Model (suggested)", options, index=0, key="ai_model_pick",
+            help="Used for AI suggestions only. Overrides ANTHROPIC_MODEL for this session.")
+        custom = st.text_input(
+            "…or enter a model id", key="ai_model_custom",
+            help="Leave blank to use the selected model above.").strip()
+        effective_model = custom or picked
+
+        # Apply the choice for this process so the AI helpers + the status below use it.
+        ai_config.set_runtime_overrides(provider=provider, model=effective_model)
+        cfg = ai_config.resolve_config()
+
+        st.markdown(f"**Status:** {'🟢 enabled' if cfg.enabled else '⚪ disabled'}")
+        st.markdown(f"- Provider: `{cfg.provider}`")
+        st.markdown(f"- Model: `{cfg.model}`")
+        st.markdown(
+            f"- API key detected: **{'yes' if cfg.key_present else 'no'}**"
+            + (f" · {cfg.key_source}" if cfg.key_present else ""))
+        st.markdown(f"- SDK available: **{'yes' if cfg.sdk_available else 'no'}**")
+        st.caption(f"Role: {ai_config.AI_ROLE_LINE}.")
+        if not cfg.enabled:
+            st.caption(f"Disabled — {cfg.disabled_reason()}.")
+        st.caption(
+            "The API key is read only from the `ANTHROPIC_API_KEY` environment variable "
+            "or a Streamlit secret — it is never entered or shown here.")
+        st.warning(ai_config.AI_EXPERIMENTAL_WARNING)
+
+
+# --------------------------------------------------------------------------- #
+# Simulate tab — natural-language simulation planner (no PHREEQC execution)
+# --------------------------------------------------------------------------- #
+def _sim_num_text(label: str, value, key: str):
+    """A text input for a numeric field that preserves 'missing' (blank → None)."""
+    raw = st.text_input(label, value=("" if value is None else str(value)), key=key)
+    return sim_schema.as_float(raw)
+
+
+def _simulate_edit_form(flat: dict) -> dict:
+    """Editable widgets for the key scenario fields; returns an edited flat dict.
+
+    Numeric fields use text inputs so a blank stays 'missing' (None) rather than 0.
+    """
+    edited = dict(flat)
+    c1, c2 = st.columns(2)
+    with c1:
+        edited["material_name"] = (st.text_input(
+            "Material", value=flat.get("material_name") or "", key="sim_e_mat") or None)
+        edited["solid_mass_g"] = _sim_num_text("Solid mass (g)", flat.get("solid_mass_g"), "sim_e_mass")
+        edited["liquid_volume_mL"] = _sim_num_text(
+            "Liquid volume (mL)", flat.get("liquid_volume_mL"), "sim_e_vol")
+        edited["leachant_type"] = (st.text_input(
+            "Leachant", value=flat.get("leachant_type") or "", key="sim_e_lea") or None)
+        edited["leachant_concentration_M"] = _sim_num_text(
+            "Leachant concentration (M)", flat.get("leachant_concentration_M"), "sim_e_conc")
+    with c2:
+        edited["time_min"] = _sim_num_text("Time (min)", flat.get("time_min"), "sim_e_time")
+        edited["temperature_C"] = _sim_num_text(
+            "Temperature (°C)", flat.get("temperature_C"), "sim_e_temp")
+        co2_opts = ["(unknown)"] + list(sim_schema.CO2_CONDITION_ALLOWED)
+        cur = flat.get("CO2_condition") or "(unknown)"
+        cur = cur if cur in co2_opts else "(unknown)"
+        co2 = st.selectbox("CO2 condition", co2_opts, index=co2_opts.index(cur), key="sim_e_co2")
+        edited["CO2_condition"] = None if co2 == "(unknown)" else co2
+        edited["target_elements"] = st.multiselect(
+            "Target elements", list(sim_schema.RECOGNIZED_ELEMENTS),
+            default=[e for e in (flat.get("target_elements") or [])
+                     if e in sim_schema.RECOGNIZED_ELEMENTS], key="sim_e_els")
+        edited["desired_outputs"] = st.multiselect(
+            "Desired outputs", list(sim_schema.DESIRED_OUTPUTS_VOCAB),
+            default=[o for o in (flat.get("desired_outputs") or [])
+                     if o in sim_schema.DESIRED_OUTPUTS_VOCAB], key="sim_e_outs")
+    # L/S is recomputed from the (possibly edited) mass + volume when the scenario rebuilds.
+    edited["liquid_solid_ratio"] = None
+    return edited
+
+
+def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
+    """Plan a PHREEQC scenario from a plain-language description (planning layer only).
+
+    Flow: describe → desired outputs → parse (AI if consented, else rule-based) → review
+    what was understood + missing/assumptions/warnings → edit/confirm → generate a plan
+    matrix. **No PHREEQC is run, no measured data is touched, nothing becomes verified.**
+    """
+    st.subheader("Simulate — plan a scenario from a description")
+    st.caption("Describe a batch-leaching experiment in plain language; the planner extracts a "
+               "structured scenario you review and confirm, then builds a simulation plan. "
+               "**No PHREEQC is run here.**")
+
+    cfg = ai_config.resolve_config()
+    if cfg.enabled:
+        st.caption(f"AI extraction is available (model `{cfg.model}`). Tick consent below to use "
+                   "it, or parse with rule-based extraction.")
+    else:
+        st.caption("AI is disabled — the planner will use **rule-based** extraction (low "
+                   "confidence). Enable AI in the sidebar **🤖 AI settings** for better extraction.")
+
+    desc = st.text_area(
+        "Step 1 — Describe your experiment", key="sim_desc", height=130,
+        placeholder=("e.g. I have 2 g of Class C fly ash. I add 10 mL of 0.5 M HCl for 60 "
+                     "minutes at room temperature. I centrifuge, filter the liquid, and measure "
+                     "pH, Ca, Si, Al and Fe."))
+    outputs = st.text_area(
+        "Step 2 — Desired variables / outputs", key="sim_outputs", height=70,
+        placeholder="e.g. simulate what should be in the liquid and what may have precipitated")
+
+    use_ai = False
+    if cfg.enabled:
+        st.caption(ai_scenario_parser.SCENARIO_DATA_NOTICE)
+        use_ai = st.checkbox(ai_scenario_parser.SCENARIO_CONSENT_LABEL, key="sim_ai_consent")
+
+    if st.button("Step 3 — Parse scenario", key="sim_parse_btn", disabled=not desc.strip()):
+        with st.spinner("Extracting scenario…"):
+            st.session_state["sim_parse_result"] = ai_scenario_parser.parse_scenario(
+                desc, outputs, prefer_ai=use_ai)
+        st.session_state.pop("sim_matrix", None)
+
+    res = st.session_state.get("sim_parse_result")
+    if res is None:
+        st.info("Enter a description and click **Parse scenario** to begin.")
+        return
+
+    # -- Step 4: review ---------------------------------------------------- #
+    st.markdown(f"#### Step 4 — Review&nbsp;&nbsp;·&nbsp;&nbsp;parsed by **{res.source_label()}** "
+                f"·&nbsp;&nbsp;confidence **{res.confidence:.0%}**")
+    if res.used_ai:
+        st.caption("Extracted by AI — review every value. AI output is a suggestion, never verified data.")
+    else:
+        st.caption("Rule-based extraction (no AI) — low confidence; check every value.")
+    if res.error:
+        st.warning(f"Parser note: {res.error}")
+
+    flat = res.scenario.to_flat_dict()
+
+    def _disp(v):
+        # A single string column keeps Streamlit's Arrow serialization happy (mixed
+        # float/bool/None/str in one object column otherwise fails to render).
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            return ", ".join(str(x) for x in v)
+        return str(v)
+
+    overview = pd.DataFrame(
+        [{"field": k, "value": _disp(v)}
+         for k, v in flat.items() if k not in ("warnings", "confidence")])
+    st.markdown("**What the planner understood**")
+    st.dataframe(overview, use_container_width=True, height=300, hide_index=True)
+
+    if res.missing:
+        st.markdown("**Missing information**")
+        for m in res.missing:
+            icon = {"error": "🔴", "warning": "🟠"}.get(m.severity, "ℹ️")
+            st.markdown(f"- {icon} **{m.label}** — {m.message}")
+    if res.assumptions:
+        st.markdown("**Assumptions**")
+        for a in res.assumptions:
+            st.markdown(f"- `{a.field}` = **{a.assumed_value}** — {a.reason} _(source: {a.source})_")
+    if res.scenario.warnings:
+        st.markdown("**Warnings**")
+        for w in res.scenario.warnings:
+            st.warning(w)
+
+    st.info(sim_schema.NON_PREDICTION_NOTE)
+
+    if dev_mode and res.raw_response:
+        with st.expander("Raw AI response (debug — not saved anywhere)"):
+            st.code(res.raw_response)
+
+    # -- Step 5: edit / confirm ------------------------------------------- #
+    st.markdown("#### Step 5 — Edit / confirm")
+    with st.expander("Edit extracted values", expanded=True):
+        edited = _simulate_edit_form(flat)
+    confirmed = st.checkbox(
+        "I have reviewed the extracted scenario, assumptions, and warnings.",
+        key="sim_confirm_chk")
+
+    # -- Step 6: generate the plan matrix --------------------------------- #
+    if st.button("Step 6 — Generate simulation matrix", key="sim_gen_btn", disabled=not confirmed):
+        sc = sim_schema.SimulationScenario.from_flat_dict(edited)
+        sc.liquid_solid_ratio = sc.computed_ls_ratio()
+        st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc)
+
+    mtx = st.session_state.get("sim_matrix")
+    if mtx is not None:
+        st.success(sim_schema.PLAN_ONLY_LABEL)
+        st.dataframe(mtx, use_container_width=True, height=160, hide_index=True)
+        st.download_button(
+            "Download plan (CSV)", mtx.to_csv(index=False), file_name="simulation_plan.csv",
+            mime="text/csv", key="sim_dl_btn")
+        st.caption("This plan is **not** a PHREEQC result. To actually run a simulation, use the "
+                   "deliberate PHREEQC generation step in the Match tab — the planner never runs it for you.")
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
@@ -4717,8 +4934,10 @@ DEV_MODE = st.sidebar.checkbox(
          "Validate tab.",
 )
 
-tab_start, tab_import, tab_validate, tab_match, tab_compare, tab_export = st.tabs([
-    "Start", "Import", "Validate", "Match", "Compare", "Export",
+_render_ai_settings_panel()
+
+tab_start, tab_import, tab_validate, tab_match, tab_simulate, tab_compare, tab_export = st.tabs([
+    "Start", "Import", "Validate", "Match", "Simulate", "Compare", "Export",
 ])
 
 with tab_start:
@@ -4729,6 +4948,8 @@ with tab_validate:
     _render_validate_tab(SELECTED_RUN, DEV_MODE)
 with tab_match:
     _render_match_tab(SELECTED_RUN)
+with tab_simulate:
+    _render_simulate_tab(SELECTED_RUN, DEV_MODE)
 with tab_compare:
     _render_compare_tab(SELECTED_RUN)
 with tab_export:

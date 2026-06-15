@@ -367,3 +367,33 @@ def test_recovery_summary_sorted_by_unexplained_fraction(recovery):
     assert list(summ.columns) == report.RECOVERY_SUMMARY_COLUMNS
     fracs = pd.to_numeric(summ["unexplained_fraction"], errors="coerce").dropna().tolist()
     assert fracs == sorted(fracs, reverse=True)         # weakest knowledge first
+
+
+def test_recovery_surfaces_filtration_uncertain():
+    """An uncertain element is credited 0 toward the gap but loudly flagged in the report."""
+    from flyash_phreeqc_ml import phreeqc_runner as pr
+    profile = profiles.DatasetProfile(
+        name="batch-uncertain", grouping="fly_ash", mass_balance_elements=("Si",),
+        starting_content_unit="wt%", solid_residue_unit="wt%",
+        mass_balance_candidate_phases={"SiO2(am)": "Si"},
+        precipitate_in_measured_solid=True,
+        precipitate_in_measured_solid_overrides={"Si": profiles.PRECIP_UNCERTAIN})
+    data = pd.DataFrame([{"sample_id": "U1", "leachant": "NaOH", "NaOH_M": "1.0",
+                          "CO2_condition": "OA", "liquid_solid_ratio": 5,
+                          "material_mass_g": 5.0, "liquid_volume_mL": 50.0, "solid_mass_g": 4.0,
+                          "Si_starting_content": 1.0, "Si_solid_residue": 0.1, "Si_mM": 5.0}])
+    from flyash_phreeqc_ml import replicates
+    ck = replicates.condition_key(data.iloc[0].to_dict(), profile)
+    sel = {pr.phase_moles_column("SiO2(am)"): 5e-4}     # 0.5 mmol Si precipitated
+    recs = report._recovery_records(data, profile, selected_outputs={ck: sel})
+    si = next(r for r in recs if r["element"] == "Si")
+    assert si["filtration_uncertain"] is True
+    assert si["filtration_status"] == "uncertain"
+    assert si["gap_explained"] == pytest.approx(0.0)              # conservatively 0
+    assert si["gap_explained_if_passes"] == pytest.approx(0.5)    # could explain 0.5 if it passes
+    # The CSV carries the filtration_status column; the narrative states the uncertainty.
+    table = report._recovery_table(recs)
+    assert "filtration_status" in table.columns
+    assert (table["filtration_status"] == "uncertain").any()
+    assert "uncertain" in si["narrative"].lower()
+    assert "ultrafiltrate" in si["narrative"].lower()
