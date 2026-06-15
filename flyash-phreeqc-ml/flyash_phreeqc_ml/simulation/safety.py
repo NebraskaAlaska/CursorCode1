@@ -66,9 +66,9 @@ def scientific_warnings(scenario: SimulationScenario, *, assumptions=None) -> li
 
     # Material composition is never part of an NL description — PHREEQC needs the assay.
     warns.append(
-        "Material composition (the dissolved element assay PHREEQC needs) is not part of a "
-        "text description — supply it from the material profile or a measured / "
-        "literature-confirmed assay before running.")
+        "Material composition (the dissolved element assay the deterministic model needs) "
+        "is not part of a text description — supply it from the material profile or a "
+        "measured / literature-confirmed assay before running.")
 
     # Temperature assumed (when a parser filled it as an assumption).
     assumed_fields = {a.field for a in (assumptions or [])}

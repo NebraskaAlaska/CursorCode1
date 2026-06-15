@@ -39,7 +39,8 @@ def test_matrix_status_is_plan_only_label():
     # The status column flags the plan, and the schema exposes the human label.
     df = M.build_simulation_matrix(_scenario())
     assert (df["status"] == "plan_only").all()
-    assert "no PHREEQC result" in S.PLAN_ONLY_LABEL
+    assert "Simulation plan only" in S.PLAN_ONLY_LABEL
+    assert "no deterministic simulation" in S.PLAN_ONLY_LABEL.lower()
 
 
 def test_matrix_range_expansion_cartesian():

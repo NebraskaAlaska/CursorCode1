@@ -1,15 +1,19 @@
 """Streamlit interface for the flyash-phreeqc-ml project.
 
 A thin GUI on top of the existing Phase 1 / Phase 2 code — it does **not**
-reimplement any pipeline logic. A run-management sidebar drives a guided
-workflow aligned to **Import → Validate → Match → Compare → Export** (plus a
-Start overview). Each tab reuses the package functions; this file adds no chemistry or ML.
-It lets you:
+reimplement any pipeline logic. It presents an AI-assisted geochemical simulation &
+validation platform: a run-management sidebar drives a guided seven-tab workflow
+**Start → Simulate → Import Data → Validate → Match → Compare Results → Export**.
+**Simulate** is the forward-looking planning core (describe an experiment → structured
+scenario → simulation plan; no model is executed yet); the measured-vs-model mapping +
+comparison is the current strongest **validation module**. Each tab reuses the package
+functions; this file adds no chemistry or ML on the result path. It lets you:
 
-* see project + run status at a glance,
+* see the three product modes (Simulate / Validate / Learn) + run status at a glance,
+* plan a simulation from a plain-language description (Simulate, planning only),
 * enter measured / literature / demo data into per-run save files,
-* map measured samples to PHREEQC rows and run the existing scripts,
-* read an honest measured-vs-PHREEQC summary, and browse PHREEQC outputs.
+* map measured samples to model rows and run the existing scripts,
+* read an honest measured-vs-model summary, and browse model outputs.
 
 Run with:  streamlit run app.py
 """
@@ -105,9 +109,10 @@ PREFERRED_PROCESSED = [
 _CO2_OPTIONS = [""] + list(config.CO2_CONDITION_ALLOWED)
 _YESNO_OPTIONS = ["", "yes", "no"]
 
-# Generic end-to-end workflow, shown as a neutral orientation stepper on Start.
-WORKFLOW_STEPS = ["Import data", "Detect records", "Suggest mappings",
-                  "Compare", "Validate", "Export"]
+# The platform's forward arc (describe → simulate → validate → learn), shown as a neutral
+# orientation stepper on Start. "Run model" is future work (no execution from Simulate yet).
+WORKFLOW_STEPS = ["Describe experiment", "Extract scenario", "Simulation plan",
+                  "Run model (future)", "Validate vs measured", "Learn & improve"]
 
 
 # --------------------------------------------------------------------------- #
@@ -193,7 +198,7 @@ def _render_run_sidebar() -> str | None:
     # --- create new ------------------------------------------------------- #
     with st.sidebar.expander("➕ Create new run", expanded=not runs):
         new_name = st.text_input("Run name", key="new_run_name",
-                                 placeholder="2026-06-03 pH-only lab data")
+                                 placeholder="2026-06-03 fly-ash leaching experiment")
         new_type = st.selectbox("Run type", run_manager.RUN_TYPES, key="new_run_type")
         st.caption(run_manager.warning_for(new_type))
         new_desc = st.text_area("Description", key="new_run_desc", height=70)
@@ -232,7 +237,7 @@ def _render_run_sidebar() -> str | None:
     if cfg.get("description"):
         st.sidebar.caption(f"📝 {cfg['description']}")
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
-    st.sidebar.info("➡️ Open the **Compare** tab to execute this run.")
+    st.sidebar.info("➡️ Use **Simulate** to plan, or **Compare Results** to validate against measured data.")
     return selected
 
 
@@ -333,16 +338,20 @@ def _simulate_edit_form(flat: dict) -> dict:
 
 
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
-    """Plan a PHREEQC scenario from a plain-language description (planning layer only).
+    """Plan a simulation scenario from a plain-language description (planning layer only).
 
     Flow: describe → desired outputs → parse (AI if consented, else rule-based) → review
-    what was understood + missing/assumptions/warnings → edit/confirm → generate a plan
-    matrix. **No PHREEQC is run, no measured data is touched, nothing becomes verified.**
+    what was understood + missing/assumptions/warnings → edit/confirm → choose a strategy →
+    generate a plan matrix. **No deterministic simulation is run, no measured data is
+    touched, nothing becomes verified.**
     """
-    st.subheader("Simulate — plan a scenario from a description")
-    st.caption("Describe a batch-leaching experiment in plain language; the planner extracts a "
-               "structured scenario you review and confirm, then builds a simulation plan. "
-               "**No PHREEQC is run here.**")
+    st.subheader("Simulate — describe an experiment, plan a simulation")
+    st.caption(
+        "This is the **planning layer**. It converts experiment descriptions into "
+        "structured scenarios and simulation matrices. It does **not** yet prove scientific "
+        "predictions until deterministic model execution and validation are performed. "
+        "Describe a batch reaction / leaching experiment below — **no deterministic "
+        "simulation (e.g. PHREEQC) is run here.**")
 
     cfg = ai_config.resolve_config()
     if cfg.enabled:
@@ -419,6 +428,10 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
             st.warning(w)
 
     st.info(sim_schema.NON_PREDICTION_NOTE)
+    st.caption(
+        "When this plan is eventually run, results will also depend on the chosen "
+        "thermodynamic database (e.g. CEMDATA18) and the candidate-phase list — those model "
+        "assumptions affect and limit what a simulation can predict.")
 
     if dev_mode and res.raw_response:
         with st.expander("Raw AI response (debug — not saved anywhere)"):
@@ -432,11 +445,45 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         "I have reviewed the extracted scenario, assumptions, and warnings.",
         key="sim_confirm_chk")
 
-    # -- Step 6: generate the plan matrix --------------------------------- #
-    if st.button("Step 6 — Generate simulation matrix", key="sim_gen_btn", disabled=not confirmed):
+    # -- Step 6: choose a simulation strategy, then generate the plan ------ #
+    st.markdown("#### Step 6 — Simulation strategy")
+    strategy = st.radio(
+        "How should the plan be generated?",
+        options=[
+            "Single scenario (one plan row)",
+            "Small parameter sweep",
+            "Large batch / design-of-experiments — future",
+            "Adaptive (active-learning) search — future",
+            "Surrogate-assisted fast search — future",
+        ],
+        index=0, key="sim_strategy",
+        help="Single scenario and small parameter sweeps are supported now. Large-batch, "
+             "adaptive, and surrogate-assisted strategies are planned and disabled here.")
+    is_future = strategy.endswith("— future")
+    ranges = None
+    if strategy.startswith("Small parameter sweep"):
+        st.caption("Sweep one parameter over a few values (a small Cartesian plan; no "
+                   "execution — still plan-only).")
+        sweep_field = st.selectbox(
+            "Parameter to sweep", list(sim_matrix.RANGEABLE_FIELDS), key="sim_sweep_field")
+        sweep_raw = st.text_input(
+            "Values (comma-separated)", key="sim_sweep_vals", placeholder="e.g. 0.1, 0.5, 1.0")
+        vals = [v for v in (sim_schema.as_float(x) for x in sweep_raw.split(",")) if v is not None]
+        if vals:
+            ranges = {sweep_field: vals}
+            st.caption(f"Plan will have {len(vals)} row(s).")
+    if is_future:
+        st.info("This strategy is planned for a future version and is disabled here. Use "
+                "**Single scenario** or **Small parameter sweep** for now.")
+
+    gen_disabled = (not confirmed) or is_future or (
+        strategy.startswith("Small parameter sweep") and not ranges)
+    if st.button("Generate simulation plan", key="sim_gen_btn", disabled=gen_disabled):
         sc = sim_schema.SimulationScenario.from_flat_dict(edited)
         sc.liquid_solid_ratio = sc.computed_ls_ratio()
-        st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc)
+        st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc, ranges=ranges)
+    if not confirmed:
+        st.caption("Confirm the reviewed scenario (Step 5) to enable plan generation.")
 
     mtx = st.session_state.get("sim_matrix")
     if mtx is not None:
@@ -445,8 +492,10 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         st.download_button(
             "Download plan (CSV)", mtx.to_csv(index=False), file_name="simulation_plan.csv",
             mime="text/csv", key="sim_dl_btn")
-        st.caption("This plan is **not** a PHREEQC result. To actually run a simulation, use the "
-                   "deliberate PHREEQC generation step in the Match tab — the planner never runs it for you.")
+        st.caption("This plan is **not** a simulation result — deterministic execution is a "
+                   "separate, deliberate step the planner never runs for you. (In the current "
+                   "fly-ash + PHREEQC workflow, model generation lives in the **Match** tab; "
+                   "future backends will run from here.)")
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
@@ -2160,7 +2209,7 @@ def _render_mapping_section(run_name: str) -> None:
     if not results_path.exists():
         st.info(
             "`data/processed/phreeqc_results.csv` not found — run Phase 1 first "
-            "(the Compare tab) to generate model (PHREEQC) results."
+            "(the Compare Results tab) to generate model (PHREEQC) results."
         )
         return
     phreeqc = _read_csv(str(results_path), results_path.stat().st_mtime)
@@ -2703,9 +2752,10 @@ def _render_presentation_summary(selected_run: str | None) -> None:
 
     # Recommended next *scientific* step.
     if not n_rows:
-        nxt = "Import the dissolution workbook in the **Import** tab."
+        nxt = ("Describe an experiment in the **Simulate** tab to plan a simulation, or "
+               "import measured data in the **Import Data** tab to validate against predictions.")
     elif n_err:
-        nxt = f"Fix {n_err} validation error(s) in the **Import** / **Validate** tabs before mapping."
+        nxt = f"Fix {n_err} validation error(s) in the **Import Data** / **Validate** tabs before mapping."
     elif lab_like and msum["n_samples"] == 0:
         nxt = "Map conditions to model scenarios in the **Match** tab."
     elif status["counts"].get("unsafe", 0):
@@ -2715,9 +2765,9 @@ def _render_presentation_summary(selected_run: str | None) -> None:
         nxt = ("Generate time- and condition-resolved PHREEQC scenarios so mappings can become "
                "exact; the current comparison is a workflow check, not final validation.")
     elif not comp_exists:
-        nxt = "Run the workflow in the **Compare** tab to generate the comparison."
+        nxt = "Run the workflow in the **Compare Results** tab to generate the comparison."
     else:
-        nxt = "Review the preliminary comparison in the **Compare** tab."
+        nxt = "Review the preliminary comparison in the **Compare Results** tab."
     st.success(f"**Recommended next scientific step:** {nxt}")
 
     if not (lab_like and status["all_exact"]):
@@ -2756,11 +2806,12 @@ def _next_step_hint(selected_run: str | None) -> str:
     comp_exists = lab_like and run_manager.has_comparison(selected_run)
 
     if data.empty:
-        return "Import or enter data in the **Import** tab."
+        return ("Describe an experiment in the **Simulate** tab, or import measured data "
+                "in the **Import Data** tab to validate against predictions.")
     if is_mock:
         return "Mock/test data — for code checking only, not scientific conclusions."
     if rt == "literature_benchmark":
-        return ("Review the literature table in the **Import** tab — literature data are "
+        return ("Review the literature table in the **Import Data** tab — literature data are "
                 "kept separate from lab data and are not run through the pipeline.")
     if rt == "synthetic_demo":
         return "This is a synthetic/demo run — for testing only, not scientific output."
@@ -2770,10 +2821,10 @@ def _next_step_hint(selected_run: str | None) -> str:
         return ("Review mapping in the **Match** tab — several samples share one model "
                 "result, so graphs may be misleading.")
     if not comp_exists:
-        return "Run the workflow in the **Compare** tab to generate results."
+        return "Run the workflow in the **Compare Results** tab to generate results."
     if lab_like and not icp_present:
         return "Only pH comparison is meaningful until ICP data are added."
-    return "Read the comparison in the **Compare** tab, then build a report in **Export**."
+    return "Read the comparison in the **Compare Results** tab, then build a report in **Export**."
 
 
 def _render_next_step(selected_run: str | None) -> None:
@@ -2781,20 +2832,46 @@ def _render_next_step(selected_run: str | None) -> None:
     st.info(f"➡️ **Next step:** {_next_step_hint(selected_run)}")
 
 
+def _render_modes_panel() -> None:
+    """The three product modes — the platform's front-door explanation."""
+    st.markdown("#### Three ways to use this platform")
+    m1, m2, m3 = st.columns(3)
+    m1.markdown(
+        "**1 · Simulate**  \nDescribe an experiment and the variables you care about. AI "
+        "extracts a structured scenario, flags missing info and assumptions, and builds a "
+        "simulation plan/matrix.  \n_Planning layer — deterministic model execution is "
+        "future work._")
+    m2.markdown(
+        "**2 · Validate**  \nCompare measured data against model predictions using "
+        "transparent mapping status and residuals, with an honest validity status.  \n"
+        f"_Current strongest workflow: Class C fly ash + {MODEL_NAME}._")
+    m3.markdown(
+        "**3 · Learn & Improve**  \nUse literature, measured data, residuals, and "
+        "(experimental) surrogate/ML tools to improve predictions and recommend "
+        "experiments.  \n_Experimental, display-only — never on the result path._")
+    st.caption(
+        "AI extracts and organizes scenario information; **deterministic code and "
+        "simulation engines generate the scientific outputs**, and AI output always "
+        "requires your review. A simulation plan is not a validated prediction — exact "
+        "mapping and measured data are required for any validation claim.")
+    st.divider()
+
+
 def _render_overview(selected_run: str | None) -> None:
-    """Project status cards + selected-run summary + a recommended next step."""
+    """Three-mode product panel + run status + a recommended next step."""
     app_ui.render_page_header(
-        "Start — validation overview",
-        "A research validation workflow for comparing measured experimental data "
-        "with model predictions. The app identifies what must be matched before "
-        "validation is scientifically valid.",
+        "Start — what this platform does",
+        "An AI-assisted platform for geochemical / material-leaching simulation and "
+        "validation. Describe an experiment to plan a simulation, and — where you have "
+        "measured data — validate and correct the predictions against it.",
         eyebrow="Overview",
     )
+    _render_modes_panel()
     app_ui.render_workflow_steps(WORKFLOW_STEPS, current=None)
     st.write("")
 
-    app_ui.section_header("Presentation summary",
-                          "data, validation, mapping & comparison status at a glance")
+    app_ui.section_header("Validation module — status",
+                          "measured-data, mapping & comparison status for the current run")
     _render_presentation_summary(selected_run)
     st.divider()
 
@@ -2803,7 +2880,7 @@ def _render_overview(selected_run: str | None) -> None:
     measured = _load_measured_safe()
     measured_exists = has_measured_data(measured)
 
-    app_ui.section_header("Project status", "shared pipeline artifacts")
+    app_ui.section_header("Workspace status", "shared pipeline artifacts (validation module)")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("master_dataset.csv", "present" if master_path.exists() else "missing")
     n_rows = (
@@ -2815,8 +2892,10 @@ def _render_overview(selected_run: str | None) -> None:
     c4.metric("measured data", "yes" if measured_exists else "not yet")
     if not measured_exists:
         st.info(
-            "No measured experimental release data found yet — only the blank template. "
-            "Phase 2 comparison and any future ML stay dormant until real data is entered."
+            "No measured data yet — the **Validate** module stays dormant until measured "
+            "data is added. You can still use the **Simulate** tab to plan a simulation "
+            "before any measurement. (For the fly-ash workflow this is the Phase-2 release "
+            "data; comparison and any future ML stay dormant until it is entered.)"
         )
 
     st.divider()
@@ -2868,7 +2947,7 @@ def _render_overview(selected_run: str | None) -> None:
         if not icp_present:
             missing.append("ICP chemistry (Ca/Si/Al/Fe/REE) — pH-only so far")
         if not has_map:
-            missing.append("sample → PHREEQC mapping (needed for residuals)")
+            missing.append("measured → model mapping (needed for residuals)")
     if missing:
         st.markdown("**Missing / not yet present:**")
         for m in missing:
@@ -3058,10 +3137,11 @@ def _render_basic_validation_summary(run_name: str) -> None:
 
 def _render_import_tab(selected_run: str | None) -> None:
     app_ui.render_page_header(
-        "Import — add measured data",
-        "Import or enter measured data for the selected run, review the detected "
-        "records and unit conversions, then save to the run.",
-        eyebrow="Step 1 · Import",
+        "Import — add experimental data",
+        "Import or enter your experimental (measured) data for the selected run, review the "
+        "detected records and unit conversions, then save to the run. Measured data is used "
+        "later to validate and correct simulated predictions.",
+        eyebrow="Validation module · Import",
     )
     _render_next_step(selected_run)
     app_ui.render_workflow_steps(
@@ -3103,9 +3183,10 @@ def _render_import_tab(selected_run: str | None) -> None:
 def _render_match_tab(selected_run: str | None) -> None:
     app_ui.render_page_header(
         "Match — link measured data to model predictions",
-        f"Automatic-first: records are detected and {MODEL_NAME} mappings are suggested "
-        "for you. Review, then accept. Manual mapping stays available under advanced.",
-        eyebrow="Step 2 · Match",
+        f"Automatic-first: records are detected and model-prediction mappings are suggested "
+        f"for you (current model: {MODEL_NAME}). Review, then accept. Manual mapping stays "
+        "available under advanced.",
+        eyebrow="Validation module · Match",
     )
     _render_next_step(selected_run)
     app_ui.render_workflow_steps(
@@ -3116,13 +3197,13 @@ def _render_match_tab(selected_run: str | None) -> None:
     if not selected_run:
         st.info(
             "Select or create a **lab_experiment** (or **plastic_composite**) run in the "
-            "sidebar to add a sample → PHREEQC mapping."
+            "sidebar to add a measured → model mapping."
         )
         return
     rt = run_manager.load_run_config(selected_run).get("run_type")
     if rt == "literature_benchmark":
         st.info(
-            "Literature benchmark runs do not use sample-to-PHREEQC mapping as measured "
+            "Literature benchmark runs do not use sample-to-model mapping as measured "
             "lab data."
         )
         return
@@ -3365,7 +3446,7 @@ def _render_measured_overview(selected_run: str) -> None:
     if not variables:
         st.info(
             "No numeric measured variables in this run yet — enter pH or ICP values in "
-            "the **Import** tab to see the overview."
+            "the **Import Data** tab to see the overview."
         )
         return
 
@@ -3802,7 +3883,7 @@ def _render_export_report(selected_run: str | None) -> None:
     if rt not in run_manager.LAB_LIKE_RUN_TYPES:
         return
 
-    app_ui.section_header("Validation report",
+    app_ui.section_header("Results report (simulation + validation)",
                           "a self-contained bundle a reviewer can open without the app")
     st.caption(
         "Builds `experiments/<run>/outputs/validation_report_<ts>/` — a self-contained "
@@ -3838,14 +3919,16 @@ def _render_compare_tab(selected_run: str | None) -> None:
     """Run the workflow and read the comparison results (+ interpretation tools)."""
     app_ui.render_page_header(
         "Compare — run the workflow and read the comparison",
-        f"Run the pipeline for this run, then read the measured-vs-{MODEL_NAME} "
-        "comparison: inclusion counts, residuals, systematic bias, and the validity line.",
-        eyebrow="Step 4 · Compare",
+        "Run the pipeline for this run, then read the measured-vs-model comparison: "
+        f"inclusion counts, residuals, systematic bias, and the validity line "
+        f"(current model: {MODEL_NAME}).",
+        eyebrow="Validation module · Compare",
     )
     _render_next_step(selected_run)
     if not selected_run:
         st.info("Select or create a **lab_experiment** (or **plastic_composite**) run in the "
-                "sidebar, import data and add a mapping, then run the workflow here.")
+                "sidebar, import your experimental data, link it to model predictions (Match "
+                "tab), then run the comparison workflow here.")
         return
     app_ui.render_workflow_steps(
         ["Run workflow", "Model comparison", "Residual analysis", "Interpret"],
@@ -4133,9 +4216,10 @@ def _render_calc_verification_tab(dev_mode: bool, selected_run: str | None = Non
 
 
 def _render_help_tab() -> None:
-    st.subheader("Design note — a generic validation workflow")
+    st.subheader("Design note — the validation module")
     st.info(
-        "The app is designed around a generic validation workflow: **measured data → "
+        "This describes the **Validation module** within the broader simulate → validate → "
+        "learn platform. The validation module is a generic workflow: **measured data → "
         "model prediction → mapping → residuals → validation status**. PHREEQC and the "
         "fly ash metadata (OA/PF/GS, CO₂ cover) are the current project implementation, "
         "not a hard limit of the system — the same workflow applies to other experiments "
@@ -4154,17 +4238,19 @@ def _render_help_tab() -> None:
     st.subheader("How this app works")
     st.markdown(
         "1. **Start** — create or open a run in the sidebar (a 'save file' for one "
-        "experiment set) and check the status + workflow checklist.\n"
-        "2. **Import** — add measured rows (lab), upload/enter literature rows, or add "
+        "experiment set) and read the three-mode overview + status.\n"
+        "2. **Simulate** — describe an experiment in plain language → a structured scenario → "
+        "a simulation plan/matrix. _Planning layer — no deterministic model is run yet._\n"
+        "3. **Import Data** — add measured rows (lab), upload/enter literature rows, or add "
         "synthetic demo rows, depending on run type, and review unit conversions.\n"
-        "3. **Validate** — measured-data overview, data-quality validation, and "
+        "4. **Validate** — measured-data overview, data-quality validation, and "
         "calculation verification (the formula/unit/conversion audit).\n"
-        "4. **Match** (lab runs) — link each `sample_id` to the model result row "
+        "5. **Match** (lab runs) — link each `sample_id` to the model result row "
         "for the same chemistry.\n"
-        "5. **Compare** — export to the pipeline, run Phase 1 → validate → compare → "
+        "6. **Compare Results** — export to the pipeline, run Phase 1 → validate → compare → "
         "sustainability, then read the measured-vs-model comparison, residuals, and "
         "the validity line.\n"
-        "6. **Export** — build a shareable validation report, download the audit "
+        "7. **Export** — build a shareable results report, download the audit "
         "trail, and read this user guide."
     )
 
@@ -4424,8 +4510,9 @@ def _render_start_tab(selected_run: str | None) -> None:
     """Start tab: the overview/status + a pointer to the in-app help."""
     _render_overview(selected_run)
     st.divider()
-    st.caption("📖 New here? The **Export** tab → *Help & user guide* has getting-started, "
-               "input formats, the mapping guide, how to read results, and data safety.")
+    st.caption("📖 New here? Try the **Simulate** tab to describe an experiment, or see the "
+               "**Export** tab → *Help & user guide* for getting-started, input formats, the "
+               "mapping guide, how to read results, and data safety.")
 
 
 def _mass_balance_bar(record: dict):
@@ -4810,9 +4897,9 @@ def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
     """Validate tab: measured-data overview, data validation, and calculation audit."""
     app_ui.render_page_header(
         "Validate — check the data and the calculations",
-        "Review the measured-data overview, the data-quality validation, and verify "
-        f"every downstream calculation before trusting a {MODEL_NAME} comparison.",
-        eyebrow="Step 3 · Validate",
+        "Review the measured-data overview, the data-quality validation, and verify every "
+        f"downstream calculation before trusting a model comparison (currently {MODEL_NAME}).",
+        eyebrow="Validation module · Validate",
     )
     _render_next_step(selected_run)
     if not selected_run:
@@ -4863,7 +4950,7 @@ def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
                              use_container_width=True, height=300)
     if not any_table:
         st.caption("No validation/sustainability tables yet — run the workflow in the "
-                   "**Compare** tab to generate them.")
+                   "**Compare Results** tab to generate them.")
 
 
 def _render_user_guide() -> None:
@@ -4887,9 +4974,10 @@ def _render_export_tab(selected_run: str | None) -> None:
     """Export tab: validation report + downloads + audit trail + Help / user guide."""
     app_ui.render_page_header(
         "Export — share results and read the docs",
-        "Build a self-contained validation report, download the audit trail, and read "
-        "the user guide — everything a reviewer needs without the app.",
-        eyebrow="Step 5 · Export",
+        "Build a self-contained results report (the model predictions used, replicate "
+        "uncertainty, and validation against measured data), download the audit trail, and "
+        "read the user guide — everything a reviewer needs without the app.",
+        eyebrow="Export",
     )
     _render_next_step(selected_run)
 
@@ -4908,19 +4996,20 @@ def _render_export_tab(selected_run: str | None) -> None:
 # --------------------------------------------------------------------------- #
 # Page — wide layout, run-management sidebar, and a tabbed dashboard
 # --------------------------------------------------------------------------- #
-st.set_page_config(page_title="Experimental Model Validation", layout="wide",
-                   page_icon="🧪")
+st.set_page_config(page_title="Geochemical Simulation & Validation Platform",
+                   layout="wide", page_icon="🧪")
 app_ui.inject_global_css()
 app_ui.render_hero(
-    "Experimental Model Validation Workspace",
-    "A research workflow for comparing measured experimental data with model "
-    "predictions — import data, detect records, suggest mappings, compare, validate, "
-    "and export.",
-    eyebrow="Measured data → model prediction → mapping → residuals → validation",
+    "AI-Assisted Geochemical Simulation & Validation Platform",
+    "Describe an experiment and the variables you care about; the platform extracts a "
+    "structured scenario, clarifies assumptions, and plans a geochemical simulation — "
+    "then, where you have measured data, validates and corrects the predictions against "
+    "it. Three modes: Simulate, Validate, Learn & Improve.",
+    eyebrow="Describe experiment → AI scenario → simulation plan → (future) predicted variables + uncertainty → validate against measured data",
     chips=[
-        (f"Project: Class C fly ash + {MODEL_NAME}", "info"),
-        ("Rule-based mapping (no ML)", "neutral"),
-        ("Honest validation status", "good"),
+        ("Simulate · Validate · Learn", "info"),
+        ("Transparent, auditable methods", "neutral"),
+        (f"Reference module: Class C fly ash + {MODEL_NAME}", "neutral"),
     ],
 )
 
@@ -4936,20 +5025,20 @@ DEV_MODE = st.sidebar.checkbox(
 
 _render_ai_settings_panel()
 
-tab_start, tab_import, tab_validate, tab_match, tab_simulate, tab_compare, tab_export = st.tabs([
-    "Start", "Import", "Validate", "Match", "Simulate", "Compare", "Export",
+tab_start, tab_simulate, tab_import, tab_validate, tab_match, tab_compare, tab_export = st.tabs([
+    "Start", "Simulate", "Import Data", "Validate", "Match", "Compare Results", "Export",
 ])
 
 with tab_start:
     _render_start_tab(SELECTED_RUN)
+with tab_simulate:
+    _render_simulate_tab(SELECTED_RUN, DEV_MODE)
 with tab_import:
     _render_import_tab(SELECTED_RUN)
 with tab_validate:
     _render_validate_tab(SELECTED_RUN, DEV_MODE)
 with tab_match:
     _render_match_tab(SELECTED_RUN)
-with tab_simulate:
-    _render_simulate_tab(SELECTED_RUN, DEV_MODE)
 with tab_compare:
     _render_compare_tab(SELECTED_RUN)
 with tab_export:

@@ -1,15 +1,24 @@
 # flyash-phreeqc-ml
 
-Machine-learning-assisted geochemical modeling of **coal fly ash (CFA) + metakaolin (MK)**
-alkali-activated systems, combining **PHREEQC** speciation/equilibrium simulations with
-**experimental ICP** measurements.
+_An **AI-assisted platform for geochemical / material-leaching simulation and validation**:
+describe an experiment and target variables in plain language, get a structured scenario and a
+simulation plan, run a deterministic geochemical model, and validate/correct its predictions
+against measured data. The current, best-developed workflow models **Class C fly ash + metakaolin
+(MK)** alkali-activated systems with **PHREEQC** and validates against **experimental ICP**
+measurements._
+
+(The package keeps the `flyash-phreeqc-ml` slug; fly ash + PHREEQC is the current strongest
+implementation — one module, not a hard limit — see *Supported datasets & models* below.)
 
 ## Ultimate goal
 
-Use PHREEQC outputs **plus** experimental ICP data to predict measured fly-ash outcomes —
-especially the release of **Ca, Si, Al, Fe, REE/Sc**, the resulting **pH**, **carbonate
-formation**, and **selectivity**. The ML layer should eventually learn *where PHREEQC
-disagrees with experiment* (a correction/residual model), not blindly replace the chemistry.
+A general loop: **natural-language experiment description → structured scenario → simulation
+strategy / plan → estimated variables + uncertainty + warnings → measured-data validation /
+correction.** The current target system uses PHREEQC outputs **plus** experimental ICP data to
+predict measured fly-ash outcomes — especially the release of **Ca, Si, Al, Fe, REE/Sc**, the
+resulting **pH**, **carbonate formation**, and **selectivity**. The ML layer should eventually
+learn *where the model disagrees with experiment* (a correction/residual model), not blindly
+replace the chemistry.
 
 The project is built in phases.
 
@@ -18,6 +27,7 @@ The project is built in phases.
 | **1. Parse + analyze** | Robust parsers for `.pqi`, `.pqo`, `SELECTED_OUTPUT`, ICP Excel/CSV → clean processed CSVs → `master_dataset.csv` → basic plots (Ca, Si, Al, Fe, pH, saturation indices) | ✅ implemented |
 | **2. PHREEQC vs experiment** | Measured-release template + parser, residuals (measured − PHREEQC), measured-vs-PHREEQC plots | 🟡 scaffolding ready (awaiting measured data) |
 | 3. ML correction/surrogate | Simple models predicting measured outcomes from PHREEQC + input variables | ⬜ planned (no ML yet) |
+| **Simulate (forward planning)** | Natural-language experiment description → structured scenario → simulation plan/matrix; AI extracts, deterministic code computes the caveats; **no execution yet** | 🟡 planning layer (Simulate tab) |
 
 > **Phase 2 status:** the ingestion + comparison machinery is in place and tested, but
 > **no real ML is trained yet**. The comparison runs as soon as measured experimental
@@ -137,55 +147,48 @@ pip install -r requirements.txt   # includes streamlit
 streamlit run app.py
 ```
 
-**Layout.** The app is a wide **guided five-tab workflow** driven by a run-management
-**sidebar** (select/create a run; see its name/type/folder/source; a run-type warning; and a
-**Developer explanation mode** toggle). The tabs follow the ingest → verify → map → run →
-interpret order:
+**Layout.** The app is a wide **guided seven-tab workflow** driven by a run-management
+**sidebar** (select/create a run; see its name/type/folder/source; a run-type warning; a
+**🤖 AI settings** panel; and a **Developer explanation mode** toggle). The **Simulate** tab is
+the forward-looking core; the measured-vs-model mapping + comparison is the current strongest
+**validation module**, not the whole app. The tabs are **Start → Simulate → Import Data →
+Validate → Match → Compare Results → Export**:
 
-- **Start** — a **Presentation summary** (dataset imported, rows, rows-with-pH, rows-with-Ca/Si/Al,
-  validation errors/warnings, mapped samples, unique PHREEQC rows, overall **mapping status**,
-  comparison status, and a recommended next *scientific* step), with the standing caveat that the
-  comparison is **preliminary / a workflow check unless mappings are exact**, plus expanders for the
-  mapping-status definitions and "valid now vs not fully valid yet"; then project + selected-run
-  status and the workflow checklist.
-- **Data** — run-type-specific entry. For lab runs the **"Upload experimental data file"** importer
-  has two modes: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet pick → fuzzy column mapping →
-  unit conversion mg/L·ppm·ppb→mM → leachant/provenance → pre-save validation → confirm-gated
-  replace/append) and a special-case **Class C fly ash dissolution-workbook** parser (stacked ICP OES
-  element blocks with mmol/l preferred, pH sheet, HCl kept acid-tagged, shared metadata defaults,
-  NaOH-only / NaOH+HCl scope, debug preview). Also literature CSV upload + manual rows, or
-  synthetic/demo form, plus this run's table, row deletion, CSV/pipeline export, a basic validation
-  summary, and the legacy global form under an expander.
-- **Match PHREEQC** — replicate-aware guided mapping (lab-like runs): a **PHREEQC Scenario Explorer**
-  (with the sol1/sol2/sol3 = replicate/batch-output explanation and the OA/PF/GS caveat), a
-  **replicate summary** grouped by `condition_key`, **condition-level mapping** (map a whole condition
-  → one scenario; replicates inherit it, then Apply writes the per-sample map) with an advanced
-  replicate→PHREEQC-solution expander, a replicate-aware collision check (same-condition replicates
-  are *not* a collision), a **"conditions needing new PHREEQC simulations"** table, and the
-  sample-level Mapping Assistant + manual dropdown kept under expanders.
-- **Run + Results** — workflow execution then run-type-aware results. For lab runs: a **comparison
-  mode** (default **replicate mean ± std** vs PHREEQC, with residuals and an n<2 warning; individual
-  replicate scatter as the advanced view) and a warning that residual plots are a **workflow check,
-  not final validation** whenever any mapping is not exact; plus the existing comparison/residual
-  figures, pH residual cards, and validation + sustainability tables; the benchmark summary for a
-  literature run.
-- **Audit / Help** — the Calculation Verification view (formula registry, per-row residual
-  audit, calculators; see *Calculation verification* below), the PHREEQC raw outputs
-  (processed-CSV previewer + a PHREEQC-**only** model-output figure viewer) under expanders,
-  and the Help / Safety reference (workflow, run types, mapping, residuals, limitations).
+- **Start** — the platform front door: a **three-mode panel** (Simulate / Validate / Learn &
+  Improve), the forward-arc stepper, and the selected run's **validation-module status** (data,
+  mapping, comparison) with the standing "preliminary unless mappings are exact" caveat and the
+  mapping-status / "valid now vs not yet" expanders.
+- **Simulate** — describe a batch reaction / leaching experiment in plain language → AI (or a
+  rule-based fallback) extracts a structured **scenario** → review missing info / assumptions /
+  warnings → confirm → choose a **simulation strategy** (single scenario or a small parameter sweep
+  now; large-batch / adaptive / surrogate-assisted are future) → generate a **plan matrix**.
+  **Planning layer only — no deterministic simulation is run here.** See *Simulation planner*.
+- **Import Data** — run-type-specific entry: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet pick
+  → fuzzy column mapping → unit conversion mg/L·ppm·ppb→mM → leachant/provenance → pre-save validation
+  → confirm-gated save) and a special-case **Class C fly ash dissolution-workbook** parser; plus
+  literature CSV upload, manual rows, row editing, and CSV/pipeline export.
+- **Validate** — measured-data overview, data-quality validation, and the **Calculation Verification**
+  view (formula registry, per-row residual audit, calculators) + the model raw-outputs viewer.
+- **Match** — replicate-aware guided mapping of measured data to model predictions (current model:
+  PHREEQC): a Scenario Explorer (with the sol1/sol2/sol3 = replicate/batch explanation and the
+  OA/PF/GS cup-cover caveat), condition-level mapping with replicate inheritance, a replicate-aware
+  collision check, and the **"conditions needing new simulations"** table.
+- **Compare Results** — run the pipeline, then read the **measured-vs-model comparison** (inclusion
+  counts, residuals, systematic bias, the validity line; default replicate mean ± std), with the
+  "workflow check, not final validation" warning unless mappings are exact, plus the grounded
+  assistant and the experimental surrogate (display-only).
+- **Export** — build a self-contained **results report** (simulation + validation), download the
+  audit trail, and read the in-app user guide.
 
-**Running the workflow.** After entering data into a run, click the
-**"Run selected experiment workflow"** button in the **Run + Results** tab. For a lab
-run it exports the run's CSV (and mapping) to the pipeline and runs Phase 1, validation, the
-measured-vs-PHREEQC comparison, and the sustainability score in order — showing each
-command's output and stopping at the first failure. The individual step buttons remain
-available in the "Advanced individual script controls" expander.
+**Running the validation workflow.** After entering measured data into a lab run, click the
+primary button in the **Compare Results** tab. It exports the run's CSV (and mapping) to the
+pipeline and runs Phase 1, validation, the measured-vs-model comparison, and the sustainability
+score in order — showing each command's output and stopping at the first failure.
 
-The app reuses package functions, changes no chemistry, and trains no model. The legacy
-global entry form appends to
-`data/raw/experimental_icp/experimental_release_manual_entry.csv` (never overwritten — and
-gitignored); per-run entry writes into the selected run's own `experiments/<name>/data/`.
-See the **Audit / Help** tab for limitations.
+The app reuses package functions, changes no chemistry, and trains no model on the result path.
+Per-run entry writes into the selected run's own `experiments/<name>/data/`; the legacy global
+entry form (under an expander) appends to the shared pipeline file (gitignored). See **Export →
+Help & user guide** for limitations.
 
 ## AI configuration (optional, experimental)
 

@@ -602,6 +602,55 @@ experiment — **not** a blind replacement for the chemistry.
   `tests/test_report.py` (recovery surfaces the uncertain flag), and `tests/test_profiles.py` (spec parses
   overrides + cutoff, rejects bad values).
 
+- **Safe AI configuration + client layer** (foundation — opt-in AI made visible/configurable; no
+  result-path change). `flyash_phreeqc_ml/ai/config.py` (new) is the **single AI-config authority**:
+  provider/model/key detection and an `AIConfig` snapshot that holds **no key** (only presence + source),
+  with documented precedence — API key **env (`ANTHROPIC_API_KEY`) wins over `st.secrets`**; model
+  `arg > UI override > ANTHROPIC_MODEL env > secret > DEFAULT_MODEL`. Pure + import-safe (lazy
+  `streamlit`/`anthropic`, never raises; `st.secrets` is read **only under a live Streamlit runtime**, so
+  scripts/tests stay env-only). `ai/client.py` (new) is the **key-safe client wrapper**: builds an
+  Anthropic client only when enabled and returns a structured `ClientResult` (`ok` / stable error code /
+  **key-free** message), never raises, **never exposes the key**. `import_assist.is_enabled` / `_model` /
+  `_resolve_client` now **delegate** to this layer (assistant + literature transitively reuse it). The
+  sidebar gained a **🤖 AI settings** panel (status: enabled/disabled, provider, model, key-detected
+  yes/no + source — never the key, SDK available) with provider/model selectors; **no key entry in the
+  UI** (env/secrets only). **No hard-coded keys; the key is never shown or logged.** AI stays
+  suggestion/interpretation-only and **off the result path** (pinned by `tests/test_ai_boundary.py`).
+  Local + Streamlit-Cloud-secrets setup + precedence in `docs/ai_configuration.md`. Covered by
+  `tests/test_ai_config.py` + `tests/test_ai_client.py`.
+
+- **Natural-language simulation planner (Simulate tab)** (a **planning layer only** — **no PHREEQC
+  execution**, off every result path). New `flyash_phreeqc_ml/simulation/` package: `scenario_schema.py`
+  (dataclasses `MaterialInput`/`LeachantInput`/`ExperimentProcess`/`TargetOutputs`/`MissingInput`/
+  `Assumption`/`SimulationScenario`/`ScenarioParseResult` + flat serialization + the plan-only caveats),
+  `safety.py` (**deterministic** missing-field + scientific-warning analysis — the caveats come from code,
+  **not** the AI), `rule_parser.py` (non-AI regex fallback extractor), `matrix.py`
+  (`build_simulation_matrix(scenario, ranges=…)` — a plan table where every row is `status='plan_only'`;
+  range-expansion ready). `ai/scenario_parser.py` (new) extracts a scenario via the shared key-safe AI
+  client (strict-JSON, validated; invalid output → controlled error) and orchestrates **AI-when-consented,
+  else the rule-based fallback**. The **Simulate** tab is the forward-looking core: describe → AI/rule
+  extract → review missing/assumptions/warnings/confidence → edit/confirm → choose a **simulation
+  strategy** (single scenario + small parameter sweep are real via the matrix `ranges`; large-batch /
+  adaptive / surrogate-assisted are shown **disabled/future**) → generate a **plan matrix** (download-only
+  CSV). **It never runs PHREEQC, never overwrites measured data, never becomes verified data, and never
+  affects mapping/residuals/validation/comparison** (pinned by `tests/test_ai_boundary.py`). Docs in
+  `docs/simulation_planner.md`. Covered by `tests/test_scenario_parser.py` + `tests/test_simulation_matrix.py`.
+
+- **App identity renovation — AI-assisted simulation & validation platform** (UI/docs presentation only;
+  **no scientific/logic change**). Repositioned the app from a "Class C fly ash + PHREEQC mapping/validation
+  app" into a general **AI-assisted geochemical / material-leaching simulation & validation platform** with
+  **Simulate as the forward-looking core**. New platform title/hero; a Start-tab **three-mode product
+  panel** (Mode 1 Simulate / Mode 2 Validate / Mode 3 Learn & Improve) + a describe→simulate→validate→learn
+  stepper; the measured-vs-model mapping/comparison reframed as the **Validation module** (the current
+  strongest workflow, not the whole app); general material/leachant/model wording at the high level
+  (fly-ash examples / OA-PF-GS cup-cover / mass-balance / PHREEQC database+template specifics kept where
+  genuinely specific); **tabs reordered (Simulate 2nd) + relabeled** → **Start · Simulate · Import Data ·
+  Validate · Match · Compare Results · Export**; README + user-guide docs updated. The only package edits
+  are presentation **string constants** (`PLAN_ONLY_LABEL` / `NON_PREDICTION_NOTE` in `scenario_schema.py`
+  + one warning in `safety.py`) — the machine status value (`STATUS_PLAN_ONLY="plan_only"`) is **unchanged**.
+  Verified by a 4-lens adversarial review (logic-untouched / boundaries / scientific-honesty all pass).
+  `tests/test_app_tabs_smoke.py` updated to the seven-tab order + a renovated-identity assertion.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -739,7 +788,11 @@ python scripts/09_generate_simulations.py --run "<run>"               # generate
 python scripts/10_sample_design.py --run "<run>" --n-samples 200      # LHS design -> surrogate_dataset.csv
 # Both write their inspectable output (plan/design) even when PHREEQC is unconfigured, then stop cleanly.
 
-# Optional AI import-assist (Data tab): export ANTHROPIC_API_KEY=...   (else the feature stays hidden)
+# Optional AI (import-assist, grounded assistant, literature, NL Simulate planner) — off by default,
+#   suggestion-only, never on the result path:
+#   export ANTHROPIC_API_KEY=...        # or a Streamlit secret of the same name
+#   export ANTHROPIC_MODEL=...          # optional model override (e.g. a cheaper model)
+#   The sidebar "🤖 AI settings" panel shows status (enabled, provider, model, key detected — never the key).
 
 # GUI (optional): thin Streamlit wrapper over the scripts above
 streamlit run app.py
@@ -793,6 +846,30 @@ modules together and own all file I/O paths.
   flips to `literature-confirmed` (citation retained, audit-logged) and **refuses** a conditions-mismatched
   value without the second acknowledgement. Reuses `import_assist`'s lazy client (disabled without a key).
   Covered by `tests/test_literature.py`.
+
+- **`ai/config.py` + `ai/client.py` — the AI config/client layer** (foundation; opt-in, off the result
+  path). `config.py` is the **single AI-config authority**: provider/model/key detection; an `AIConfig`
+  snapshot that holds **no key** (only presence + source); precedence env-key (`ANTHROPIC_API_KEY`) >
+  `st.secrets`, and model `arg > UI override > ANTHROPIC_MODEL env > secret > DEFAULT_MODEL`. Pure +
+  import-safe (lazy `streamlit`/`anthropic`; `st.secrets` read only under a live Streamlit runtime).
+  `client.py` builds an Anthropic client only when enabled and returns a structured, **key-free**
+  `ClientResult` (never raises, never exposes the key). `import_assist` / `assistant` / `literature` /
+  `scenario_parser` all resolve their key/model/client through this **one** layer; surfaced by the sidebar
+  **🤖 AI settings** panel (no key entry in the UI — env/secrets only). Covered by `tests/test_ai_config.py`
+  + `tests/test_ai_client.py`; the AI-off-the-result-path boundary by `tests/test_ai_boundary.py`. Docs:
+  `docs/ai_configuration.md`.
+
+- **`simulation/` (NL simulation planner) + `ai/scenario_parser.py`** — a **planning layer only** (no
+  PHREEQC execution; off every result path). `scenario_schema.py` (scenario dataclasses + flat
+  serialization + the plan-only caveat constants `PLAN_ONLY_LABEL`/`NON_PREDICTION_NOTE`; the machine
+  status value is `matrix.STATUS_PLAN_ONLY="plan_only"`, decoupled from the label), `safety.py`
+  (**deterministic** missing-field + scientific-warning analysis — caveats from code, not the AI),
+  `rule_parser.py` (non-AI regex extractor), `matrix.py` (`build_simulation_matrix(scenario, ranges=…)` →
+  a `status='plan_only'` plan table; range-ready). `ai/scenario_parser.py` extracts a scenario via the
+  key-safe AI client (strict-JSON, validated; invalid → controlled error) and **falls back to
+  `rule_parser`** when AI is off. Drives the **Simulate** tab. **Never runs PHREEQC, never overwrites data,
+  never becomes verified data** — boundary pinned by `tests/test_ai_boundary.py`. Covered by
+  `tests/test_scenario_parser.py` + `tests/test_simulation_matrix.py`. Docs: `docs/simulation_planner.md`.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
   layers (provenance, inclusion, traces, bias, **element recovery**, conversions, audit) into a
@@ -1081,14 +1158,19 @@ modules together and own all file I/O paths.
   representative sample + top-N scored candidates, each with `score_breakdown`, for the row-detail
   view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts, organized as a
-  wide-layout **guided six-tab workflow** — **Start, Import, Validate, Match, Compare, Export**
-  (Prompt 20) — driven by a run-management **sidebar** (run selector + create-run expander; current run
-  name/type/folder/source; a run-type warning; a "go to **Compare** tab" reminder; and a **Developer
-  explanation mode** toggle). Every tab carries a one-line header + a **➡️ Next step** hint and a
-  specific empty state. The numbered list below describes the underlying render functions (mostly
-  unchanged); see the **Prompt-20 bullet** above for exactly what moved where. Original
-  ingest → verify → map → run → interpret order, now Import → Validate → Match → Compare → Export:
+- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts. After the **identity
+  renovation** it is presented as an *AI-assisted geochemical simulation & validation platform*: a
+  wide-layout **guided seven-tab workflow** — **Start · Simulate · Import Data · Validate · Match ·
+  Compare Results · Export** — driven by a run-management **sidebar** (run selector + create-run expander;
+  current run name/type/folder/source; a run-type warning; a **🤖 AI settings** panel; a "use **Simulate**
+  to plan / **Compare Results** to validate" reminder; and a **Developer explanation mode** toggle). The
+  Start tab opens with a **three-mode product panel** (Simulate / Validate / Learn & Improve); **Simulate**
+  is the forward-looking planning core (NL → scenario → plan matrix, **planning-only**, no PHREEQC run);
+  the measured-vs-model mapping + comparison is the **Validation module** (the current strongest workflow).
+  Every tab carries a one-line header + a **➡️ Next step** hint and a specific empty state. **The numbered
+  list below predates the Simulate addition + the identity renovation (and the Prompt-20 reorg) — it
+  documents the underlying render functions, not the current tab names/order; see the completed-phase
+  bullets above (AI config layer / NL simulation planner / identity renovation) for the current layout:**
   1. **Start** (`_render_overview`) — project status cards + selected-run summary (run type, data
      rows, mapped samples, unique PHREEQC rows used), a one-line **data-quality status**, what's
      missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run

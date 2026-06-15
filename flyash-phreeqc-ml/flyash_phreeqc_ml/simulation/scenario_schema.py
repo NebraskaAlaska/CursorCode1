@@ -47,15 +47,18 @@ SEVERITY_INFO = "info"
 # --------------------------------------------------------------------------- #
 # Standing caveats / labels (the honesty wording — single source)
 # --------------------------------------------------------------------------- #
-PLAN_ONLY_LABEL = "Simulation plan only — no PHREEQC result has been generated yet."
+PLAN_ONLY_LABEL = ("Simulation plan only — no deterministic simulation has been run yet "
+                   "(no model output generated).")
 PRECIPITATION_CAVEAT = (
     "Precipitation or retention cannot be proven from liquid data alone. It requires "
     "PHREEQC phase predictions, solid residue data, or mass-balance assumptions."
 )
 NON_PREDICTION_NOTE = (
     "This is a simulation plan extracted from your description — not a scientific "
-    "prediction. No PHREEQC result has been generated, and nothing here changes measured "
-    "data, mappings, residuals, or validation status."
+    "prediction. No deterministic simulation has been run, and nothing here changes any "
+    "saved data, model predictions, or downstream comparison/validation results. (For the "
+    "fly-ash + PHREEQC workflow, those downstream artifacts are the measured data, "
+    "mappings, residuals, and validation status.)"
 )
 
 
