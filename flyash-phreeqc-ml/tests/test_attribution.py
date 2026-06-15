@@ -184,3 +184,78 @@ def test_build_attribution_inputs_has_extras_and_one_input_for_oa():
     text = inputs[0].pqi_text
     assert "SELECTED_OUTPUT" in text and "USER_PUNCH" in text
     assert "Calcite" in text and "dissolved batch material" in text
+
+
+# --------------------------------------------------------------------------- #
+# Per-element filtration convention (Prompt 28) — retained / passes / uncertain
+# --------------------------------------------------------------------------- #
+M_SI = units.MOLAR_MASSES["Si"]
+M_AL = units.MOLAR_MASSES["Al"]
+# Si/Al gap (mmol): 50 mg starting / M − 0.25 (liquid) − 4 mg solid / M.
+GAP_SI = (50.0 / M_SI) - 0.25 - (4.0 / M_SI)
+GAP_AL = (50.0 / M_AL) - 0.25 - (4.0 / M_AL)
+
+# A profile with the corrected default (retained=True) + a per-element override mix:
+# Si passes the filter (False), Al is uncertain.
+PROF_MIX = profiles.DatasetProfile(
+    name="batch (per-element filtration)", grouping="fly_ash",
+    mass_balance_elements=("Ca", "Si", "Al"), starting_content_unit="wt%",
+    solid_residue_unit="wt%", mass_balance_candidate_phases=CANDIDATE,
+    precipitate_in_measured_solid=True,
+    precipitate_in_measured_solid_overrides={"Si": False, "Al": profiles.PRECIP_UNCERTAIN})
+
+
+def _selected_multi(ca=5e-4, si=5e-4, al=5e-4):
+    """Selected output precipitating Calcite (Ca), SiO2(am) (Si), Gibbsite (Al), in MOL."""
+    return {pr.phase_moles_column("Calcite"): ca,
+            pr.phase_moles_column("SiO2(am)"): si,
+            pr.phase_moles_column("Gibbsite"): al}
+
+
+def test_retained_precipitate_contributes_zero_to_gap_closure():
+    """ACCEPTANCE: under retained (True), a predicted precipitate explains 0 of the gap."""
+    res = attr.attribute_gap(_row(), "Ca", _selected(calcite_mol=5e-4), profile=PROF_TRUE)
+    assert res["filtration_status"] == attr.FILTRATION_RETAINED
+    assert res["modeled_precipitated_moles"] == pytest.approx(0.5)   # still reported
+    assert res["gap_explained"] == pytest.approx(0.0)                # but 0 toward the gap
+    assert res["gap_unexplained"] == pytest.approx(GAP_CA)
+    assert res["filtration_uncertain"] is False
+
+
+def test_per_element_override_produces_the_right_mix():
+    sel = _selected_multi(ca=5e-4, si=5e-4, al=5e-4)
+    ca = attr.attribute_gap(_row(), "Ca", sel, profile=PROF_MIX)   # default True → retained
+    si = attr.attribute_gap(_row(), "Si", sel, profile=PROF_MIX)   # override False → passes
+    al = attr.attribute_gap(_row(), "Al", sel, profile=PROF_MIX)   # override uncertain
+
+    assert ca["filtration_status"] == attr.FILTRATION_RETAINED
+    assert ca["gap_explained"] == pytest.approx(0.0)
+
+    assert si["filtration_status"] == attr.FILTRATION_PASSES
+    assert si["gap_explained"] == pytest.approx(0.5)               # 0.5 mmol SiO2 credited
+    assert si["status"] == attr.STATUS_PARTIAL
+
+    assert al["filtration_status"] == attr.FILTRATION_UNCERTAIN
+    assert al["gap_explained"] == pytest.approx(0.0)               # conservatively 0
+    assert al["filtration_uncertain"] is True
+
+
+def test_uncertain_element_is_credited_zero_but_flagged_with_alternative():
+    al = attr.attribute_gap(_row(), "Al", _selected_multi(al=5e-4), profile=PROF_MIX)
+    assert al["gap_explained"] == pytest.approx(0.0)               # not credited to the gap
+    assert al["gap_explained_if_passes"] == pytest.approx(0.5)     # what it COULD explain
+    assert al["gap_unexplained"] == pytest.approx(GAP_AL)
+    assert al["status"] == attr.STATUS_UNEXPLAINED
+    assert "uncertain" in al["note"].lower()
+    # The honest caption surfaces the uncertainty + the alternative.
+    cap = attr.attribution_caption(al)
+    assert "uncertain" in cap.lower() and "ultrafiltrate" in cap.lower()
+
+
+def test_flyash_profile_defaults_true_with_colloid_formers_uncertain():
+    fa = profiles.FLY_ASH_PROFILE
+    assert profiles.precipitate_in_measured_solid(fa) is True
+    assert profiles.precipitate_in_measured_solid_for(fa, "Ca") is True
+    for el in ("Si", "Al", "Fe"):
+        assert profiles.precipitate_in_measured_solid_for(fa, el) == profiles.PRECIP_UNCERTAIN
+    assert profiles.filter_cutoff_um(fa) == 0.45     # recorded; Si/Al/Fe stay uncertain

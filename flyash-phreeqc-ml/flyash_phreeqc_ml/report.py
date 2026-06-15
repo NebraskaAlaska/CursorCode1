@@ -77,6 +77,7 @@ RECOVERY_TERM_CLASSIFICATION = {
     "gap_explained_mmol": CLASS_MODELED,
     "gap_unexplained_mmol": CLASS_DERIVED,
     "unexplained_fraction": CLASS_DERIVED,
+    "filtration_status": CLASS_MODELED,   # protocol assumption that gates gap-crediting
 }
 
 # An element balance is only "explained" when closed or model-explained within
@@ -88,7 +89,7 @@ RECOVERY_CSV_COLUMNS = [
     "condition_key", "element", "n_in_mmol", "starting_provenance", "starting_citation",
     "n_liquid_mmol", "n_solid_mmol", "gap_mmol", "gap_sigma_mmol",
     "modeled_precipitated_mmol", "by_phase", "gap_explained_mmol", "gap_unexplained_mmol",
-    "unexplained_fraction", "recovery_status", "closure_status",
+    "unexplained_fraction", "recovery_status", "filtration_status", "closure_status",
 ]
 # Summary table ("where knowledge is weakest"), sortable by unexplained fraction.
 RECOVERY_SUMMARY_COLUMNS = [
@@ -348,6 +349,16 @@ def _recovery_narrative(rec: dict) -> str:
     base = (f"Of {n_in:.3g} mmol {el} initially present ({start}), "
             f"{_pct(rec['n_liquid'], n_in)} in liquid, {_pct(rec['n_solid'], n_in)} in solid; "
             f"{gap:.3g} mmol unaccounted")
+    # Filtration uncertain for this element → the gap attribution rests on an unverified
+    # assumption; state it (conservatively credited 0, with the "if it passes" alternative).
+    if rec.get("filtration_uncertain"):
+        phases = ", ".join(sorted(rec["by_phase"])) or "a candidate phase"
+        could = rec.get("gap_explained_if_passes") or 0.0
+        return (base + f"; filtration for {el} is UNCERTAIN (it may form a colloid that "
+                f"passes the filter). Conservatively treated as retained in the measured "
+                f"solid, so the model credits 0 and all {rec['gap_unexplained']:.3g} mmol "
+                f"remain unexplained — but if it passes, the model could attribute up to "
+                f"{could:.3g} mmol to {phases}. Confirm by filtrate vs ultrafiltrate.")
     if rec["attribution_available"] and rec["by_phase"]:
         phases = ", ".join(sorted(rec["by_phase"]))
         return (base + f", of which the model attributes {rec['gap_explained']:.3g} mmol to "
@@ -371,8 +382,11 @@ def _recovery_record(ck, el, closure, attr, starting_prov, citation) -> dict:
         "modeled_precipitated": attr.get("modeled_precipitated_moles"),
         "by_phase": dict(attr.get("by_phase") or {}),
         "gap_explained": attr.get("gap_explained"), "gap_unexplained": gap_unexpl,
+        "gap_explained_if_passes": attr.get("gap_explained_if_passes"),
         "unexplained_fraction": unexpl_frac,
         "recovery_status": attr["status"], "closure_status": closure["status"],
+        "filtration_status": attr.get("filtration_status"),
+        "filtration_uncertain": bool(attr.get("filtration_uncertain")),
         "attribution_available": attr.get("provenance") == attribution.PROVENANCE_MODEL,
         "missing_fields": closure["missing_fields"],
     }
@@ -448,7 +462,9 @@ def _recovery_table(records: list[dict]) -> pd.DataFrame:
             "gap_explained_mmol": r["gap_explained"],
             "gap_unexplained_mmol": r["gap_unexplained"],
             "unexplained_fraction": r["unexplained_fraction"],
-            "recovery_status": r["recovery_status"], "closure_status": r["closure_status"],
+            "recovery_status": r["recovery_status"],
+            "filtration_status": r.get("filtration_status"),
+            "closure_status": r["closure_status"],
         })
     return pd.DataFrame(rows, columns=RECOVERY_CSV_COLUMNS)
 
@@ -691,10 +707,14 @@ def _build_html(ctx: dict) -> str:
             if r["starting_provenance"] == CLASS_LITERATURE and r["starting_citation"]:
                 cite = (f" · <a href='{_esc(r['starting_citation'])}'>"
                         f"{_esc(r['starting_citation'])}</a>")
+            # A loud, explicit flag when this element's filtration retention is unverified.
+            filt_tag = ""
+            if r.get("filtration_uncertain"):
+                filt_tag = "<span class='tag tag-miss'>⚠ filtration uncertain</span>"
             s.append(f"<div class='trace'><b>{_esc(r['condition_key'])} · "
                      f"{_esc(r['element'])}</b> <span class='tag {cls}'>{_esc(st)}</span>"
                      f"<span class='tag tag-{'ok' if r['starting_provenance']==CLASS_MEASURED else 'miss'}'>"
-                     f"{_esc(r['starting_provenance'])}</span>{cite}<br>"
+                     f"{_esc(r['starting_provenance'])}</span>{filt_tag}{cite}<br>"
                      f"{_esc(r['narrative'])}</div>")
         s.append("<h3>Recovery summary (sorted by unexplained fraction — weakest knowledge "
                  "first)</h3>")

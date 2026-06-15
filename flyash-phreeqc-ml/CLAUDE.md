@@ -476,10 +476,11 @@ experiment — **not** a blind replacement for the chemistry.
   OA→1 / PF-GS→2 behaviour is kept via `attribution.build_attribution_inputs`. `attribute_gap(row,
   element, phreeqc_selected_output)` → `{modeled_precipitated_moles, by_phase, modeled_solution_moles,
   gap, gap_explained, gap_unexplained, fraction_explained, status, provenance="phreeqc", measured{…}}`.
-  **The `precipitate_in_measured_solid` flag (CONFIRMED `False` for the fly-ash filtration protocol —
-  precipitate leaves with the filtrate, not in the assayed solid)** sets the arithmetic:
-  `False → attribution_to_gap = min(P, gap)` (precipitate explains the gap); `True → 0` (precipitate is
-  already in `n_solid`, explains the solid's composition not the gap). Profile-configurable
+  **The `precipitate_in_measured_solid` flag** sets the arithmetic per element (see the Prompt-28
+  *filtration correction* below): `True → attribution_to_gap = 0` (precipitate retained in `n_solid`,
+  explains the solid's composition not the gap); `False → min(P, gap)` (precipitate passes with the
+  filtrate, explains the gap). **The fly-ash default is now `True`** (precipitates retained on the
+  0.45 µm filter) — corrected from the original `False`. Profile-configurable
   (`DatasetProfile.precipitate_in_measured_solid` + `mass_balance_candidate_phases` = phase→element);
   documented in `docs/mass_balance.md`. **Status** (parallels mapping status): `closed` /
   `model-explained` / `partially-explained` / `unexplained`, folded into the report's overall validity
@@ -577,6 +578,29 @@ experiment — **not** a blind replacement for the chemistry.
   → closure (hand-computed Ti moles) → mocked attribution (anatase, material's precipitate flag) →
   recovery section, asserting **zero fly-ash leak** (only Ti/V/Fe/Al rows). Covered also by
   `tests/test_profiles.py` (resolvers, factory, JSON spec round-trip from disk, quarantine).
+
+- **Filtration-convention correction — per-element retained/passes/uncertain** (Prompt 28b — science
+  correction; *inverts the attribution arithmetic*). The physical fly-ash protocol **retains** secondary
+  precipitates on the 0.45 µm filter, so they are part of the measured solid residue — the
+  `precipitate_in_measured_solid` default was flipped **`False → True`** (a retained precipitate explains
+  the **solid's composition, not the gap** → `attribution_to_gap = 0`; the old `False` *over-credited*
+  precipitates with closing the gap, so the unexplained residual is now generally **larger** — the correct
+  result for this protocol, not a regression). Retention is **not uniform across elements**: Si/Al
+  (colloidal silica / aluminosilicate gels) and Fe (nanocolloids) can pass a 0.45 µm filter, so a
+  **per-element override** mechanism was added — `DatasetProfile.precipitate_in_measured_solid_overrides`
+  (`{element -> True|False|"uncertain"}`) + a `filter_cutoff_um` field, resolved by
+  `profiles.precipitate_in_measured_solid_for(profile, element)`. The fly-ash profile ships `True` with
+  **Si/Al/Fe = `"uncertain"`** and `filter_cutoff_um = 0.45` (knowing the cutoff does **not** resolve it —
+  0.45 µm is exactly where these colloids may pass; needs a filtrate-vs-ultrafiltrate check). An
+  `"uncertain"` element is credited **0** (conservative — never over-credits) but **flagged**:
+  `attribute_gap` returns `filtration_status` / `filtration_uncertain` / `gap_explained_if_passes`,
+  surfaced in the caption, the recovery narrative, `element_recovery.csv` (`filtration_status` column), and
+  a `⚠ filtration uncertain` badge in the report HTML. `docs/mass_balance.md` no longer asserts
+  "CONFIRMED" — it states the True default *per the experimenter's procedure* and leaves a blank
+  `confirmed by: __ (date __)` line + the ultrafiltrate caveat. Covered by `tests/test_attribution.py`
+  (retained→0, per-element mix, uncertain→0+flag+alternative, fly-ash uncertain defaults),
+  `tests/test_report.py` (recovery surfaces the uncertain flag), and `tests/test_profiles.py` (spec parses
+  overrides + cutoff, rejects bad values).
 
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with

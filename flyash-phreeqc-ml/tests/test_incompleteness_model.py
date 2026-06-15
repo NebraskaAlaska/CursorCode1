@@ -193,10 +193,14 @@ def test_overlay_is_labeled_ml_predicted():
 # --------------------------------------------------------------------------- #
 # build_recovery_dataset: the target is the *measured* gap minus *modeled* attribution
 # --------------------------------------------------------------------------- #
+# precipitate_in_measured_solid=False here so attribution CREDITS the precipitate to the
+# gap — this test exercises the "passes" branch (unexplained = gap − attributed). The
+# retained (default True → 0 gap-closure) branch is covered by matrix test_g (red mud).
 BATCH_PROFILE = profiles.DatasetProfile(
     name="batch", grouping="fly_ash", mass_balance_elements=("Ca",),
     starting_content_unit="wt%", solid_residue_unit="wt%",
     mass_balance_candidate_phases={"Calcite": "Ca"},
+    precipitate_in_measured_solid=False,
     feature_numeric_fields=("NaOH_M", "liquid_solid_ratio", "time_min"),
     feature_categorical_fields=("leachant_family", "condition_code"))
 

@@ -6,20 +6,25 @@ predicts precipitated* and computes **how much of the measured gap that accounts
 without ever overwriting the measured numbers. The measured closure is **immutable
 input** here; everything PHREEQC says lands in clearly-separated ``modeled_*`` fields.
 
-Filtration convention (CONFIRMED for the fly-ash protocol)
----------------------------------------------------------
+Filtration convention (per element; Prompt 28)
+----------------------------------------------
 Whether a PHREEQC-predicted precipitate reduces the gap depends on whether that
-precipitate is in the **measured solid residue** (``n_solid``):
+precipitate is in the **measured solid residue** (``n_solid``). For the fly-ash protocol
+secondary precipitates are **retained on the filter**, so the default is *retained*:
 
-* ``precipitate_in_measured_solid = False`` (the fly-ash default): the precipitate
-  leaves with the filtrate and is **not** in ``n_solid``, so it counts toward
-  explaining the gap — ``attribution_to_gap = min(P, gap)``.
-* ``precipitate_in_measured_solid = True``: the precipitate is retained in the assayed
-  solid (already in ``n_solid``), so it explains the solid's *composition*, **not** the
-  gap — ``attribution_to_gap = 0``.
+* **retained** (``True``): the precipitate is in the assayed solid (already in
+  ``n_solid``), so it explains the solid's *composition*, **not** the gap —
+  ``attribution_to_gap = 0``.
+* **passes** (``False``): the precipitate leaves with the filtrate and is **not** in
+  ``n_solid``, so it counts toward explaining the gap — ``attribution_to_gap = min(P, gap)``.
+* **uncertain**: retention is **not verified** (e.g. a colloid that may pass the filter —
+  for fly ash, Si/Al/Fe). The number is computed *conservatively* as retained (credited
+  ``0``), but the result is **flagged** (``filtration_uncertain``) and carries the
+  alternative ``gap_explained_if_passes`` so a reviewer sees the unverified assumption.
 
-The flag is profile-configurable (``DatasetProfile.precipitate_in_measured_solid``); the
-chosen convention is documented in ``docs/mass_balance.md``.
+The state is **per element** (``profiles.precipitate_in_measured_solid_for(profile, el)``):
+a profile-level ``precipitate_in_measured_solid`` default plus a
+``precipitate_in_measured_solid_overrides`` dict. Documented in ``docs/mass_balance.md``.
 
 Honesty
 -------
@@ -55,6 +60,24 @@ ATTRIBUTION_STATUSES = (STATUS_CLOSED, STATUS_MODEL_EXPLAINED, STATUS_PARTIAL,
 CLOSED_FRACTION_TOL = 0.05
 EXPLAINED_TOL = 0.95   # ≥ this fraction explained → model-explained
 UNEXPLAINED_TOL = 0.05  # ≤ this fraction explained → unexplained
+
+# Per-element filtration state in an attribution result (from profiles.PRECIP_*).
+FILTRATION_RETAINED = "retained"   # precipitate in the measured solid → explains the solid
+FILTRATION_PASSES = "passes"       # precipitate in the filtrate → explains the gap
+FILTRATION_UNCERTAIN = "uncertain"  # retention unverified (colloid may pass the filter)
+
+# Shown (and stored in the result) whenever an element's filtration is uncertain.
+_UNCERTAIN_NOTE = (
+    "Filtration uncertain for {el}: retention on the filter is not verified (it may form a "
+    "colloid/complex that passes), so its gap attribution rests on an unverified assumption.")
+
+
+def _filtration_status(filt) -> str:
+    if filt is True:
+        return FILTRATION_RETAINED
+    if filt is False:
+        return FILTRATION_PASSES
+    return FILTRATION_UNCERTAIN
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +158,12 @@ def attribute_gap(row: dict, element: str, phreeqc_selected_output, *, profile=N
     gap = closure["gap"]
     gap_sigma = closure["gap_sigma"]
     gap_fraction = closure["gap_fraction"]
-    precip_in_solid = profiles.precipitate_in_measured_solid(profile)
+    # Per-element filtration state: retained (True) / passes (False) / uncertain.
+    filt = profiles.precipitate_in_measured_solid_for(profile, element)
+    uncertain = (filt == profiles.PRECIP_UNCERTAIN)
+    # Conservative: an *uncertain* element is treated as retained for the NUMBER (it does
+    # not get to close the gap), but it is flagged so a reviewer sees the assumption.
+    precip_in_solid = (filt is True) or uncertain
 
     so = _selected_output_row(phreeqc_selected_output)
     by_phase: dict[str, float] = {}
@@ -149,7 +177,10 @@ def attribute_gap(row: dict, element: str, phreeqc_selected_output, *, profile=N
 
     base = {
         "element": element, "provenance": PROVENANCE_MODEL,
-        "precipitate_in_measured_solid": precip_in_solid,
+        "precipitate_in_measured_solid": precip_in_solid,     # effective (uncertain→True)
+        "filtration_status": _filtration_status(filt),        # retained / passes / uncertain
+        "filtration_uncertain": uncertain,
+        "filter_cutoff_um": profiles.filter_cutoff_um(profile),
         "measured": measured,
         "gap": gap, "gap_fraction": gap_fraction,              # measured, copied read-only
         "modeled_precipitated_moles": modeled_precip, "by_phase": by_phase,
@@ -158,18 +189,29 @@ def attribute_gap(row: dict, element: str, phreeqc_selected_output, *, profile=N
 
     if gap is None:   # closure incomplete → nothing to attribute
         base.update(gap_explained=None, gap_unexplained=None, fraction_explained=None,
-                    status=STATUS_UNEXPLAINED)
+                    gap_explained_if_passes=None, status=STATUS_UNEXPLAINED)
+        if uncertain:
+            base["note"] = _UNCERTAIN_NOTE.format(el=element)
         return base
 
+    # What a NON-retained precipitate could explain (the "passes" interpretation). For an
+    # uncertain element this is the alternative the conservative number does NOT credit.
+    explained_if_passes = min(modeled_precip, max(gap, 0.0))
     # The precipitate reduces the gap only when it is NOT in the measured solid.
-    attribution_to_gap = 0.0 if precip_in_solid else min(modeled_precip, max(gap, 0.0))
+    attribution_to_gap = 0.0 if precip_in_solid else explained_if_passes
     gap_explained = attribution_to_gap
     gap_unexplained = gap - gap_explained
     fraction_explained = (gap_explained / gap) if gap > 0 else None
     base.update(
         gap_explained=gap_explained, gap_unexplained=gap_unexplained,
         fraction_explained=fraction_explained,
+        gap_explained_if_passes=explained_if_passes,
         status=_status(gap, gap_sigma, gap_fraction, fraction_explained))
+    if uncertain:
+        base["note"] = _UNCERTAIN_NOTE.format(el=element) + (
+            f" Conservatively credited 0 mmol; if the {element} colloid passes the filter "
+            f"the model could explain up to {explained_if_passes:.3g} mmol of the "
+            f"{gap:.3g} mmol gap.")
     return base
 
 
@@ -190,13 +232,19 @@ def attribution_unavailable(row: dict, element: str, *, profile=None) -> dict:
         status = STATUS_CLOSED
     else:
         status = STATUS_UNEXPLAINED
+    filt = profiles.precipitate_in_measured_solid_for(profile, element)
+    uncertain = (filt == profiles.PRECIP_UNCERTAIN)
     return {
         "element": element, "provenance": PROVENANCE_MEASURED,
-        "precipitate_in_measured_solid": profiles.precipitate_in_measured_solid(profile),
+        "precipitate_in_measured_solid": (filt is True) or uncertain,
+        "filtration_status": _filtration_status(filt),
+        "filtration_uncertain": uncertain,
+        "filter_cutoff_um": profiles.filter_cutoff_um(profile),
         "measured": measured, "gap": gap, "gap_fraction": gap_fraction,
         "modeled_precipitated_moles": None, "by_phase": {},
         "modeled_solution_moles": None,
         "gap_explained": None, "gap_unexplained": gap, "fraction_explained": None,
+        "gap_explained_if_passes": None,
         "status": status,
         "note": "attribution unavailable — configure PHREEQC (set PHREEQC_EXE + PHREEQC_DATABASE).",
     }
@@ -214,6 +262,14 @@ def attribution_caption(result: dict) -> str:
         return f"{el}: closure incomplete — no gap to attribute."
     phases = ", ".join(sorted(result["by_phase"])) or "no candidate phase"
     explained = result["gap_explained"] or 0.0
+    if result.get("filtration_uncertain"):
+        could = result.get("gap_explained_if_passes") or 0.0
+        return (f"{el}: filtration uncertain — the model predicts "
+                f"{result['modeled_precipitated_moles']:.3g} mmol precipitated ({phases}); "
+                f"treated as retained in the measured solid (credited 0), so "
+                f"{result['gap_unexplained']:.3g} mmol of the gap remain unexplained. If the "
+                f"{el} colloid passes the filter it could explain up to {could:.3g} mmol — "
+                "confirm by filtrate vs ultrafiltrate.")
     if result["precipitate_in_measured_solid"]:
         return (f"{el}: the model predicts {result['modeled_precipitated_moles']:.3g} mmol "
                 f"precipitated ({phases}), but that is already in the measured solid — "
