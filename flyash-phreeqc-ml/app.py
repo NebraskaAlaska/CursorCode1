@@ -76,6 +76,7 @@ from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sou
 from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: E402  (NL simulation planner)
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
+from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -337,6 +338,69 @@ def _simulate_edit_form(flat: dict) -> dict:
     return edited
 
 
+_PREVIEW_STATUS_LEVEL = {
+    phreeqc_input_builder.STATUS_READY: "exact",
+    phreeqc_input_builder.STATUS_TEMPLATE_WARNING: "scenario-level",
+    phreeqc_input_builder.STATUS_NEEDS_COMPOSITION: "preliminary",
+    phreeqc_input_builder.STATUS_DRAFT: "preliminary",
+    phreeqc_input_builder.STATUS_MISSING_FIELD: "unsafe",
+    phreeqc_input_builder.STATUS_UNSUPPORTED_LEACHANT: "unsafe",
+}
+
+
+def _render_phreeqc_input_preview(scenario, matrix) -> None:
+    """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
+
+    No PHREEQC is run, no file is written to a run folder, and AI does not write the input
+    (the LLM only extracted the scenario; this `.pqi` text is templated by deterministic code
+    in `simulation/phreeqc_input_builder.py`).
+    """
+    st.markdown("#### Step 7 — PHREEQC input preview (draft)")
+    st.caption(
+        f"**{phreeqc_input_builder.PREVIEW_HEADER_LABEL}** Deterministic, rule-based `.pqi` "
+        "text — AI does not write PHREEQC input. Nothing is run and no file is written to a "
+        "run folder; the preview is in-memory and downloadable only.")
+    if scenario is None:
+        st.info("Re-generate the plan (Step 6) to enable the input preview.")
+        return
+    if st.button("Generate PHREEQC input preview", key="sim_pqi_btn"):
+        with st.spinner("Templating PHREEQC input…"):
+            st.session_state["sim_previews"] = phreeqc_input_builder.build_previews_for_matrix(
+                scenario, matrix)
+    previews = st.session_state.get("sim_previews")
+    if not previews:
+        st.info("Click **Generate PHREEQC input preview** to template a draft `.pqi` per scenario.")
+        return
+
+    ids = [p.scenario_id for p in previews]
+    chosen_id = st.selectbox("Scenario", ids, key="sim_pqi_choice") if len(ids) > 1 else ids[0]
+    pv = next(p for p in previews if p.scenario_id == chosen_id)
+
+    st.markdown(
+        f"**{pv.scenario_id}** · template `{pv.template_type}` · "
+        + app_ui.status_badge(pv.status.replace("_", " "),
+                              _PREVIEW_STATUS_LEVEL.get(pv.status, "neutral")),
+        unsafe_allow_html=True)
+    st.warning("⚠️ " + phreeqc_input_builder.PREVIEW_HEADER_LABEL)
+    st.code(pv.phreeqc_input_text, language="text")
+    st.download_button(
+        "Download .pqi", pv.phreeqc_input_text,
+        file_name=f"{pv.scenario_id}_preview.pqi", mime="text/plain",
+        key=f"sim_pqi_dl_{pv.scenario_id}")
+    if pv.warnings:
+        st.markdown("**Warnings**")
+        for w in pv.warnings:
+            st.warning(w)
+    if pv.assumptions:
+        st.markdown("**Assumptions**")
+        for a in pv.assumptions:
+            st.markdown(f"- {a}")
+    if pv.unsupported_features:
+        st.markdown("**Unsupported / not yet modeled**")
+        for u in pv.unsupported_features:
+            st.markdown(f"- {u}")
+
+
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     """Plan a simulation scenario from a plain-language description (planning layer only).
 
@@ -482,6 +546,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         sc = sim_schema.SimulationScenario.from_flat_dict(edited)
         sc.liquid_solid_ratio = sc.computed_ls_ratio()
         st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc, ranges=ranges)
+        st.session_state["sim_scenario"] = sc      # confirmed scenario → drives the .pqi preview
+        st.session_state.pop("sim_previews", None)
     if not confirmed:
         st.caption("Confirm the reviewed scenario (Step 5) to enable plan generation.")
 
@@ -502,6 +568,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
                    "separate, deliberate step the planner never runs for you. (In the current "
                    "fly-ash + PHREEQC workflow, model generation lives in the **Match** tab; "
                    "future backends will run from here.)")
+        st.divider()
+        _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:

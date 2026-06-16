@@ -116,6 +116,7 @@ PLANNER_MODULES = [
     "simulation/safety.py",
     "simulation/rule_parser.py",
     "simulation/matrix.py",
+    "simulation/phreeqc_input_builder.py",
     "ai/scenario_parser.py",
 ]
 
@@ -138,7 +139,7 @@ def test_planner_does_not_import_result_path():
 
 def test_result_path_does_not_import_planner():
     """The result path must not import the planner (it is off the scientific path)."""
-    markers = ("scenario_parser", "scenario_schema")
+    markers = ("scenario_parser", "scenario_schema", "phreeqc_input_builder")
     for mod in RESULT_PATH_MODULES:
         targets = _import_targets(mod)
         offenders = _mentions(targets, markers) + [
