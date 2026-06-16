@@ -185,6 +185,41 @@ def _target_elements(scenario: SimulationScenario) -> list[str]:
     return els or list(config.RESIDUAL_ELEMENTS)
 
 
+def _composition_provenance_lines(material_profile) -> list[str]:
+    """Optional PHREEQC comment lines for the composition's *basis / source / status*.
+
+    Read via ``getattr`` so a frozen :class:`profiles.MaterialProfile` (which has none of
+    these attributes) contributes **no lines** — the generated text for fly ash / red mud is
+    byte-for-byte unchanged. A user :class:`materials.MaterialProfile` exposes them, so its
+    basis + source + verification status land in the input comments (requested behaviour).
+    """
+    lines: list[str] = []
+    basis = getattr(material_profile, "composition_basis", None)
+    if basis:
+        label = None
+        try:                                    # human label if the profile offers one
+            label = material_profile.basis_label()
+        except Exception:
+            label = None
+        lines.append(f"#   composition basis:  {label or basis}")
+    vstatus = getattr(material_profile, "verification_status", None)
+    if vstatus:
+        lines.append(f"#   verification:        {vstatus}")
+    src = getattr(material_profile, "source", None)
+    if src is not None:
+        st_type = getattr(src, "source_type", None)
+        ref = getattr(src, "source_reference", None)
+        if st_type:
+            lines.append(f"#   composition source:  {st_type}"
+                         + (f" — {ref}" if ref else ""))
+        cite = getattr(src, "citation", None)
+        if cite:
+            title = getattr(src, "title", None)
+            lines.append(f"#   source citation:     {cite}"
+                         + (f" ({title})" if title else ""))
+    return lines
+
+
 # --------------------------------------------------------------------------- #
 # Leachant SOLUTION blocks (deterministic; assumptions stated)
 # --------------------------------------------------------------------------- #
@@ -369,6 +404,7 @@ def _assemble_text(scenario, scenario_id, kind, temp, composition, material_prof
         name = getattr(material_profile, "display_name", None) or material
         lines.append(f"# From the usable declared assay of '{name}' (review the dissolution "
                      "assumption — this lists the BULK assay, not a computed dissolved amount):")
+        lines += _composition_provenance_lines(material_profile)
         for el, av in composition.items():
             lines.append(f"#   {el} = {_fmt(getattr(av, 'value', av))} "
                          f"{getattr(av, 'unit', '')} ({getattr(av, 'provenance', 'declared')})")

@@ -20,7 +20,11 @@ reviewable **scenario** and a **simulation plan/matrix**. It is a *planning laye
    the warnings, the confidence, and **whether AI or rule-based parsing was used**.
 5. **Edit / confirm** — correct any value, then tick the confirmation box.
 6. **Generate simulation matrix** — a table of intended runs you can download as CSV.
-7. **PHREEQC input preview** — template a reviewable, draft `.pqi` input per scenario
+7. **Material profile (composition)** — provide / review / **confirm** the dissolved-material
+   composition so the input preview can be meaningful (see *Material profiles* below). Composition
+   is **never invented**; without a confirmed profile the preview stays
+   `needs_material_composition`.
+8. **PHREEQC input preview** — template a reviewable, draft `.pqi` input per scenario
    (deterministic code, **not** AI). Still no execution — see *PHREEQC input preview* below.
 
 ## What the planner extracts
@@ -84,9 +88,31 @@ ranges of concentration / time / temperature / L:S):
 leachant_concentration_M, time_min, temperature_C, CO2_condition, target_elements,
 desired_outputs, status` — where `status = plan_only`.
 
+## Material profiles (composition)
+
+**Step 7 — Material profile** is where you supply the material's bulk composition so the input
+preview stops being "structural only". It is a small composition manager (see
+[`material_profiles.md`](material_profiles.md) for the full reference):
+
+- **Provide** composition four ways — *manual entry* (an editable oxide/element table),
+  *paste* a `species value` table, *upload* a `.csv`/`.xlsx`, or *Literature (AI)* (consent-gated,
+  proposes **unverified** values only).
+- Composition can be expressed as **oxide wt %**, **element wt %**, **mg/kg**, or **mol/kg**; the
+  manager converts everything to element wt % (oxides via gravimetric factors, e.g. CaO → Ca ×
+  0.715) and validates it (negatives rejected; oxide totals checked against a plausible range;
+  unrecognized species flagged).
+- A profile is **draft** until you **confirm** it. A literature-sourced profile is
+  `literature_unverified` and requires a second acknowledgement (you reviewed every value *and its
+  citation*) before it can be confirmed.
+- **Only a confirmed profile feeds the preview.** A draft / unverified profile is ignored — the
+  preview stays `needs_material_composition`, because composition is **never invented**.
+
+Profiles live in the **session only** — nothing is written to disk — and they are **off the
+scientific result path** (they never touch mapping, residuals, validation, or the comparison).
+
 ## PHREEQC input preview (draft)
 
-After you confirm the plan, **Step 7 — PHREEQC input preview** templates a reviewable, draft
+After you confirm the plan, **Step 8 — PHREEQC input preview** templates a reviewable, draft
 `.pqi` PHREEQC input for each scenario. **PHREEQC is still not run** — this is input *text* for
 you to review and download, not a result.
 
@@ -120,11 +146,14 @@ labelled draft plus warnings.
 ### Why material composition is required
 
 A meaningful PHREEQC prediction needs the **dissolved material composition**. The planner
-**never invents it**: a material's elemental assay is included only from a profile's *usable*
-declared assay (`measured` / `literature-confirmed`). A `literature-proposed` (quarantined)
-assay is ignored. The project ships **no committed fly-ash assay**, so a fly-ash preview lands at
-`needs_material_composition` with the composition left as a labelled placeholder — honest, not
-silently filled with assumed values.
+**never invents it** — the composition comes only from a *usable* assay: either a frozen profile's
+declared assay (`measured` / `literature-confirmed`) **or** a **Step-7 material profile you
+confirmed** (the composition manager exposes its confirmed assay through the same `usable_assay`
+interface). A draft / `literature_unverified` / `literature-proposed` assay is ignored. The project
+ships **no committed fly-ash assay**, so until you supply and confirm a material profile a fly-ash
+preview lands at `needs_material_composition` with the composition left as a labelled placeholder —
+honest, not silently filled with assumed values. Confirm a profile and the same preview becomes
+`ready_for_review`, with the composition + its **basis and source** written into the input comments.
 
 ### Why review is required before running, and why graphs don't update yet
 
@@ -154,5 +183,9 @@ The preview is **in-memory and downloadable only** (a `<scenario_id>_preview.pqi
 - `flyash_phreeqc_ml/simulation/phreeqc_input_builder.py` — the **deterministic** PHREEQC
   input-preview templater (water / NaOH / HCl drafts; no execution, no AI, never invents
   composition; pinned by `tests/test_phreeqc_input_builder.py`).
+- `flyash_phreeqc_ml/materials/` — the **material composition manager** (Step 7): build / review /
+  confirm a material profile (oxide / element / mg-kg / mol-kg → element wt %), gated so only a
+  *confirmed* profile feeds the preview. Off the result path; writes nothing. See
+  [`material_profiles.md`](material_profiles.md); pinned by `tests/test_material_profile.py`.
 - `flyash_phreeqc_ml/ai/scenario_parser.py` — the AI extractor + AI-or-fallback orchestrator
   (uses the shared, key-safe AI client; see [`ai_configuration.md`](ai_configuration.md)).

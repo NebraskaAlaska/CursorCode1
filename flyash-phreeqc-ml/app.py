@@ -60,6 +60,7 @@ from flyash_phreeqc_ml import config  # noqa: E402
 from flyash_phreeqc_ml import dissolution_workbook  # noqa: E402
 from flyash_phreeqc_ml import import_mapping  # noqa: E402
 from flyash_phreeqc_ml import mapping_table  # noqa: E402
+from flyash_phreeqc_ml import materials  # noqa: E402  (Simulate material-composition manager)
 from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, Prompt 11)
 from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import attribution  # noqa: E402  (PHREEQC gap attribution)
@@ -348,14 +349,330 @@ _PREVIEW_STATUS_LEVEL = {
 }
 
 
-def _render_phreeqc_input_preview(scenario, matrix) -> None:
+# --------------------------------------------------------------------------- #
+# Step 7 — Material profile (composition) manager (session-only; off result path)
+# --------------------------------------------------------------------------- #
+_MP_STATUS_LEVEL = {
+    materials.STATUS_VERIFIED: "exact",
+    materials.STATUS_USER_CONFIRMED: "exact",
+    materials.STATUS_LITERATURE_UNVERIFIED: "scenario-level",
+    materials.STATUS_DRAFT: "preliminary",
+}
+_MP_OXIDE_STARTERS = ["SiO2", "Al2O3", "CaO", "Fe2O3", "MgO", "Na2O", "K2O", "SO3",
+                      "TiO2", "P2O5"]
+_MP_ELEMENT_STARTERS = ["Si", "Al", "Ca", "Fe", "Mg", "Na", "K", "Ti"]
+
+
+def _mp_next_id(store: dict) -> str:
+    n = st.session_state.get("sim_mp_counter", 0) + 1
+    while f"mp{n}" in store:
+        n += 1
+    st.session_state["sim_mp_counter"] = n
+    return f"mp{n}"
+
+
+def _mp_basis_selector(key: str) -> str:
+    return st.selectbox(
+        "Composition basis", list(materials.KNOWN_BASES),
+        format_func=lambda b: materials.BASIS_LABELS.get(b, b), key=key,
+        help="How the numbers are expressed. Oxide wt % is converted to element wt % with "
+             "gravimetric factors; mg/kg and mol/kg are element-based.")
+
+
+def _mp_assay_table(profile) -> None:
+    assays = profile.element_assays()
+    if not assays:
+        return
+    df = pd.DataFrame(
+        [{"element": a.element, "element wt %": round(a.value, 4), "from": a.source_species}
+         for a in assays.values()])
+    st.dataframe(df, hide_index=True, use_container_width=True, height=min(260, 60 + 28 * len(df)))
+
+
+def _render_material_profile_section(scenario):
+    """Step 7 — provide / review / confirm a material composition for the input preview.
+
+    Returns the selected ``materials.MaterialProfile`` (or ``None``). Everything here is
+    **session-only** (nothing written to disk), **off the scientific result path**, and a
+    composition is **never invented** — only a profile the user *confirms* can feed the
+    preview; otherwise it stays ``needs_material_composition``.
+    """
+    st.markdown("#### Step 7 — Material profile (composition)")
+    st.caption(
+        "A meaningful model prediction needs the **dissolved material composition**. Provide it "
+        "here (oxide wt %, element wt %, mg/kg, or mol/kg). Composition is **never invented** — "
+        "only a profile **you confirm** can feed the input preview. Profiles live in this "
+        "session only, are **not** saved to disk, and do **not** affect any validation or "
+        "comparison result.")
+
+    store = st.session_state.setdefault("sim_material_profiles", {})
+
+    with st.expander("➕ Create or import a material profile", expanded=not store):
+        _material_profile_create(scenario, store)
+
+    if not store:
+        st.info("No material profile yet. Without a **confirmed** profile the input preview "
+                "stays `needs_material_composition` — honest, because composition is never "
+                "invented.")
+        return None
+
+    ids = list(store)
+    labels = {pid: f"{store[pid].material_name}  ·  {store[pid].verification_status}"
+              for pid in ids}
+    options = ["(none — keep needs_material_composition)"] + ids
+    choice = st.selectbox(
+        "Material profile to use for this simulation", options,
+        format_func=lambda o: o if o.startswith("(none") else labels.get(o, o),
+        key="sim_mp_select")
+    if choice.startswith("(none"):
+        return None
+    profile = store[choice]
+    _material_profile_review(profile, store)
+    return profile
+
+
+def _material_profile_review(profile, store: dict) -> None:
+    """Summary card + validation + resolved elements + confirm/delete controls (in place)."""
+    res = materials.validate_profile(profile)
+    st.markdown(
+        f"**{profile.material_name}**  ·  basis `{profile.basis_label()}`  ·  "
+        + app_ui.status_badge(
+            materials.STATUS_LABELS.get(profile.verification_status, profile.verification_status),
+            _MP_STATUS_LEVEL.get(profile.verification_status, "neutral")),
+        unsafe_allow_html=True)
+
+    if res.usable_for_preview:
+        st.success("✓ Sufficient for the input preview — confirmed and it validates.")
+    elif profile.is_usable and not res.ok:
+        st.error("Confirmed, but the composition has errors — fix them before use.")
+    elif res.requires_confirmation:
+        st.warning("Literature-sourced and **unverified** — review values + citations, then "
+                   "confirm to use.")
+    else:
+        st.warning("Draft — review the composition, then confirm to use it for the preview.")
+
+    _mp_assay_table(profile)
+    for e in res.errors:
+        st.error(e)
+    for w in res.warnings:
+        st.warning(w)
+    if res.infos:
+        with st.expander("Validation notes"):
+            for i in res.infos:
+                st.caption("• " + i)
+    if profile.source.citation:
+        st.caption(f"Source: {profile.source.display()}")
+
+    _material_profile_confirm_controls(profile, res)
+    if st.button("Delete this profile", key=f"sim_mp_del_{profile.profile_id}"):
+        store.pop(profile.profile_id, None)
+        st.session_state.pop("sim_previews", None)
+        st.session_state["sim_mp_select"] = "(none — keep needs_material_composition)"
+        st.rerun()
+
+
+def _material_profile_confirm_controls(profile, res) -> None:
+    """Draft / literature → user-confirmed, with the appropriate acknowledgement gate."""
+    if profile.is_usable:
+        if st.button("Revert to draft", key=f"sim_mp_draft_{profile.profile_id}"):
+            profile.verification_status = materials.STATUS_DRAFT
+            st.session_state.pop("sim_previews", None)
+            st.rerun()
+        return
+    if not res.can_confirm:
+        st.caption("Fix the errors above before this profile can be confirmed.")
+        return
+    if res.requires_confirmation:                 # literature_unverified → double acknowledgement
+        ack = st.checkbox(
+            "I have reviewed every value **and its citation**, and I take responsibility for "
+            "using this literature-sourced composition.", key=f"sim_mp_ack_{profile.profile_id}")
+        if st.button("Confirm literature composition", disabled=not ack,
+                     key=f"sim_mp_conf_lit_{profile.profile_id}"):
+            profile.verification_status = materials.STATUS_USER_CONFIRMED
+            st.session_state.pop("sim_previews", None)
+            st.rerun()
+    else:                                         # draft (manual / paste / upload)
+        ack = st.checkbox(
+            "I have reviewed this composition and confirm it for simulation planning.",
+            key=f"sim_mp_ack_{profile.profile_id}")
+        if st.button("Mark as user-confirmed", disabled=not ack,
+                     key=f"sim_mp_conf_{profile.profile_id}"):
+            profile.verification_status = materials.STATUS_USER_CONFIRMED
+            st.session_state.pop("sim_previews", None)
+            st.rerun()
+
+
+def _material_profile_create(scenario, store: dict) -> None:
+    """Build + save a new profile (manual / paste / upload / literature). Saves as DRAFT
+    (or literature_unverified) — confirmation is a separate, deliberate step."""
+    mode = st.radio("How will you provide composition?",
+                    ["Manual entry", "Paste table", "Upload file", "Literature (AI)"],
+                    horizontal=True, key="sim_mp_mode")
+    if mode == "Literature (AI)":
+        _material_profile_literature(scenario, store)
+        return
+
+    default_name = (scenario.material.material_name if scenario is not None else "") or ""
+    default_type = (scenario.material.material_type if scenario is not None else "") or ""
+    entries: list = []
+    source = materials.CompositionSource(source_type=materials.SOURCE_USER_ENTERED,
+                                         retrieved_by="manual")
+
+    if mode == "Manual entry":
+        basis = _mp_basis_selector("sim_mp_basis_m")
+        starters = (_MP_OXIDE_STARTERS if basis == materials.BASIS_OXIDE_WT
+                    else _MP_ELEMENT_STARTERS)
+        seed = pd.DataFrame({"species": starters,
+                             "value": [None] * len(starters),
+                             "uncertainty": [None] * len(starters)})
+        edited = st.data_editor(seed, num_rows="dynamic", use_container_width=True,
+                                height=320, key="sim_mp_editor")
+        entries = materials.entries_from_records(
+            edited.to_dict("records"), species_key="species", value_key="value",
+            uncertainty_key="uncertainty")
+    elif mode == "Paste table":
+        basis = _mp_basis_selector("sim_mp_basis_p")
+        txt = st.text_area(
+            "Paste 'species value' rows (one per line)", key="sim_mp_paste", height=160,
+            placeholder="SiO2 38\nAl2O3 18\nCaO 24\nFe2O3 6\nMgO 5\nNa2O 1.8\nK2O 0.6")
+        entries = materials.parse_composition_text(txt)
+        source = materials.CompositionSource(source_type=materials.SOURCE_USER_ENTERED,
+                                             retrieved_by="manual", source_reference="pasted table")
+    else:  # Upload file
+        basis = _mp_basis_selector("sim_mp_basis_u")
+        entries, source = _material_profile_upload(store)
+
+    c1, c2 = st.columns(2)
+    name = c1.text_input("Material name", value=default_name, key="sim_mp_name")
+    mtype = c2.text_input("Material type", value=default_type, key="sim_mp_type")
+    c3, c4 = st.columns(2)
+    with c3:
+        loi = _sim_num_text("LOI (wt %)", None, "sim_mp_loi")
+    with c4:
+        moisture = _sim_num_text("Moisture (wt %)", None, "sim_mp_moist")
+    ref = st.text_input("Source reference (dataset / note)", value=source.source_reference or "",
+                        key="sim_mp_ref")
+
+    if entries:
+        st.caption(f"Parsed **{len(entries)}** component(s).")
+        preview = materials.MaterialProfile(
+            profile_id="(preview)", material_name=name or "(unnamed)",
+            material_type=mtype or None, composition_basis=basis, entries=entries,
+            loi_pct=loi, moisture_pct=moisture, source=source)
+        res = materials.validate_profile(preview)
+        _mp_assay_table(preview)
+        for e in res.errors:
+            st.error(e)
+        for w in res.warnings[:8]:
+            st.warning(w)
+
+    if st.button("Save profile to session", disabled=not (entries and name),
+                 key="sim_mp_save"):
+        pid = _mp_next_id(store)
+        source.source_reference = ref or source.source_reference
+        store[pid] = materials.MaterialProfile(
+            profile_id=pid, material_name=name, material_type=mtype or None,
+            composition_basis=basis, entries=entries, loi_pct=loi, moisture_pct=moisture,
+            source=source, verification_status=materials.STATUS_DRAFT)
+        st.session_state["sim_mp_select"] = pid
+        st.session_state.pop("sim_previews", None)
+        st.success(f"Saved draft profile '{name}'. Review + confirm it above to use it.")
+        st.rerun()
+
+
+def _material_profile_upload(store: dict):
+    """File-upload path → (entries, CompositionSource). Returns ([], source) until ready."""
+    source = materials.CompositionSource(source_type=materials.SOURCE_UPLOADED_FILE,
+                                         retrieved_by="upload")
+    up = st.file_uploader("Composition file (.csv / .xlsx)", type=["csv", "xlsx", "xls"],
+                          key="sim_mp_file")
+    if up is None:
+        return [], source
+    source.source_reference = up.name
+    try:
+        kind = import_mapping.file_kind(up.name)
+        sheet = None
+        if kind == "excel":
+            sheets = import_mapping.list_excel_sheets(io.BytesIO(up.getvalue()))
+            sheet = st.selectbox("Sheet", sheets, key="sim_mp_sheet")
+        raw = import_mapping.read_tabular(io.BytesIO(up.getvalue()), kind=kind, sheet=sheet)
+    except Exception as exc:                      # noqa: BLE001 — report, never crash the tab
+        st.error(f"Could not read the file: {type(exc).__name__}: {exc}")
+        return [], source
+    cols = list(raw.columns)
+    if len(cols) < 2:
+        st.warning("The file needs at least a species column and a value column.")
+        return [], source
+    c1, c2, c3 = st.columns(3)
+    sp_col = c1.selectbox("Species column", cols, key="sim_mp_sp")
+    val_col = c2.selectbox("Value column", cols,
+                           index=min(1, len(cols) - 1), key="sim_mp_val")
+    unc_col = c3.selectbox("Uncertainty column (optional)", ["(none)"] + cols, key="sim_mp_unc")
+    entries = materials.entries_from_records(
+        raw.to_dict("records"), species_key=sp_col, value_key=val_col,
+        uncertainty_key=(None if unc_col == "(none)" else unc_col))
+    return entries, source
+
+
+def _material_profile_literature(scenario, store: dict) -> None:
+    """Literature (AI) path — proposes a **quarantined** (unverified) profile only."""
+    if not ai_literature.is_enabled():
+        st.caption("AI literature retrieval is disabled (no API key detected). Enter "
+                   "composition manually, paste a table, or upload a file instead.")
+        return
+    st.caption(ai_literature.LITERATURE_DATA_NOTICE)
+    if not st.checkbox(ai_literature.LITERATURE_CONSENT_LABEL, key="sim_mp_lit_consent"):
+        return
+    name = st.text_input("Material name",
+                         value=(scenario.material.material_name if scenario else "") or "",
+                         key="sim_mp_lit_name")
+    default_els = ((scenario.outputs.target_elements if scenario else None)
+                   or list(config.RESIDUAL_ELEMENTS))
+    els = st.multiselect(
+        "Elements to look up", list(sim_schema.RECOGNIZED_ELEMENTS),
+        default=[e for e in default_els if e in sim_schema.RECOGNIZED_ELEMENTS],
+        key="sim_mp_lit_els")
+    st.caption("Each value is stored **literature-unverified** and cannot feed the preview "
+               "until you review its citation and explicitly confirm it.")
+    if st.button("Suggest composition from literature (AI)", disabled=not (name and els),
+                 key="sim_mp_lit_btn"):
+        cand_dicts: list[dict] = []
+        with st.spinner("Searching literature…"):
+            for el in els:
+                try:
+                    cands = ai_literature.propose_starting_assay(name, el)
+                except Exception as exc:          # noqa: BLE001 — degrade per element
+                    st.warning(f"{el}: lookup failed ({type(exc).__name__})")
+                    continue
+                if cands:
+                    c = cands[0]
+                    cand_dicts.append({
+                        "element": c.element or el, "value": c.value, "unit": c.unit,
+                        "citation": c.source_link, "title": c.citation.title,
+                        "year": c.citation.year})
+        if not cand_dicts:
+            st.warning("No sourced literature composition found. Enter it manually instead.")
+            return
+        pid = _mp_next_id(store)
+        store[pid] = materials.profile_from_literature_candidates(
+            pid, name, (scenario.material.material_type if scenario else None), cand_dicts)
+        st.session_state["sim_mp_select"] = pid
+        st.session_state.pop("sim_previews", None)
+        st.success(f"Saved {len(cand_dicts)} literature-proposed value(s) as an **unverified** "
+                   "profile. Review every citation and confirm it above before use.")
+        st.rerun()
+
+
+def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> None:
     """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
 
     No PHREEQC is run, no file is written to a run folder, and AI does not write the input
     (the LLM only extracted the scenario; this `.pqi` text is templated by deterministic code
-    in `simulation/phreeqc_input_builder.py`).
+    in `simulation/phreeqc_input_builder.py`). ``material_profile`` is the user-confirmed
+    composition (or ``None`` → composition is not included and the preview stays
+    `needs_material_composition`).
     """
-    st.markdown("#### Step 7 — PHREEQC input preview (draft)")
+    st.markdown("#### Step 8 — PHREEQC input preview (draft)")
     st.caption(
         f"**{phreeqc_input_builder.PREVIEW_HEADER_LABEL}** Deterministic, rule-based `.pqi` "
         "text — AI does not write PHREEQC input. Nothing is run and no file is written to a "
@@ -363,10 +680,27 @@ def _render_phreeqc_input_preview(scenario, matrix) -> None:
     if scenario is None:
         st.info("Re-generate the plan (Step 6) to enable the input preview.")
         return
+
+    # Which material profile (if any) feeds the composition, and is it usable?
+    mpid = getattr(material_profile, "profile_id", None) if material_profile is not None else None
+    if material_profile is None:
+        st.caption("No material profile selected (Step 7) — composition is **not** included, so "
+                   "the preview will stay `needs_material_composition`.")
+    elif material_profile.is_usable:
+        st.caption(f"Using confirmed material profile **{material_profile.display_name}** "
+                   f"(basis `{material_profile.basis_label()}`) for the dissolved composition.")
+    else:
+        st.caption(f"Material profile **{material_profile.display_name}** is selected but **not "
+                   "confirmed** — confirm it in Step 7 to include its composition.")
+    # Stale-preview guard: rebuild if the selected profile changed since the last build.
+    if st.session_state.get("sim_previews_mpid", mpid) != mpid:
+        st.session_state.pop("sim_previews", None)
+
     if st.button("Generate PHREEQC input preview", key="sim_pqi_btn"):
         with st.spinner("Templating PHREEQC input…"):
             st.session_state["sim_previews"] = phreeqc_input_builder.build_previews_for_matrix(
-                scenario, matrix)
+                scenario, matrix, material_profile=material_profile)
+        st.session_state["sim_previews_mpid"] = mpid
     previews = st.session_state.get("sim_previews")
     if not previews:
         st.info("Click **Generate PHREEQC input preview** to template a draft `.pqi` per scenario.")
@@ -569,7 +903,10 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
                    "fly-ash + PHREEQC workflow, model generation lives in the **Match** tab; "
                    "future backends will run from here.)")
         st.divider()
-        _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx)
+        selected_profile = _render_material_profile_section(st.session_state.get("sim_scenario"))
+        st.divider()
+        _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
+                                      material_profile=selected_profile)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
