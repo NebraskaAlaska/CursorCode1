@@ -78,6 +78,7 @@ from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: 
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
+from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -735,6 +736,155 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> No
             st.markdown(f"- {u}")
 
 
+# --------------------------------------------------------------------------- #
+# Step 9 — Run deterministic model (gated PHREEQC execution; off the result path)
+# --------------------------------------------------------------------------- #
+_EXEC_STATUS_LEVEL = {
+    phreeqc_executor.STATUS_SUCCESS: "exact",
+    phreeqc_executor.STATUS_FAILED: "unsafe",
+    phreeqc_executor.STATUS_TIMEOUT: "unsafe",
+    phreeqc_executor.STATUS_MISSING: "preliminary",
+    phreeqc_executor.STATUS_NOT_RUN: "neutral",
+}
+
+
+def _render_run_deterministic_model(previews) -> None:
+    """Step 9 — run PHREEQC on a reviewed input preview (explicit, gated; never automatic).
+
+    Runs the **exact** reviewed input text. Results are simulation outputs, **not** validated
+    predictions, and never touch mapping / residuals / validation / the comparison.
+    """
+    st.markdown("#### Step 9 — Run deterministic model")
+    av = phreeqc_executor.check_availability()
+    cfg_badge = app_ui.status_badge("PHREEQC configured" if av.can_run else "PHREEQC not configured",
+                                    "exact" if av.can_run else "preliminary")
+    st.markdown(cfg_badge, unsafe_allow_html=True)
+
+    if not previews:
+        st.info("Generate an input preview in **Step 8** first — then you can run it here.")
+        return
+    if not av.can_run:
+        app_ui.render_warning_panel("PHREEQC execution is not configured", av.message,
+                                    level="warning")
+        st.caption("To enable execution, set `PHREEQC_EXE` (the `phreeqc` binary, or put it on "
+                   "PATH) and `PHREEQC_DATABASE` (your CEMDATA18 `.dat` file — not shipped). The "
+                   "planner, preview, and download all work fully without this.")
+        return
+
+    ids = [p.scenario_id for p in previews]
+    default = st.session_state.get("sim_pqi_choice")
+    idx = ids.index(default) if default in ids else 0
+    chosen = st.selectbox("Scenario to run", ids, index=idx, key="sim_exec_choice") \
+        if len(ids) > 1 else ids[0]
+    pv = next(p for p in previews if p.scenario_id == chosen)
+
+    st.markdown(
+        f"Selected **{pv.scenario_id}** · input status "
+        + app_ui.status_badge(pv.status.replace("_", " "),
+                              _PREVIEW_STATUS_LEVEL.get(pv.status, "neutral")),
+        unsafe_allow_html=True)
+    if pv.status != phreeqc_input_builder.STATUS_READY:
+        st.warning(f"This input is `{pv.status}` (not `ready_for_review`). You can still run it, "
+                   "but the result will reflect the input's limitations (e.g. missing material "
+                   "composition).")
+    app_ui.render_warning_panel(
+        "This runs deterministic PHREEQC",
+        "It executes the reviewed input text exactly. It is not AI-generated output and is not "
+        "validated against measured data yet. Output is a simulation result, not a validated "
+        "prediction.", level="warning")
+    st.caption(f"Files are written to a safe workspace: "
+               f"`{_rel(phreeqc_executor.default_workspace())}` (gitignored — never "
+               "`data/raw` or the source tree).")
+
+    confirm = st.checkbox("I have reviewed this input and want to run PHREEQC on it.",
+                          key=f"sim_exec_confirm_{chosen}")
+    if st.button("Run PHREEQC", disabled=not confirm, key=f"sim_exec_btn_{chosen}"):
+        with st.spinner("Running PHREEQC…"):
+            result = phreeqc_executor.execute_preview(pv)
+            parsed = (phreeqc_executor.parse_outputs(result)
+                      if result.status == phreeqc_executor.STATUS_SUCCESS else None)
+        st.session_state.setdefault("sim_exec_results", {})[chosen] = {
+            "result": result, "parsed": parsed}
+
+    stored = st.session_state.get("sim_exec_results", {}).get(chosen)
+    if stored:
+        _render_simulation_result(stored["result"], stored["parsed"])
+
+
+def _render_simulation_result(result, parsed) -> None:
+    """Render one execution result — status, parsed values, logs, paths (clearly labelled)."""
+    st.markdown(
+        f"**{result.scenario_id}** · "
+        + app_ui.status_badge(result.status.replace("_", " "),
+                              _EXEC_STATUS_LEVEL.get(result.status, "neutral")),
+        unsafe_allow_html=True)
+
+    if result.status == phreeqc_executor.STATUS_MISSING:
+        st.warning(result.error_message or phreeqc_executor.NOT_CONFIGURED_MESSAGE)
+        return
+    if result.status in (phreeqc_executor.STATUS_FAILED, phreeqc_executor.STATUS_TIMEOUT):
+        st.error(f"PHREEQC did not produce a usable result: {result.error_message}")
+        with st.expander("Execution log (stdout / stderr / paths)"):
+            if result.stdout_tail:
+                st.markdown("**stdout (tail)**")
+                st.code(result.stdout_tail, language="text")
+            if result.stderr_tail:
+                st.markdown("**stderr (tail)**")
+                st.code(result.stderr_tail, language="text")
+            _render_exec_paths(result)
+        return
+
+    # success
+    st.success(f"PHREEQC completed in {result.runtime_seconds:.2f}s.")
+    st.caption("📌 " + phreeqc_executor.SIM_OUTPUT_LABEL)
+
+    if parsed is None:
+        st.info("Run succeeded but outputs were not parsed.")
+        _render_exec_paths(result)
+        return
+
+    cols = st.columns(3)
+    cols[0].metric("Predicted pH", "—" if parsed.pH is None else f"{parsed.pH:.2f}")
+    cols[1].metric("Predicted pe", "—" if parsed.pe is None else f"{parsed.pe:.2f}")
+    cols[2].metric("Elements", len(parsed.element_totals_mM))
+
+    if parsed.element_totals_mM:
+        st.markdown("**Predicted dissolved totals** (simulation output)")
+        tdf = pd.DataFrame(
+            [{"element": el, "mM": round(v, 4)}
+             for el, v in sorted(parsed.element_totals_mM.items())])
+        st.dataframe(tdf, hide_index=True, use_container_width=True,
+                     height=min(280, 60 + 28 * len(tdf)))
+        # A graph only because an actual execution result exists.
+        st.bar_chart(tdf.set_index("element")["mM"])
+        st.caption("Predicted dissolved totals (mM) from PHREEQC execution — a simulation "
+                   "output, **not** validated against measured data. This is separate from the "
+                   "measured-vs-model pH/residual graphs in **Validate** / **Compare Results**.")
+
+    if parsed.saturation_indices:
+        with st.expander(f"Saturation indices ({len(parsed.saturation_indices)})"):
+            sidf = pd.DataFrame(parsed.saturation_indices)
+            sidf = sidf.reindex(sidf["SI"].abs().sort_values(ascending=False).index)
+            st.dataframe(sidf, hide_index=True, use_container_width=True, height=260)
+
+    if parsed.warnings:
+        for w in parsed.warnings:
+            st.caption("⚠️ " + w)
+    if parsed.missing:
+        st.caption("Not available from this run: " + ", ".join(parsed.missing))
+    _render_exec_paths(result)
+
+
+def _render_exec_paths(result) -> None:
+    with st.expander("Generated files (in the safe simulation workspace)"):
+        for label, path in (("input (.pqi)", result.input_path),
+                            ("output (.pqo)", result.output_path),
+                            ("selected output", result.selected_output_path)):
+            st.caption(f"{label}: `{_rel(path)}`" if path else f"{label}: —")
+        st.caption(f"PHREEQC: `{result.phreeqc_executable}`  ·  database: "
+                   f"`{result.database_path}`  ·  run at {result.timestamp}")
+
+
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     """Plan a simulation scenario from a plain-language description (planning layer only).
 
@@ -907,6 +1057,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         st.divider()
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
                                       material_profile=selected_profile)
+        st.divider()
+        _render_run_deterministic_model(st.session_state.get("sim_previews"))
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:

@@ -176,3 +176,36 @@ def test_materials_manager_imports_no_science_or_planner():
                 "materials/__init__.py"):
         offenders = _mentions(_import_targets(mod), forbidden)
         assert not offenders, f"{mod} imports forbidden module: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# PHREEQC execution layer boundary — runs PHREEQC, but stays off the result path
+# --------------------------------------------------------------------------- #
+EXECUTOR_MODULE = "simulation/phreeqc_executor.py"
+
+
+def test_executor_imports_no_ai():
+    """The execution layer must not import any AI helper (AI never writes/runs input)."""
+    targets = _import_targets(EXECUTOR_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{EXECUTOR_MODULE} imports AI: {offenders}"
+
+
+def test_executor_imports_no_result_path():
+    """The execution layer must not import the comparison/residual/mapping/validation code,
+    nor the Match-tab runner (which appends to the shared results CSV). It depends only on
+    config + the parsers."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(EXECUTOR_MODULE), forbidden)
+    assert not offenders, f"{EXECUTOR_MODULE} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_executor():
+    """The result path must not import the executor (it is off the scientific path)."""
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("phreeqc_executor",))
+        assert not offenders, f"{mod} imports the executor: {offenders}"
