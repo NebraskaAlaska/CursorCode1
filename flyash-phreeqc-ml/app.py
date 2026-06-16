@@ -81,6 +81,7 @@ from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (d
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
+from flyash_phreeqc_ml.simulation import strategy as sim_strategy  # noqa: E402  (objective + ranking)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -880,6 +881,9 @@ def _render_sweep_results(batch, matrix) -> None:
                        key="sim_sweep_dl")
     _simulate_provenance_caption()
     _render_sweep_plots(batch, table, matrix)
+    if batch.n_success > 0:
+        st.divider()
+        _render_rank_simulation_results(batch, table, matrix)
 
 
 def _render_sweep_plots(batch, table, matrix) -> None:
@@ -948,6 +952,140 @@ def _sweep_multi_line_figure(frames: dict, xlabel, ylabel, categorical_x):
     ax.legend(fontsize=8, ncol=2)
     fig.tight_layout()
     return fig
+
+
+# --------------------------------------------------------------------------- #
+# Rank simulation results (optimise over executed predictions — not validation)
+# --------------------------------------------------------------------------- #
+_OBJECTIVE_KIND_LABELS = {
+    sim_strategy.OBJ_MAXIMIZE: "Maximize a target element",
+    sim_strategy.OBJ_MINIMIZE: "Minimize an impurity element",
+    sim_strategy.OBJ_TARGET_PH: "Target a pH range",
+    sim_strategy.OBJ_AVOID_PH: "Avoid an unsafe pH range",
+    sim_strategy.OBJ_MINIMIZE_REAGENT: "Minimize reagent concentration",
+    sim_strategy.OBJ_SELECTIVITY: "Maximize a selectivity ratio (A/B)",
+    sim_strategy.OBJ_WEIGHTED: "Maximize one & minimize another (weighted)",
+}
+
+
+def _objective_editor(detected, table) -> "sim_strategy.SimulationObjective":
+    """Editable objective widgets, pre-filled from the detected objective. Returns it."""
+    elements = [c[:-3] for c in table.columns if c.endswith("_mM")] or ["Ca"]
+
+    def _detected_el(direction):
+        for m in detected.metrics:
+            if m.direction == direction and m.column.endswith("_mM"):
+                return m.column[:-3]
+        return elements[0]
+
+    def _detected_ph():
+        for m in detected.metrics:
+            if m.column == sim_strategy.PH_COLUMN and m.target_low is not None:
+                return float(m.target_low), float(m.target_high)
+        return 10.0, 12.0
+
+    kinds = list(_OBJECTIVE_KIND_LABELS)
+    default_kind = detected.kind if detected.kind in _OBJECTIVE_KIND_LABELS else sim_strategy.OBJ_MAXIMIZE
+    kind = st.selectbox("Objective type", kinds, index=kinds.index(default_kind),
+                        format_func=lambda k: _OBJECTIVE_KIND_LABELS[k], key="sim_rank_kind")
+
+    if kind == sim_strategy.OBJ_MAXIMIZE:
+        el = st.selectbox("Element to maximize", elements,
+                          index=elements.index(_detected_el(sim_strategy.DIR_MAX))
+                          if _detected_el(sim_strategy.DIR_MAX) in elements else 0,
+                          key="sim_rank_maxel")
+        return sim_strategy.maximize(el)
+    if kind == sim_strategy.OBJ_MINIMIZE:
+        el = st.selectbox("Element to minimize", elements, key="sim_rank_minel")
+        return sim_strategy.minimize(el)
+    if kind in (sim_strategy.OBJ_TARGET_PH, sim_strategy.OBJ_AVOID_PH):
+        lo0, hi0 = _detected_ph()
+        c1, c2 = st.columns(2)
+        lo = c1.number_input("pH low", value=lo0, step=0.5, key="sim_rank_phlo")
+        hi = c2.number_input("pH high", value=hi0, step=0.5, key="sim_rank_phhi")
+        return (sim_strategy.target_ph(lo, hi) if kind == sim_strategy.OBJ_TARGET_PH
+                else sim_strategy.avoid_ph(lo, hi))
+    if kind == sim_strategy.OBJ_MINIMIZE_REAGENT:
+        return sim_strategy.minimize_reagent()
+    if kind == sim_strategy.OBJ_SELECTIVITY:
+        c1, c2 = st.columns(2)
+        a = c1.selectbox("Numerator (maximize)", elements, key="sim_rank_sela")
+        b = c2.selectbox("Denominator (minimize)", elements,
+                         index=min(1, len(elements) - 1), key="sim_rank_selb")
+        return sim_strategy.selectivity(a, b)
+    # weighted
+    c1, c2 = st.columns(2)
+    a = c1.selectbox("Maximize", elements, key="sim_rank_wmax")
+    b = c2.selectbox("Minimize", elements, index=min(1, len(elements) - 1), key="sim_rank_wmin")
+    return sim_strategy.weighted([
+        sim_strategy.ObjectiveMetric(f"{a}_mM", sim_strategy.DIR_MAX, label=a),
+        sim_strategy.ObjectiveMetric(f"{b}_mM", sim_strategy.DIR_MIN, label=b)])
+
+
+def _render_rank_simulation_results(batch, table, matrix) -> None:
+    """Rank executed results against a confirmed objective + suggest a refined sweep."""
+    st.markdown("##### Rank simulation results")
+    st.caption("🏷️ " + sim_strategy.RANKING_NOT_VALIDATION)
+
+    detected = sim_strategy.parse_objective(st.session_state.get("sim_outputs", ""))
+    st.markdown(f"**Objective detected from your desired outputs:** `{detected.kind}` — "
+                f"{detected.display()}")
+    for note in detected.notes:
+        st.caption("• " + note)
+
+    objective = _objective_editor(detected, table)
+    st.caption(f"Will rank by: **{objective.display()}** — ranking never runs simulations.")
+    confirm = st.checkbox("Confirm this objective for ranking.", key="sim_rank_confirm")
+    if st.button("Rank results", disabled=not confirm, key="sim_rank_btn"):
+        axis_col, _ = batch_executor.detect_sweep_axis(matrix)
+        st.session_state["sim_ranking"] = sim_strategy.rank_results(table, objective,
+                                                                    axis_col=axis_col)
+        st.session_state["sim_ranking_axis"] = axis_col
+
+    ranking = st.session_state.get("sim_ranking")
+    if ranking is not None:
+        _render_ranking(ranking, table, st.session_state.get("sim_ranking_axis"))
+
+
+def _render_ranking(ranking, table, axis_col) -> None:
+    if ranking.status == "no_successful_rows":
+        st.info("No successfully-executed scenarios to rank.")
+        return
+    if ranking.status == "no_rankable_metrics":
+        for w in ranking.warnings:
+            st.warning(w)
+        st.info("No rankable metric — pick an objective whose metric exists in the results.")
+        _render_refined_sweep(ranking, table, axis_col)
+        return
+
+    st.success(f"Top scenario: **{ranking.top_scenario_id}** "
+               f"(driven by **{ranking.driving_metric}**).")
+    st.dataframe(ranking.ranked, hide_index=True, use_container_width=True,
+                 height=min(320, 60 + 30 * len(ranking.ranked)))
+    for w in ranking.warnings:
+        st.warning(w)
+    if ranking.tradeoffs:
+        st.markdown("**Tradeoffs**")
+        for t in ranking.tradeoffs:
+            st.caption("⚖️ " + t)
+    st.caption("🏷️ " + sim_strategy.RANKING_NOT_VALIDATION)
+    _render_refined_sweep(ranking, table, axis_col)
+
+
+def _render_refined_sweep(ranking, table, axis_col) -> None:
+    sug = sim_strategy.suggest_refined_sweep(ranking, table, axis_col)
+    if sug.kind == "none":
+        return
+    st.markdown("##### Suggested next sweep")
+    st.info(sug.message)
+    if sug.rationale:
+        st.caption(sug.rationale)
+    if sug.suggested_values:
+        st.caption("Suggested values: "
+                   + ", ".join(f"{v:g}" if isinstance(v, (int, float)) else str(v)
+                               for v in sug.suggested_values)
+                   + " — **review before running. Nothing runs automatically.**")
+    st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
 
 
 # --------------------------------------------------------------------------- #

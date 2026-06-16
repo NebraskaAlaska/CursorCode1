@@ -132,6 +132,13 @@ exploration** (use the experimental PHREEQC surrogate to scan a wide input space
 real PHREEQC only at the promising points). Both need a dedicated batch/optimization workflow and
 are out of scope for this in-app prototype.
 
+## Ranking a sweep (optimisation)
+
+After a sweep, you can **rank** the executed scenarios against an objective (maximise an element,
+target a pH range, …) and get a cautious refined-sweep suggestion — see
+[`simulation_strategy.md`](simulation_strategy.md). Ranking is an optimisation over model
+predictions; it runs nothing and is **not** validation.
+
 ## Saving a run (provenance)
 
 A single run or a sweep can be **saved** with its full provenance — see
