@@ -80,6 +80,7 @@ from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
+from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -816,6 +817,11 @@ def _render_run_deterministic_model(previews, matrix=None) -> None:
         st.divider()
         _render_run_sweep(previews, matrix)
 
+    # --- save the run with full provenance (only once results exist) ----- #
+    if _collect_simulate_batch() is not None:
+        st.divider()
+        _render_save_simulation_run(matrix)
+
 
 def _render_run_sweep(previews, matrix) -> None:
     """Run a confirmed *small sweep* — every reviewed preview, capped at the prototype limit."""
@@ -872,6 +878,7 @@ def _render_sweep_results(batch, matrix) -> None:
     st.download_button("Download sweep results (CSV)", table.to_csv(index=False),
                        file_name="simulation_sweep_results.csv", mime="text/csv",
                        key="sim_sweep_dl")
+    _simulate_provenance_caption()
     _render_sweep_plots(batch, table, matrix)
 
 
@@ -943,6 +950,155 @@ def _sweep_multi_line_figure(frames: dict, xlabel, ylabel, categorical_x):
     return fig
 
 
+# --------------------------------------------------------------------------- #
+# Save-run provenance (Simulate executions → outputs/simulation_runs/)
+# --------------------------------------------------------------------------- #
+def _selected_material_profile():
+    """The material profile currently selected in Step 7 (or None)."""
+    store = st.session_state.get("sim_material_profiles", {})
+    pid = st.session_state.get("sim_mp_select")
+    if not pid or str(pid).startswith("(none"):
+        return None
+    return store.get(pid)
+
+
+def _collect_simulate_batch():
+    """A BatchResult of whatever has been executed (sweep preferred, else single runs)."""
+    batch = st.session_state.get("sim_batch_result")
+    if batch is not None and getattr(batch, "results", None):
+        return batch
+    singles = st.session_state.get("sim_exec_results", {})
+    results = [batch_executor.BatchScenarioResult(sid, v["result"], v.get("parsed"))
+               for sid, v in singles.items() if v.get("result")]
+    if results:
+        return batch_executor.BatchResult(results=results, requested=len(results),
+                                          max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS)
+    return None
+
+
+def _simulate_provenance_caption() -> None:
+    """A one-line provenance trail under a Simulate result table/plot."""
+    bits = ["source: PHREEQC execution of reviewed input"]
+    rid = st.session_state.get("sim_saved_run_id")
+    if rid:
+        bits.append(f"run id `{rid}`")
+    mp = _selected_material_profile()
+    bits.append(f"material profile: {mp.display_name} ({mp.verification_status})"
+                if mp is not None else "material profile: none")
+    pr = st.session_state.get("sim_parse_result")
+    if pr is not None:
+        bits.append(f"parser: {getattr(pr, 'source', 'manual')}")
+    av = phreeqc_executor.check_availability()
+    if av.executable_path:
+        bits.append(f"exe `{av.executable_path}`")
+    if av.database_path:
+        bits.append(f"db `{av.database_path}`")
+    st.caption("🔎 Provenance — " + " · ".join(bits)
+               + ".  **Not validated against measured data.**")
+
+
+def _render_save_simulation_run(matrix) -> None:
+    """Step 9 — save the executed run (single or sweep) with full provenance."""
+    batch = _collect_simulate_batch()
+    if batch is None:
+        return
+    st.markdown("##### Save simulation run")
+    reg = run_registry.SimulationRunRegistry()
+    counts = batch.status_counts()
+    st.caption("Save this run with its full provenance chain — experiment text → parsed "
+               "scenario → assumptions → material profile → generated input → executable / "
+               "database → output files → parser status → warnings.")
+    st.markdown("**What will be saved:** "
+                + f"{len(batch.results)} scenario(s) — "
+                + " · ".join(f"`{k}`: {v}" for k, v in counts.items())
+                + " · `run_metadata.json` · `parsed_results.csv` · `scenario_matrix.csv` · "
+                "`assumptions_warnings.json`")
+    st.caption(f"**Where:** `{_rel(reg.base_dir)}/<run_id>/` — a gitignored generated-output "
+               "folder (never `data/raw`, the source tree, or any validation CSV).")
+    if _selected_material_profile() is None:
+        st.warning("No material profile is selected — that is recorded as a **warning** in the "
+                   "saved run (composition was not included).")
+    app_ui.render_warning_panel(
+        "This saves a simulation result, not a validation",
+        "It records a PHREEQC simulation run for provenance. It does not validate the model "
+        "against measured data and never affects mapping / residuals / validation / comparison.",
+        level="warning")
+
+    label = st.text_input("Run label (optional)", key="sim_save_label")
+    notes = st.text_area("Notes (optional)", key="sim_save_notes", height=68)
+    confirm = st.checkbox("I understand this saves a simulation run (not a validation result).",
+                          key="sim_save_confirm")
+    if st.button("Save simulation run", disabled=not confirm, key="sim_save_btn"):
+        import datetime as _dt
+        now = _dt.datetime.now()
+        rid = run_registry.generate_run_id(now, label)
+        record = run_registry.build_run_record(
+            run_id=rid, created_at=now.isoformat(timespec="seconds"), batch=batch, matrix=matrix,
+            scenario=st.session_state.get("sim_scenario"),
+            parse_result=st.session_state.get("sim_parse_result"),
+            material_profile=_selected_material_profile(),
+            previews=st.session_state.get("sim_previews"),
+            experiment_text=st.session_state.get("sim_desc"),
+            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes)
+        try:
+            out_dir = reg.save_run(record)
+            st.session_state["sim_saved_run_id"] = rid
+            st.success(f"Saved simulation run `{rid}` → `{_rel(out_dir)}`.")
+        except Exception as exc:                              # noqa: BLE001
+            st.error(f"Could not save the run: {type(exc).__name__}: {exc}")
+
+    rid = st.session_state.get("sim_saved_run_id")
+    if rid and reg.run_dir(rid).is_dir():
+        _render_saved_run_downloads(reg, rid)
+
+
+def _render_saved_run_downloads(reg, rid) -> None:
+    d = reg.run_dir(rid)
+    meta = d / run_registry.RUN_METADATA_FILE
+    results = d / run_registry.PARSED_RESULTS_FILE
+    c1, c2, c3 = st.columns(3)
+    if meta.is_file():
+        c1.download_button("run_metadata.json", meta.read_text(encoding="utf-8"),
+                           file_name="run_metadata.json", mime="application/json",
+                           key=f"sim_dl_meta_{rid}")
+    if results.is_file():
+        c2.download_button("parsed_results.csv", results.read_text(encoding="utf-8"),
+                           file_name="parsed_results.csv", mime="text/csv",
+                           key=f"sim_dl_res_{rid}")
+    try:
+        c3.download_button("Download run package (zip)", reg.export_zip(rid),
+                           file_name=f"{rid}.zip", mime="application/zip",
+                           key=f"sim_dl_zip_{rid}")
+    except Exception:                                         # noqa: BLE001
+        pass
+
+
+def _render_previous_simulation_runs() -> None:
+    """Export-tab list of saved Simulate runs — kept separate from validation runs."""
+    app_ui.section_header("Previous simulation runs",
+                          "saved Simulate-tab PHREEQC executions — simulation outputs, "
+                          "not measured-data validation")
+    reg = run_registry.SimulationRunRegistry()
+    runs = reg.list_runs()
+    if not runs:
+        st.caption("No saved simulation runs yet. Run a scenario or sweep in the **Simulate** "
+                   "tab, then click **Save simulation run**.")
+        return
+    st.caption("These are **simulation runs** (model predictions under your assumptions), kept "
+               "separate from measured-data validation runs.")
+    st.dataframe(pd.DataFrame(runs), hide_index=True, use_container_width=True,
+                 height=min(320, 60 + 30 * len(runs)))
+    ids = [r["run_id"] for r in runs]
+    chosen = st.selectbox("Download a run package", ids, key="exp_sim_run_choice")
+    if chosen:
+        try:
+            st.download_button("Download run package (zip)", reg.export_zip(chosen),
+                               file_name=f"{chosen}.zip", mime="application/zip",
+                               key="exp_sim_run_zip")
+        except Exception:                                     # noqa: BLE001
+            pass
+
+
 def _render_simulation_result(result, parsed) -> None:
     """Render one execution result — status, parsed values, logs, paths (clearly labelled)."""
     st.markdown(
@@ -969,6 +1125,7 @@ def _render_simulation_result(result, parsed) -> None:
     # success
     st.success(f"PHREEQC completed in {result.runtime_seconds:.2f}s.")
     st.caption("📌 " + phreeqc_executor.SIM_OUTPUT_LABEL)
+    _simulate_provenance_caption()
 
     if parsed is None:
         st.info("Run succeeded but outputs were not parsed.")
@@ -5707,6 +5864,8 @@ def _render_export_tab(selected_run: str | None) -> None:
     _render_next_step(selected_run)
 
     _render_export_report(selected_run)
+    st.divider()
+    _render_previous_simulation_runs()
     st.divider()
     _render_audit_trail(selected_run)
 

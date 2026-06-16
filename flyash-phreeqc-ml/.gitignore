@@ -19,6 +19,8 @@ outputs/tables/
 # Simulate-tab deterministic PHREEQC execution workspace — generated .pqi/.pqo/.sel
 # inputs and outputs are simulation artifacts, never committed.
 outputs/simulations/
+# Saved Simulate-tab simulation run records (provenance bundles) — generated outputs.
+outputs/simulation_runs/
 
 # Real / generated measured-experimental data — do NOT commit by default.
 # These are research data (confidential) or re-creatable run sheets. The ONLY

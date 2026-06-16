@@ -233,3 +233,33 @@ def test_batch_executor_imports_no_result_path():
                  "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
     offenders = _mentions(_import_targets(BATCH_MODULE), forbidden)
     assert not offenders, f"{BATCH_MODULE} imports result-path code: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Simulation run registry boundary — provenance store, off the result path
+# --------------------------------------------------------------------------- #
+REGISTRY_MODULE = "simulation/run_registry.py"
+
+
+def test_run_registry_imports_no_ai():
+    targets = _import_targets(REGISTRY_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{REGISTRY_MODULE} imports AI: {offenders}"
+
+
+def test_run_registry_imports_no_result_path():
+    """The registry may import the executors (for data shapes + the safe-path guard), but no
+    comparison/residual/mapping/validation code and not the Match-tab runner / run_manager."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(REGISTRY_MODULE), forbidden)
+    assert not offenders, f"{REGISTRY_MODULE} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_run_registry():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("run_registry",))
+        assert not offenders, f"{mod} imports the run registry: {offenders}"

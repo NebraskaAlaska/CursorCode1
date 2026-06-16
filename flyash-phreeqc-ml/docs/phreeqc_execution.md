@@ -132,6 +132,13 @@ exploration** (use the experimental PHREEQC surrogate to scan a wide input space
 real PHREEQC only at the promising points). Both need a dedicated batch/optimization workflow and
 are out of scope for this in-app prototype.
 
+## Saving a run (provenance)
+
+A single run or a sweep can be **saved** with its full provenance — see
+[`simulation_runs.md`](simulation_runs.md). Saved runs live under `outputs/simulation_runs/`
+(gitignored), are listed in the **Export** tab, and are kept strictly separate from measured-data
+validation runs.
+
 ## Why these results are not validation results
 
 A simulation result is the model's prediction under the assumptions baked into the input (the
