@@ -116,6 +116,7 @@ PLANNER_MODULES = [
     "simulation/safety.py",
     "simulation/rule_parser.py",
     "simulation/matrix.py",
+    "simulation/phreeqc_input_builder.py",
     "ai/scenario_parser.py",
 ]
 
@@ -138,10 +139,40 @@ def test_planner_does_not_import_result_path():
 
 def test_result_path_does_not_import_planner():
     """The result path must not import the planner (it is off the scientific path)."""
-    markers = ("scenario_parser", "scenario_schema")
+    markers = ("scenario_parser", "scenario_schema", "phreeqc_input_builder")
     for mod in RESULT_PATH_MODULES:
         targets = _import_targets(mod)
         offenders = _mentions(targets, markers) + [
             t for t in targets if t in ("..simulation", ".simulation")
             or t.startswith("..simulation.") or t.startswith(".simulation.")]
         assert not offenders, f"{mod} imports the planner: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Material composition manager boundary — a planning-layer helper only
+# --------------------------------------------------------------------------- #
+def _imports_materials(targets) -> list[str]:
+    return [t for t in targets
+            if t in (".materials", "..materials")
+            or t.endswith(".materials") or ".materials." in t
+            or "materials.profile" in t]
+
+
+def test_result_path_and_planner_do_not_import_materials_manager():
+    """The material composition manager is a Simulate-only helper: no result-path module and
+    no planner module imports it (the input-preview builder duck-types instead)."""
+    for mod in RESULT_PATH_MODULES + PLANNER_MODULES:
+        offenders = _imports_materials(_import_targets(mod))
+        assert not offenders, f"{mod} imports the material profile manager: {offenders}"
+
+
+def test_materials_manager_imports_no_science_or_planner():
+    """The reverse direction: the manager reaches no science/result-path/planner module
+    (it depends only on units for molar masses)."""
+    forbidden = ("residuals", "inclusion", "scenarios", "replicates", "mapping_table",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "incompleteness", "scenario_parser", "phreeqc_input_builder", "phreeqc_runner")
+    for mod in ("materials/profile_schema.py", "materials/profile_validation.py",
+                "materials/__init__.py"):
+        offenders = _mentions(_import_targets(mod), forbidden)
+        assert not offenders, f"{mod} imports forbidden module: {offenders}"
