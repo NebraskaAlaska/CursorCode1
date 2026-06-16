@@ -207,5 +207,29 @@ def test_executor_imports_no_result_path():
 def test_result_path_does_not_import_executor():
     """The result path must not import the executor (it is off the scientific path)."""
     for mod in RESULT_PATH_MODULES:
-        offenders = _mentions(_import_targets(mod), ("phreeqc_executor",))
+        offenders = _mentions(_import_targets(mod), ("phreeqc_executor", "batch_executor"))
         assert not offenders, f"{mod} imports the executor: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Small-sweep batch executor boundary — orchestrates the executor, nothing else
+# --------------------------------------------------------------------------- #
+BATCH_MODULE = "simulation/batch_executor.py"
+
+
+def test_batch_executor_imports_no_ai():
+    targets = _import_targets(BATCH_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{BATCH_MODULE} imports AI: {offenders}"
+
+
+def test_batch_executor_imports_no_result_path():
+    """It may import the single-scenario executor, but no comparison/residual/mapping code,
+    no runner, and no run_manager."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(BATCH_MODULE), forbidden)
+    assert not offenders, f"{BATCH_MODULE} imports result-path code: {offenders}"

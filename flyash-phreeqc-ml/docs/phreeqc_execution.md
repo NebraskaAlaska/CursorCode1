@@ -81,6 +81,57 @@ states explicitly what was *not* available. A small bar chart of the predicted d
 drawn **only** because an actual execution result exists; it is labelled a simulation output, not a
 measurement.
 
+## Single run vs. small sweep
+
+Step 9 offers two execution modes:
+
+- **Single scenario** — run one selected input preview and inspect its result (above).
+- **Run confirmed sweep** — when the plan has more than one scenario (a parameter sweep from
+  Step 6), run them all in one go. Each scenario goes through the *same* safe single-scenario
+  executor; one scenario failing never stops the others, and every per-scenario outcome keeps its
+  own status (`success` / `failed` / `timeout` / `phreeqc_missing`, plus a parse status).
+
+A sweep produces a **batch result table** — one row per scenario with its metadata
+(`leachant_type` / `leachant_concentration_M` / `time_min` / `temperature_C`), `status`,
+`parse_status`, predicted `pH` / `pe`, per-element totals (`<El>_mM`), the key saturation indices,
+runtime, and any warnings — downloadable as CSV.
+
+### Prototype scale only
+
+The app runs **at most 20 scenarios per sweep** (`batch_executor.DEFAULT_MAX_SCENARIOS`). A larger
+matrix is **capped** (the extra scenarios are dropped, with a clear flag — never silently), and the
+UI shows:
+
+> This prototype supports small confirmed sweeps. Large/adaptive search requires a dedicated
+> batch/optimization workflow.
+
+Hundreds or thousands of simulations are intentionally **not** attempted inside Streamlit — that is
+future work (see below).
+
+### Dynamic plots (only when results exist)
+
+After a sweep, the Simulate tab draws plots **only because actual execution results exist**:
+
+- **predicted pH vs the sweep parameter**, and
+- **predicted dissolved totals (mM) vs the sweep parameter** (one line per element), and
+- an **execution-status summary**.
+
+The x-axis is detected automatically: if **concentration** varies it is the x-axis; else **time**;
+else **temperature**; else the **scenario id**. Read these plots as *"how the model's prediction
+changes as I vary this one input"* — a trend in the model, under its assumptions. They are **not**
+measured data and **not** a validation. Every plot carries the caption *"Generated from PHREEQC
+execution of reviewed simulation inputs. Not validated against measured data."* and is **separate**
+from the measured-vs-model pH / residual graphs in **Validate** / **Compare Results** (a Simulate
+run never changes those).
+
+### Next future step
+
+Beyond small confirmed sweeps, the natural next layers are an **adaptive simulation search**
+(propose the next most-informative scenario from the results so far) and a **surrogate-assisted
+exploration** (use the experimental PHREEQC surrogate to scan a wide input space cheaply, then run
+real PHREEQC only at the promising points). Both need a dedicated batch/optimization workflow and
+are out of scope for this in-app prototype.
+
 ## Why these results are not validation results
 
 A simulation result is the model's prediction under the assumptions baked into the input (the
@@ -101,6 +152,11 @@ Step-9 run changes none of them.
   `execute_preview` (structured `ExecutionResult`, never raises), `parse_outputs` (structured
   `ParsedSimulation`), and the safe-workspace guard. Imports only `config` + the parsers; no AI, no
   comparison module, not even the Match-tab runner.
+- `flyash_phreeqc_ml/simulation/batch_executor.py` — the small-sweep orchestrator: `run_batch`
+  (capped at `DEFAULT_MAX_SCENARIOS`, never stops on one failure), `build_result_table`,
+  `detect_sweep_axis`, `sweep_plot_frame`. Imports only the single-scenario executor (+ pandas).
 - The Simulate **Step 9** UI lives in `app.py` (`_render_run_deterministic_model` /
-  `_render_simulation_result`).
-- Covered by `tests/test_phreeqc_executor.py`; boundaries by `tests/test_ai_boundary.py`.
+  `_render_simulation_result` / `_render_run_sweep` / `_render_sweep_results` /
+  `_render_sweep_plots`).
+- Covered by `tests/test_phreeqc_executor.py` + `tests/test_batch_executor.py`; boundaries by
+  `tests/test_ai_boundary.py`.

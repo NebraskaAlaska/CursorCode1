@@ -79,6 +79,7 @@ from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: 
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
+from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -748,7 +749,7 @@ _EXEC_STATUS_LEVEL = {
 }
 
 
-def _render_run_deterministic_model(previews) -> None:
+def _render_run_deterministic_model(previews, matrix=None) -> None:
     """Step 9 — run PHREEQC on a reviewed input preview (explicit, gated; never automatic).
 
     Runs the **exact** reviewed input text. Results are simulation outputs, **not** validated
@@ -809,6 +810,137 @@ def _render_run_deterministic_model(previews) -> None:
     stored = st.session_state.get("sim_exec_results", {}).get(chosen)
     if stored:
         _render_simulation_result(stored["result"], stored["parsed"])
+
+    # --- small-sweep (batch) execution ----------------------------------- #
+    if len(previews) > 1:
+        st.divider()
+        _render_run_sweep(previews, matrix)
+
+
+def _render_run_sweep(previews, matrix) -> None:
+    """Run a confirmed *small sweep* — every reviewed preview, capped at the prototype limit."""
+    st.markdown("##### Run confirmed sweep")
+    n = len(previews)
+    maxn = batch_executor.DEFAULT_MAX_SCENARIOS
+    n_run = min(n, maxn)
+    st.caption(f"The plan has **{n}** scenario(s); each one invokes PHREEQC and may take a few "
+               "seconds. This prototype runs small, confirmed sweeps only.")
+    if n > maxn:
+        app_ui.render_warning_panel(
+            f"Large sweep — only the first {maxn} will run",
+            f"{n} scenarios exceed the prototype limit of {maxn}. {batch_executor.LARGE_SWEEP_MESSAGE}",
+            level="warning")
+    app_ui.render_warning_panel(
+        "This runs deterministic PHREEQC for each scenario",
+        "It executes the reviewed inputs exactly — not AI-generated output, and not validated "
+        "against measured data. Outputs are simulation results, not validated predictions.",
+        level="warning")
+
+    confirm = st.checkbox(
+        f"I have reviewed these inputs and want to run {n_run} PHREEQC scenario(s).",
+        key="sim_sweep_confirm")
+    if st.button("Run confirmed sweep", disabled=not confirm, key="sim_sweep_btn"):
+        prog = st.progress(0.0, text="Starting…")
+
+        def _cb(i, total, sid, status):
+            prog.progress(i / max(1, total), text=f"[{i}/{total}] {sid} — {status}")
+
+        with st.spinner("Running sweep…"):
+            batch = batch_executor.run_batch(previews, on_progress=_cb)
+        prog.empty()
+        st.session_state["sim_batch_result"] = batch
+        st.session_state["sim_batch_matrix"] = matrix
+
+    batch = st.session_state.get("sim_batch_result")
+    if batch is not None:
+        _render_sweep_results(batch, st.session_state.get("sim_batch_matrix"))
+
+
+def _render_sweep_results(batch, matrix) -> None:
+    """Status summary + batch table + dynamic plots (only because results exist)."""
+    counts = batch.status_counts()
+    st.markdown("**Execution status** — "
+                + " · ".join(f"`{k}`: {v}" for k, v in counts.items()))
+    if batch.truncated:
+        st.warning(f"Ran the first {batch.executed} of {batch.requested} scenarios. "
+                   + batch_executor.LARGE_SWEEP_MESSAGE)
+    st.caption("📌 " + batch_executor.SWEEP_OUTPUT_LABEL)
+
+    table = batch_executor.build_result_table(batch, matrix)
+    st.dataframe(table, hide_index=True, use_container_width=True,
+                 height=min(360, 60 + 30 * len(table)))
+    st.download_button("Download sweep results (CSV)", table.to_csv(index=False),
+                       file_name="simulation_sweep_results.csv", mime="text/csv",
+                       key="sim_sweep_dl")
+    _render_sweep_plots(batch, table, matrix)
+
+
+def _render_sweep_plots(batch, table, matrix) -> None:
+    """pH-vs-sweep + element-totals-vs-sweep + status summary — drawn only when runs succeeded."""
+    if batch.n_success == 0:
+        st.info("No successful scenarios to plot. See the status column above for why.")
+        return
+    axis_col, axis_label = batch_executor.detect_sweep_axis(matrix)
+
+    # 1) pH vs sweep parameter
+    ph_frame = batch_executor.sweep_plot_frame(table, axis_col, "pH")
+    if not ph_frame.empty:
+        st.markdown(f"**Predicted pH vs {axis_label}** (simulation output)")
+        st.pyplot(_sweep_line_figure(ph_frame, axis_label, "predicted pH", axis_col is None))
+
+    # 2) element totals vs sweep parameter
+    el_cols = [c for c in table.columns if c.endswith("_mM")]
+    el_frames = {c[:-3]: batch_executor.sweep_plot_frame(table, axis_col, c) for c in el_cols}
+    el_frames = {el: fr for el, fr in el_frames.items() if not fr.empty}
+    if el_frames:
+        st.markdown(f"**Predicted dissolved totals (mM) vs {axis_label}** (simulation output)")
+        st.pyplot(_sweep_multi_line_figure(el_frames, axis_label, "mM", axis_col is None))
+
+    # 3) status summary
+    st.markdown("**Execution status summary**")
+    st.bar_chart(pd.Series(batch.status_counts(), name="scenarios"))
+
+    st.caption(batch_executor.SWEEP_OUTPUT_LABEL + " These are **separate** from the measured-vs-"
+               "model pH / residual graphs in **Validate** / **Compare Results**, which a "
+               "simulation run never changes.")
+
+
+def _sweep_line_figure(frame, xlabel, ylabel, categorical_x):
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+    fig, ax = plt.subplots(figsize=(7, 3.4))
+    if categorical_x:
+        ax.plot(range(len(frame)), frame["y"], "o-", color="#3b7dd8")
+        ax.set_xticks(range(len(frame)))
+        ax.set_xticklabels(frame["scenario_id"], rotation=45, ha="right", fontsize=8)
+    else:
+        ax.plot(frame["x"], frame["y"], "o-", color="#3b7dd8")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def _sweep_multi_line_figure(frames: dict, xlabel, ylabel, categorical_x):
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+    fig, ax = plt.subplots(figsize=(7, 3.8))
+    cmap = plt.get_cmap("tab10")
+    for i, (label, fr) in enumerate(sorted(frames.items())):
+        color = cmap(i % 10)
+        if categorical_x:
+            ax.plot(range(len(fr)), fr["y"], "o-", label=label, color=color)
+        else:
+            ax.plot(fr["x"], fr["y"], "o-", label=label, color=color)
+    if categorical_x and frames:
+        any_fr = next(iter(frames.values()))
+        ax.set_xticks(range(len(any_fr)))
+        ax.set_xticklabels(any_fr["scenario_id"], rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncol=2)
+    fig.tight_layout()
+    return fig
 
 
 def _render_simulation_result(result, parsed) -> None:
@@ -1058,7 +1190,7 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
                                       material_profile=selected_profile)
         st.divider()
-        _render_run_deterministic_model(st.session_state.get("sim_previews"))
+        _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
