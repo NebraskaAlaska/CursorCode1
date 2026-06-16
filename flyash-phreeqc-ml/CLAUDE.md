@@ -651,6 +651,40 @@ experiment — **not** a blind replacement for the chemistry.
   Verified by a 4-lens adversarial review (logic-untouched / boundaries / scientific-honesty all pass).
   `tests/test_app_tabs_smoke.py` updated to the seven-tab order + a renovated-identity assertion.
 
+- **pH-graph provenance + Simulate plan-only clarification** (UI labels only; no science change). Audited
+  every pH graph and made explicit that the Simulate tab is **plan-only and wired to no graph** — it renders
+  only tables (scenario + plan matrix), runs no model, writes no file. Added a Simulate-tab note ("Changing
+  simulation-plan values does not update result graphs until a deterministic model is executed"), a
+  `_png_provenance_caption` helper stamping every **static** result PNG (`measured_vs_phreeqc.png` /
+  `residuals_by_sample.png` / the PHREEQC-only `pH.png`) with its **source path + generated time + type +
+  "regenerated only by re-running the workflow, not by the Simulate tab"**, and "not affected by the Simulate
+  tab" notes on the **live** measured-only / measured-vs-model figures. `_read_csv` was already mtime-keyed
+  (no stale-cache bug) — the graphs were simply unconnected to Simulate by design. Covered by
+  `tests/test_ph_graph_provenance.py`.
+
+- **Deterministic PHREEQC input previews (Simulate Step 7)** (planning layer only — **no PHREEQC
+  execution**; AI writes no input). After a confirmed plan, `flyash_phreeqc_ml/simulation/phreeqc_input_builder.py`
+  (new) templates a reviewable **draft `.pqi`** per scenario: `build_phreeqc_input_preview(scenario, *,
+  scenario_id, material_profile)` / `build_previews_for_matrix(...)` → a `PhreeqcInputPreview` (scenario_id,
+  phreeqc_input_text, template_type, status, warnings, assumptions, unsupported_features). Conservative
+  templates for **water / NaOH / HCl** (each `SOLUTION` block states its assumptions: full dissociation,
+  charge-balanced pH, equilibrium-only); every input carries comment lines stating it is a draft preview,
+  PHREEQC has not been run, it needs expert review, the database choice matters, material composition
+  controls quality, kinetics are not modeled, and precipitation depends on the phase-list + database.
+  **Status** (deterministic precedence): `unsupported_leachant` → `missing_required_field` →
+  `needs_material_composition` → `template_warning` (water/HCl are preview-only — the on-demand runner
+  templates NaOH only) → `ready_for_review` (NaOH + a *usable* assay); `draft_only` for a generic material.
+  **It never runs PHREEQC** (imports no `subprocess`/`os`/`phreeqc_runner`), **writes no files** (in-memory
+  + downloadable `.pqi` only), and **never invents material composition** — composition is included only from
+  a profile's **usable** declared assay (`measured`/`literature-confirmed`); a quarantined
+  `literature-proposed` assay is ignored (so fly ash, shipping no committed assay, honestly lands at
+  `needs_material_composition`). **AI writes no PHREEQC input** — the LLM only extracted the scenario;
+  deterministic code templates the text. Simulate **Step 7** adds the preview (button → scenario selector →
+  `.pqi` code block → warnings/assumptions/unsupported panels → `.pqi` download) with the standing "Input
+  preview only — PHREEQC has not been run yet" label. The existing `phreeqc_runner` and all result-path logic
+  are **untouched**. Docs in `docs/simulation_planner.md`; covered by `tests/test_phreeqc_input_builder.py`;
+  boundaries (no execution, no AI import, not on the result path) pinned by `tests/test_ai_boundary.py`.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -865,11 +899,14 @@ modules together and own all file I/O paths.
   status value is `matrix.STATUS_PLAN_ONLY="plan_only"`, decoupled from the label), `safety.py`
   (**deterministic** missing-field + scientific-warning analysis — caveats from code, not the AI),
   `rule_parser.py` (non-AI regex extractor), `matrix.py` (`build_simulation_matrix(scenario, ranges=…)` →
-  a `status='plan_only'` plan table; range-ready). `ai/scenario_parser.py` extracts a scenario via the
-  key-safe AI client (strict-JSON, validated; invalid → controlled error) and **falls back to
-  `rule_parser`** when AI is off. Drives the **Simulate** tab. **Never runs PHREEQC, never overwrites data,
-  never becomes verified data** — boundary pinned by `tests/test_ai_boundary.py`. Covered by
-  `tests/test_scenario_parser.py` + `tests/test_simulation_matrix.py`. Docs: `docs/simulation_planner.md`.
+  a `status='plan_only'` plan table; range-ready), and `phreeqc_input_builder.py` (**deterministic** draft
+  `.pqi` preview from a confirmed scenario/matrix row — water/NaOH/HCl templates, status precedence, never
+  runs PHREEQC, writes no files, never invents composition; Simulate Step 7). `ai/scenario_parser.py`
+  extracts a scenario via the key-safe AI client (strict-JSON, validated; invalid → controlled error) and
+  **falls back to `rule_parser`** when AI is off. Drives the **Simulate** tab. **Never runs PHREEQC, never
+  overwrites data, never becomes verified data; AI never writes PHREEQC input** — boundaries pinned by
+  `tests/test_ai_boundary.py`. Covered by `tests/test_scenario_parser.py` + `tests/test_simulation_matrix.py`
+  + `tests/test_phreeqc_input_builder.py`. Docs: `docs/simulation_planner.md`.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
   layers (provenance, inclusion, traces, bias, **element recovery**, conversions, audit) into a
