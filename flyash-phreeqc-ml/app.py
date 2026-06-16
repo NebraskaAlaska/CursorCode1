@@ -1076,15 +1076,96 @@ def _render_refined_sweep(ranking, table, axis_col) -> None:
     sug = sim_strategy.suggest_refined_sweep(ranking, table, axis_col)
     if sug.kind == "none":
         return
-    st.markdown("##### Suggested next sweep")
+    st.markdown("##### Suggested refined sweep")
     st.info(sug.message)
     if sug.rationale:
         st.caption(sug.rationale)
-    if sug.suggested_values:
-        st.caption("Suggested values: "
-                   + ", ".join(f"{v:g}" if isinstance(v, (int, float)) else str(v)
-                               for v in sug.suggested_values)
-                   + " — **review before running. Nothing runs automatically.**")
+
+    plan = sim_strategy.refined_sweep_plan(
+        sug, ranking, table, max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS)
+    if plan.blocked or not plan.axis:
+        st.warning(plan.info)
+        st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
+        return
+
+    st.markdown(f"**Suggested sweep parameter:** `{plan.axis}`")
+    st.caption(plan.info)
+    for w in plan.warnings:
+        st.warning(w)
+    _render_refined_matrix_builder(plan, ranking)
+
+
+def _render_refined_matrix_builder(plan, ranking) -> None:
+    """Editable refined values → confirmed, plan-only matrix (never auto-runs)."""
+    default = ", ".join(f"{v:g}" for v in plan.values)
+    raw = st.text_input(f"Refined `{plan.axis}` values (comma-separated, editable)",
+                        value=default, key="sim_refine_vals")
+    edited = [v for v in (sim_schema.as_float(x) for x in raw.split(",")) if v is not None]
+    physical = [v for v in edited if sim_strategy.is_physical_value(plan.axis, v)]
+    dropped = len(edited) - len(physical)
+    if dropped:
+        st.warning(f"Ignored {dropped} nonphysical value(s) for `{plan.axis}` (must be above its "
+                   "physical floor).")
+    cap = batch_executor.DEFAULT_MAX_SCENARIOS
+    if len(physical) > cap:
+        st.warning(f"{len(physical)} values exceed the small-sweep cap of {cap} — only the first "
+                   f"{cap} will be used. {sim_strategy.LARGE_SCALE_MESSAGE}")
+        physical = sorted(physical)[:cap]
+    user_edited = sorted(round(v, 6) for v in physical) != list(plan.values)
+
+    st.markdown(f"**New refined matrix:** {len(physical)} scenario(s) over `{plan.axis}` "
+                "(plan-only until you review the input previews and run it).")
+    st.caption("📌 " + sim_strategy.REFINEMENT_LABEL)
+
+    replace = st.checkbox("Replace the current sweep plan with this refined matrix",
+                          value=True, key="sim_refine_replace")
+    confirm = st.checkbox("I have reviewed these refined values.", key="sim_refine_confirm")
+    if st.button("Generate refined matrix", disabled=not (confirm and physical),
+                 key="sim_refine_btn"):
+        sc = st.session_state.get("sim_scenario")
+        new_matrix = sim_matrix.build_simulation_matrix(sc, ranges={plan.axis: physical})
+        st.session_state["sim_refined_matrix"] = new_matrix
+        import datetime as _dt
+        top_score = None
+        try:
+            if ranking.ranked is not None and not ranking.ranked.empty:
+                top_score = float(ranking.ranked.iloc[0].get("score"))
+        except Exception:                                    # noqa: BLE001
+            top_score = None
+        st.session_state["sim_refinement"] = {
+            "parent_run_id": st.session_state.get("sim_saved_run_id"),
+            "parent_top_scenario_id": ranking.top_scenario_id,
+            "objective": ranking.objective.display() if ranking.objective else None,
+            "objective_kind": ranking.objective.kind if ranking.objective else None,
+            "ranking_top_score": top_score,
+            "reason": plan.info,
+            "suggestion_kind": plan.kind,
+            "axis": plan.axis,
+            "suggested_values": list(plan.values),
+            "applied_values": list(physical),
+            "user_edited": bool(user_edited),
+            "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        if replace:
+            st.session_state["sim_matrix"] = new_matrix
+            for k in ("sim_previews", "sim_previews_mpid", "sim_batch_result",
+                      "sim_batch_matrix", "sim_exec_results", "sim_ranking",
+                      "sim_ranking_axis", "sim_saved_run_id"):
+                st.session_state.pop(k, None)
+            st.success("Replaced the plan with the refined matrix. Review the input previews "
+                       "(Step 8) and run it (Step 9) — **nothing runs automatically**.")
+            st.rerun()
+        else:
+            st.success("Built a refined matrix below (it did **not** replace your current plan).")
+
+    refined = st.session_state.get("sim_refined_matrix")
+    if refined is not None and not replace:
+        st.markdown("**Refined matrix (plan-only)**")
+        st.dataframe(refined, hide_index=True, use_container_width=True,
+                     height=min(240, 60 + 30 * len(refined)))
+        st.download_button("Download refined plan (CSV)", refined.to_csv(index=False),
+                           file_name="refined_simulation_plan.csv", mime="text/csv",
+                           key="sim_refine_dl")
     st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
 
 
@@ -1177,7 +1258,8 @@ def _render_save_simulation_run(matrix) -> None:
             material_profile=_selected_material_profile(),
             previews=st.session_state.get("sim_previews"),
             experiment_text=st.session_state.get("sim_desc"),
-            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes)
+            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes,
+            refinement=st.session_state.get("sim_refinement"))
         try:
             out_dir = reg.save_run(record)
             st.session_state["sim_saved_run_id"] = rid
@@ -1354,7 +1436,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         with st.spinner("Extracting scenario…"):
             st.session_state["sim_parse_result"] = ai_scenario_parser.parse_scenario(
                 desc, outputs, prefer_ai=use_ai)
-        st.session_state.pop("sim_matrix", None)
+        for k in ("sim_matrix", "sim_refinement", "sim_refined_matrix", "sim_ranking"):
+            st.session_state.pop(k, None)
 
     res = st.session_state.get("sim_parse_result")
     if res is None:
@@ -1458,7 +1541,9 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         sc.liquid_solid_ratio = sc.computed_ls_ratio()
         st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc, ranges=ranges)
         st.session_state["sim_scenario"] = sc      # confirmed scenario → drives the .pqi preview
-        st.session_state.pop("sim_previews", None)
+        # A fresh, non-refined plan supersedes any prior refinement provenance.
+        for k in ("sim_previews", "sim_refinement", "sim_refined_matrix"):
+            st.session_state.pop(k, None)
     if not confirmed:
         st.caption("Confirm the reviewed scenario (Step 5) to enable plan generation.")
 

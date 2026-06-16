@@ -57,6 +57,19 @@ LARGE_SCALE_MESSAGE = ("Large-scale/adaptive search requires a dedicated batch b
                        "confirmed sweeps.")
 RANKING_NOT_VALIDATION = ("Ranking is based only on executed PHREEQC simulation outputs. It is "
                           "not validation against measured data.")
+REFINEMENT_LABEL = ("This is a small reviewed refinement, not large-scale automatic "
+                    "optimization.")
+# Mirrors batch_executor.DEFAULT_MAX_SCENARIOS — kept local so this pure module never imports
+# the executor (it must not be able to run anything).
+DEFAULT_MAX_SCENARIOS = 20
+
+# Per-axis physical floor (exclusive). A refined value must be strictly above it.
+_PHYSICAL_FLOOR = {
+    REAGENT_COLUMN: 0.0,        # a concentration must be > 0
+    "time_min": 0.0,           # a reaction time must be > 0
+    "liquid_solid_ratio": 0.0,
+    "temperature_C": -273.15,  # above absolute zero (0 °C and a few °C are physical)
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -513,3 +526,137 @@ def suggest_refined_sweep(ranking: RankingResult, table: pd.DataFrame,
                        f"finer values around it — try {', '.join(f'{m:g}' for m in sug.suggested_values)}.")
         sug.rationale = "Optimum is inside the swept range — refine locally."
     return sug
+
+
+# --------------------------------------------------------------------------- #
+# Turn a suggestion into a concrete, physical, capped refined sweep (plan only)
+# --------------------------------------------------------------------------- #
+def physical_floor(axis: str | None):
+    """The exclusive lower bound for an axis (None when there is no physical constraint)."""
+    return _PHYSICAL_FLOOR.get(axis)
+
+
+def is_physical_value(axis: str | None, value) -> bool:
+    """True if ``value`` is a usable, physically-valid value for ``axis``."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    if v != v:                                       # NaN
+        return False
+    floor = _PHYSICAL_FLOOR.get(axis)
+    return True if floor is None else v > floor
+
+
+@dataclass
+class RefinedSweepPlan:
+    """A concrete, reviewed-before-run refined sweep derived from a suggestion."""
+
+    axis: str | None = None
+    values: list = field(default_factory=list)       # the sweep values for the new matrix
+    kind: str = "none"
+    info: str = ""
+    warnings: list = field(default_factory=list)
+    blocked: bool = False                            # True → no matrix can be generated
+    truncated: bool = False
+    n_requested: int = 0
+
+    @property
+    def can_generate(self) -> bool:
+        return not self.blocked and bool(self.values)
+
+
+def _axis_values(ranking, table, axis) -> list:
+    """The distinct successful axis values (from the ranking, else the table)."""
+    vals: list = []
+    ranked = getattr(ranking, "ranked", None)
+    if ranked is not None and not getattr(ranked, "empty", True) and axis in ranked.columns:
+        vals = pd.to_numeric(ranked[axis], errors="coerce").dropna().tolist()
+    if not vals and table is not None and "status" in getattr(table, "columns", []) \
+            and axis in table.columns:
+        ok = table[table["status"] == STATUS_SUCCESS]
+        vals = pd.to_numeric(ok[axis], errors="coerce").dropna().tolist()
+    return sorted({float(v) for v in vals})
+
+
+def refined_sweep_plan(suggestion: RefinedSweepSuggestion, ranking=None, table=None, *,
+                       max_scenarios: int = DEFAULT_MAX_SCENARIOS) -> RefinedSweepPlan:
+    """Deterministically convert a :class:`RefinedSweepSuggestion` into concrete sweep values.
+
+    Rules: ``extend_upper`` adds higher values cautiously; ``extend_lower`` adds lower values
+    but never nonphysical (≤0 concentration/time) ones; ``refine_internal`` makes a finer grid
+    around the best region; ``narrow_failures`` proposes a smaller safe range;
+    ``add_selected_output`` generates **no** chemistry values (it is blocked with a warning to
+    improve the parser/SELECTED_OUTPUT). The result is capped at ``max_scenarios``. It is a
+    **plan only** — this function runs nothing.
+    """
+    plan = RefinedSweepPlan(axis=suggestion.axis, kind=suggestion.kind)
+
+    if suggestion.kind == "add_selected_output":
+        plan.blocked = True
+        plan.info = ("No new chemistry values are generated — add the SELECTED_OUTPUT / parser "
+                     "definitions for the missing metric(s), then re-run the existing sweep.")
+        return plan
+    axis = suggestion.axis
+    if suggestion.kind in ("none", "define_sweep") or not axis:
+        plan.blocked = True
+        plan.info = suggestion.message or "Define a sweep parameter first."
+        return plan
+
+    xs = _axis_values(ranking, table, axis)
+    if not xs:
+        plan.blocked = True
+        plan.info = "No swept values to refine from."
+        return plan
+    step = _median_step(xs) if len(xs) >= 2 else (abs(xs[-1]) or 1.0) * 0.5
+
+    raw: list = []
+    if suggestion.kind == "extend_upper":
+        hi = xs[-1]
+        raw = [hi, hi + step, hi + 2 * step]
+        plan.info = "Cautiously extended the range upward (two steps beyond the edge)."
+    elif suggestion.kind == "extend_lower":
+        lo = xs[0]
+        cand = [lo - step, lo - 2 * step]
+        phys = [c for c in cand if is_physical_value(axis, c)]
+        if phys:
+            raw = [lo] + phys
+        else:
+            raw = [lo, lo / 2.0]
+            plan.warnings.append(
+                f"A lower extension of {axis} would be nonphysical (≤ its floor) — used a halved "
+                "value instead of a negative/zero one.")
+        plan.info = "Cautiously extended the range downward, keeping every value physical."
+    elif suggestion.kind == "refine_internal":
+        ranked = getattr(ranking, "ranked", None)
+        best = (float(ranked.iloc[0].get(axis)) if ranked is not None
+                and not getattr(ranked, "empty", True) and axis in ranked.columns
+                else xs[len(xs) // 2])
+        i = xs.index(min(xs, key=lambda x: abs(x - best)))
+        lower = xs[i - 1] if i > 0 else best - step
+        upper = xs[i + 1] if i < len(xs) - 1 else best + step
+        raw = [lower, (lower + best) / 2, best, (best + upper) / 2, upper]
+        plan.info = "Refined with finer values around the best region."
+    elif suggestion.kind == "narrow_failures":
+        mid = xs[len(xs) // 2]
+        raw = [mid * 0.75, mid, mid * 1.25]
+        plan.info = "Narrowed to a smaller, safer range after many prior failures."
+    else:
+        plan.blocked = True
+        plan.info = "No refinement available for this suggestion."
+        return plan
+
+    cleaned = sorted({round(float(v), 6) for v in raw if is_physical_value(axis, v)})
+    if len(cleaned) < len(raw) and not any("nonphysical" in w for w in plan.warnings):
+        plan.warnings.append(f"Dropped nonphysical value(s) for {axis}; kept only physical ones.")
+    plan.n_requested = len(cleaned)
+    if len(cleaned) > max_scenarios:
+        plan.truncated = True
+        plan.warnings.append(
+            f"Refined sweep capped at {max_scenarios} scenarios (the small-sweep limit).")
+        cleaned = cleaned[:max_scenarios]
+    plan.values = cleaned
+    if not plan.values:
+        plan.blocked = True
+        plan.info = "No physical refined values could be generated."
+    return plan
