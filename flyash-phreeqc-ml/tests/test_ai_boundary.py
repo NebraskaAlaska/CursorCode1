@@ -176,3 +176,121 @@ def test_materials_manager_imports_no_science_or_planner():
                 "materials/__init__.py"):
         offenders = _mentions(_import_targets(mod), forbidden)
         assert not offenders, f"{mod} imports forbidden module: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# PHREEQC execution layer boundary — runs PHREEQC, but stays off the result path
+# --------------------------------------------------------------------------- #
+EXECUTOR_MODULE = "simulation/phreeqc_executor.py"
+
+
+def test_executor_imports_no_ai():
+    """The execution layer must not import any AI helper (AI never writes/runs input)."""
+    targets = _import_targets(EXECUTOR_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{EXECUTOR_MODULE} imports AI: {offenders}"
+
+
+def test_executor_imports_no_result_path():
+    """The execution layer must not import the comparison/residual/mapping/validation code,
+    nor the Match-tab runner (which appends to the shared results CSV). It depends only on
+    config + the parsers."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(EXECUTOR_MODULE), forbidden)
+    assert not offenders, f"{EXECUTOR_MODULE} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_executor():
+    """The result path must not import the executor (it is off the scientific path)."""
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("phreeqc_executor", "batch_executor"))
+        assert not offenders, f"{mod} imports the executor: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Small-sweep batch executor boundary — orchestrates the executor, nothing else
+# --------------------------------------------------------------------------- #
+BATCH_MODULE = "simulation/batch_executor.py"
+
+
+def test_batch_executor_imports_no_ai():
+    targets = _import_targets(BATCH_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{BATCH_MODULE} imports AI: {offenders}"
+
+
+def test_batch_executor_imports_no_result_path():
+    """It may import the single-scenario executor, but no comparison/residual/mapping code,
+    no runner, and no run_manager."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(BATCH_MODULE), forbidden)
+    assert not offenders, f"{BATCH_MODULE} imports result-path code: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Simulation run registry boundary — provenance store, off the result path
+# --------------------------------------------------------------------------- #
+REGISTRY_MODULE = "simulation/run_registry.py"
+
+
+def test_run_registry_imports_no_ai():
+    targets = _import_targets(REGISTRY_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{REGISTRY_MODULE} imports AI: {offenders}"
+
+
+def test_run_registry_imports_no_result_path():
+    """The registry may import the executors (for data shapes + the safe-path guard), but no
+    comparison/residual/mapping/validation code and not the Match-tab runner / run_manager."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    offenders = _mentions(_import_targets(REGISTRY_MODULE), forbidden)
+    assert not offenders, f"{REGISTRY_MODULE} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_run_registry():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("run_registry",))
+        assert not offenders, f"{mod} imports the run registry: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Simulation strategy / ranking boundary — pure optimisation over predictions
+# --------------------------------------------------------------------------- #
+STRATEGY_MODULE = "simulation/strategy.py"
+
+
+def test_strategy_imports_no_ai():
+    targets = _import_targets(STRATEGY_MODULE)
+    offenders = _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{STRATEGY_MODULE} imports AI: {offenders}"
+
+
+def test_strategy_imports_no_result_path_or_executor():
+    """Ranking is pure: it scores a table and imports no executor (cannot run anything), no
+    comparison/residual/mapping code, and no AI."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager",
+                 "phreeqc_executor", "batch_executor", "subprocess")
+    offenders = _mentions(_import_targets(STRATEGY_MODULE), forbidden)
+    assert not offenders, f"{STRATEGY_MODULE} imports execution/result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_strategy():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("simulation.strategy", ".strategy"))
+        assert not offenders, f"{mod} imports the strategy module: {offenders}"

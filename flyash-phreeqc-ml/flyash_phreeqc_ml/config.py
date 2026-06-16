@@ -28,6 +28,14 @@ FIGURES_DIR: Path = REPORTS_DIR / "figures"
 # not pipeline datasets. Gitignored like the other generated artifacts.
 OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
 TABLES_DIR: Path = OUTPUTS_DIR / "tables"
+# Safe workspace for the Simulate tab's deterministic PHREEQC execution (Prompt:
+# execution layer). Generated .pqi/.pqo/.sel land here, never in data/raw or the
+# source tree, and are gitignored (see .gitignore: outputs/simulations/).
+SIMULATIONS_DIR: Path = OUTPUTS_DIR / "simulations"
+# Saved Simulate-tab run records (provenance for executed simulations). One folder per
+# run, holding run_metadata.json + parsed_results.csv + scenario_matrix.csv +
+# assumptions_warnings.json. Generated provenance — gitignored, never measured data.
+SIMULATION_RUNS_DIR: Path = OUTPUTS_DIR / "simulation_runs"
 
 # Experiment-run "save files" (app-level run manager). Each run is a subfolder
 # under here holding its own run_config.yaml, data/, and outputs/. This is an

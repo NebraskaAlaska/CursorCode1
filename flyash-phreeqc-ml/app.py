@@ -78,6 +78,10 @@ from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: 
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
+from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
+from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
+from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
+from flyash_phreeqc_ml.simulation import strategy as sim_strategy  # noqa: E402  (objective + ranking)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -735,6 +739,579 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> No
             st.markdown(f"- {u}")
 
 
+# --------------------------------------------------------------------------- #
+# Step 9 — Run deterministic model (gated PHREEQC execution; off the result path)
+# --------------------------------------------------------------------------- #
+_EXEC_STATUS_LEVEL = {
+    phreeqc_executor.STATUS_SUCCESS: "exact",
+    phreeqc_executor.STATUS_FAILED: "unsafe",
+    phreeqc_executor.STATUS_TIMEOUT: "unsafe",
+    phreeqc_executor.STATUS_MISSING: "preliminary",
+    phreeqc_executor.STATUS_NOT_RUN: "neutral",
+}
+
+
+def _render_run_deterministic_model(previews, matrix=None) -> None:
+    """Step 9 — run PHREEQC on a reviewed input preview (explicit, gated; never automatic).
+
+    Runs the **exact** reviewed input text. Results are simulation outputs, **not** validated
+    predictions, and never touch mapping / residuals / validation / the comparison.
+    """
+    st.markdown("#### Step 9 — Run deterministic model")
+    av = phreeqc_executor.check_availability()
+    cfg_badge = app_ui.status_badge("PHREEQC configured" if av.can_run else "PHREEQC not configured",
+                                    "exact" if av.can_run else "preliminary")
+    st.markdown(cfg_badge, unsafe_allow_html=True)
+
+    if not previews:
+        st.info("Generate an input preview in **Step 8** first — then you can run it here.")
+        return
+    if not av.can_run:
+        app_ui.render_warning_panel("PHREEQC execution is not configured", av.message,
+                                    level="warning")
+        st.caption("To enable execution, set `PHREEQC_EXE` (the `phreeqc` binary, or put it on "
+                   "PATH) and `PHREEQC_DATABASE` (your CEMDATA18 `.dat` file — not shipped). The "
+                   "planner, preview, and download all work fully without this.")
+        return
+
+    ids = [p.scenario_id for p in previews]
+    default = st.session_state.get("sim_pqi_choice")
+    idx = ids.index(default) if default in ids else 0
+    chosen = st.selectbox("Scenario to run", ids, index=idx, key="sim_exec_choice") \
+        if len(ids) > 1 else ids[0]
+    pv = next(p for p in previews if p.scenario_id == chosen)
+
+    st.markdown(
+        f"Selected **{pv.scenario_id}** · input status "
+        + app_ui.status_badge(pv.status.replace("_", " "),
+                              _PREVIEW_STATUS_LEVEL.get(pv.status, "neutral")),
+        unsafe_allow_html=True)
+    if pv.status != phreeqc_input_builder.STATUS_READY:
+        st.warning(f"This input is `{pv.status}` (not `ready_for_review`). You can still run it, "
+                   "but the result will reflect the input's limitations (e.g. missing material "
+                   "composition).")
+    app_ui.render_warning_panel(
+        "This runs deterministic PHREEQC",
+        "It executes the reviewed input text exactly. It is not AI-generated output and is not "
+        "validated against measured data yet. Output is a simulation result, not a validated "
+        "prediction.", level="warning")
+    st.caption(f"Files are written to a safe workspace: "
+               f"`{_rel(phreeqc_executor.default_workspace())}` (gitignored — never "
+               "`data/raw` or the source tree).")
+
+    confirm = st.checkbox("I have reviewed this input and want to run PHREEQC on it.",
+                          key=f"sim_exec_confirm_{chosen}")
+    if st.button("Run PHREEQC", disabled=not confirm, key=f"sim_exec_btn_{chosen}"):
+        with st.spinner("Running PHREEQC…"):
+            result = phreeqc_executor.execute_preview(pv)
+            parsed = (phreeqc_executor.parse_outputs(result)
+                      if result.status == phreeqc_executor.STATUS_SUCCESS else None)
+        st.session_state.setdefault("sim_exec_results", {})[chosen] = {
+            "result": result, "parsed": parsed}
+
+    stored = st.session_state.get("sim_exec_results", {}).get(chosen)
+    if stored:
+        _render_simulation_result(stored["result"], stored["parsed"])
+
+    # --- small-sweep (batch) execution ----------------------------------- #
+    if len(previews) > 1:
+        st.divider()
+        _render_run_sweep(previews, matrix)
+
+    # --- save the run with full provenance (only once results exist) ----- #
+    if _collect_simulate_batch() is not None:
+        st.divider()
+        _render_save_simulation_run(matrix)
+
+
+def _render_run_sweep(previews, matrix) -> None:
+    """Run a confirmed *small sweep* — every reviewed preview, capped at the prototype limit."""
+    st.markdown("##### Run confirmed sweep")
+    n = len(previews)
+    maxn = batch_executor.DEFAULT_MAX_SCENARIOS
+    n_run = min(n, maxn)
+    st.caption(f"The plan has **{n}** scenario(s); each one invokes PHREEQC and may take a few "
+               "seconds. This prototype runs small, confirmed sweeps only.")
+    if n > maxn:
+        app_ui.render_warning_panel(
+            f"Large sweep — only the first {maxn} will run",
+            f"{n} scenarios exceed the prototype limit of {maxn}. {batch_executor.LARGE_SWEEP_MESSAGE}",
+            level="warning")
+    app_ui.render_warning_panel(
+        "This runs deterministic PHREEQC for each scenario",
+        "It executes the reviewed inputs exactly — not AI-generated output, and not validated "
+        "against measured data. Outputs are simulation results, not validated predictions.",
+        level="warning")
+
+    confirm = st.checkbox(
+        f"I have reviewed these inputs and want to run {n_run} PHREEQC scenario(s).",
+        key="sim_sweep_confirm")
+    if st.button("Run confirmed sweep", disabled=not confirm, key="sim_sweep_btn"):
+        prog = st.progress(0.0, text="Starting…")
+
+        def _cb(i, total, sid, status):
+            prog.progress(i / max(1, total), text=f"[{i}/{total}] {sid} — {status}")
+
+        with st.spinner("Running sweep…"):
+            batch = batch_executor.run_batch(previews, on_progress=_cb)
+        prog.empty()
+        st.session_state["sim_batch_result"] = batch
+        st.session_state["sim_batch_matrix"] = matrix
+
+    batch = st.session_state.get("sim_batch_result")
+    if batch is not None:
+        _render_sweep_results(batch, st.session_state.get("sim_batch_matrix"))
+
+
+def _render_sweep_results(batch, matrix) -> None:
+    """Status summary + batch table + dynamic plots (only because results exist)."""
+    counts = batch.status_counts()
+    st.markdown("**Execution status** — "
+                + " · ".join(f"`{k}`: {v}" for k, v in counts.items()))
+    if batch.truncated:
+        st.warning(f"Ran the first {batch.executed} of {batch.requested} scenarios. "
+                   + batch_executor.LARGE_SWEEP_MESSAGE)
+    st.caption("📌 " + batch_executor.SWEEP_OUTPUT_LABEL)
+
+    table = batch_executor.build_result_table(batch, matrix)
+    st.dataframe(table, hide_index=True, use_container_width=True,
+                 height=min(360, 60 + 30 * len(table)))
+    st.download_button("Download sweep results (CSV)", table.to_csv(index=False),
+                       file_name="simulation_sweep_results.csv", mime="text/csv",
+                       key="sim_sweep_dl")
+    _simulate_provenance_caption()
+    _render_sweep_plots(batch, table, matrix)
+    if batch.n_success > 0:
+        st.divider()
+        _render_rank_simulation_results(batch, table, matrix)
+
+
+def _render_sweep_plots(batch, table, matrix) -> None:
+    """pH-vs-sweep + element-totals-vs-sweep + status summary — drawn only when runs succeeded."""
+    if batch.n_success == 0:
+        st.info("No successful scenarios to plot. See the status column above for why.")
+        return
+    axis_col, axis_label = batch_executor.detect_sweep_axis(matrix)
+
+    # 1) pH vs sweep parameter
+    ph_frame = batch_executor.sweep_plot_frame(table, axis_col, "pH")
+    if not ph_frame.empty:
+        st.markdown(f"**Predicted pH vs {axis_label}** (simulation output)")
+        st.pyplot(_sweep_line_figure(ph_frame, axis_label, "predicted pH", axis_col is None))
+
+    # 2) element totals vs sweep parameter
+    el_cols = [c for c in table.columns if c.endswith("_mM")]
+    el_frames = {c[:-3]: batch_executor.sweep_plot_frame(table, axis_col, c) for c in el_cols}
+    el_frames = {el: fr for el, fr in el_frames.items() if not fr.empty}
+    if el_frames:
+        st.markdown(f"**Predicted dissolved totals (mM) vs {axis_label}** (simulation output)")
+        st.pyplot(_sweep_multi_line_figure(el_frames, axis_label, "mM", axis_col is None))
+
+    # 3) status summary
+    st.markdown("**Execution status summary**")
+    st.bar_chart(pd.Series(batch.status_counts(), name="scenarios"))
+
+    st.caption(batch_executor.SWEEP_OUTPUT_LABEL + " These are **separate** from the measured-vs-"
+               "model pH / residual graphs in **Validate** / **Compare Results**, which a "
+               "simulation run never changes.")
+
+
+def _sweep_line_figure(frame, xlabel, ylabel, categorical_x):
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+    fig, ax = plt.subplots(figsize=(7, 3.4))
+    if categorical_x:
+        ax.plot(range(len(frame)), frame["y"], "o-", color="#3b7dd8")
+        ax.set_xticks(range(len(frame)))
+        ax.set_xticklabels(frame["scenario_id"], rotation=45, ha="right", fontsize=8)
+    else:
+        ax.plot(frame["x"], frame["y"], "o-", color="#3b7dd8")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def _sweep_multi_line_figure(frames: dict, xlabel, ylabel, categorical_x):
+    import matplotlib.pyplot as plt  # lazy: only when a figure is drawn
+    fig, ax = plt.subplots(figsize=(7, 3.8))
+    cmap = plt.get_cmap("tab10")
+    for i, (label, fr) in enumerate(sorted(frames.items())):
+        color = cmap(i % 10)
+        if categorical_x:
+            ax.plot(range(len(fr)), fr["y"], "o-", label=label, color=color)
+        else:
+            ax.plot(fr["x"], fr["y"], "o-", label=label, color=color)
+    if categorical_x and frames:
+        any_fr = next(iter(frames.values()))
+        ax.set_xticks(range(len(any_fr)))
+        ax.set_xticklabels(any_fr["scenario_id"], rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncol=2)
+    fig.tight_layout()
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# Rank simulation results (optimise over executed predictions — not validation)
+# --------------------------------------------------------------------------- #
+_OBJECTIVE_KIND_LABELS = {
+    sim_strategy.OBJ_MAXIMIZE: "Maximize a target element",
+    sim_strategy.OBJ_MINIMIZE: "Minimize an impurity element",
+    sim_strategy.OBJ_TARGET_PH: "Target a pH range",
+    sim_strategy.OBJ_AVOID_PH: "Avoid an unsafe pH range",
+    sim_strategy.OBJ_MINIMIZE_REAGENT: "Minimize reagent concentration",
+    sim_strategy.OBJ_SELECTIVITY: "Maximize a selectivity ratio (A/B)",
+    sim_strategy.OBJ_WEIGHTED: "Maximize one & minimize another (weighted)",
+}
+
+
+def _objective_editor(detected, table) -> "sim_strategy.SimulationObjective":
+    """Editable objective widgets, pre-filled from the detected objective. Returns it."""
+    elements = [c[:-3] for c in table.columns if c.endswith("_mM")] or ["Ca"]
+
+    def _detected_el(direction):
+        for m in detected.metrics:
+            if m.direction == direction and m.column.endswith("_mM"):
+                return m.column[:-3]
+        return elements[0]
+
+    def _detected_ph():
+        for m in detected.metrics:
+            if m.column == sim_strategy.PH_COLUMN and m.target_low is not None:
+                return float(m.target_low), float(m.target_high)
+        return 10.0, 12.0
+
+    kinds = list(_OBJECTIVE_KIND_LABELS)
+    default_kind = detected.kind if detected.kind in _OBJECTIVE_KIND_LABELS else sim_strategy.OBJ_MAXIMIZE
+    kind = st.selectbox("Objective type", kinds, index=kinds.index(default_kind),
+                        format_func=lambda k: _OBJECTIVE_KIND_LABELS[k], key="sim_rank_kind")
+
+    if kind == sim_strategy.OBJ_MAXIMIZE:
+        el = st.selectbox("Element to maximize", elements,
+                          index=elements.index(_detected_el(sim_strategy.DIR_MAX))
+                          if _detected_el(sim_strategy.DIR_MAX) in elements else 0,
+                          key="sim_rank_maxel")
+        return sim_strategy.maximize(el)
+    if kind == sim_strategy.OBJ_MINIMIZE:
+        el = st.selectbox("Element to minimize", elements, key="sim_rank_minel")
+        return sim_strategy.minimize(el)
+    if kind in (sim_strategy.OBJ_TARGET_PH, sim_strategy.OBJ_AVOID_PH):
+        lo0, hi0 = _detected_ph()
+        c1, c2 = st.columns(2)
+        lo = c1.number_input("pH low", value=lo0, step=0.5, key="sim_rank_phlo")
+        hi = c2.number_input("pH high", value=hi0, step=0.5, key="sim_rank_phhi")
+        return (sim_strategy.target_ph(lo, hi) if kind == sim_strategy.OBJ_TARGET_PH
+                else sim_strategy.avoid_ph(lo, hi))
+    if kind == sim_strategy.OBJ_MINIMIZE_REAGENT:
+        return sim_strategy.minimize_reagent()
+    if kind == sim_strategy.OBJ_SELECTIVITY:
+        c1, c2 = st.columns(2)
+        a = c1.selectbox("Numerator (maximize)", elements, key="sim_rank_sela")
+        b = c2.selectbox("Denominator (minimize)", elements,
+                         index=min(1, len(elements) - 1), key="sim_rank_selb")
+        return sim_strategy.selectivity(a, b)
+    # weighted
+    c1, c2 = st.columns(2)
+    a = c1.selectbox("Maximize", elements, key="sim_rank_wmax")
+    b = c2.selectbox("Minimize", elements, index=min(1, len(elements) - 1), key="sim_rank_wmin")
+    return sim_strategy.weighted([
+        sim_strategy.ObjectiveMetric(f"{a}_mM", sim_strategy.DIR_MAX, label=a),
+        sim_strategy.ObjectiveMetric(f"{b}_mM", sim_strategy.DIR_MIN, label=b)])
+
+
+def _render_rank_simulation_results(batch, table, matrix) -> None:
+    """Rank executed results against a confirmed objective + suggest a refined sweep."""
+    st.markdown("##### Rank simulation results")
+    st.caption("🏷️ " + sim_strategy.RANKING_NOT_VALIDATION)
+
+    detected = sim_strategy.parse_objective(st.session_state.get("sim_outputs", ""))
+    st.markdown(f"**Objective detected from your desired outputs:** `{detected.kind}` — "
+                f"{detected.display()}")
+    for note in detected.notes:
+        st.caption("• " + note)
+
+    objective = _objective_editor(detected, table)
+    st.caption(f"Will rank by: **{objective.display()}** — ranking never runs simulations.")
+    confirm = st.checkbox("Confirm this objective for ranking.", key="sim_rank_confirm")
+    if st.button("Rank results", disabled=not confirm, key="sim_rank_btn"):
+        axis_col, _ = batch_executor.detect_sweep_axis(matrix)
+        st.session_state["sim_ranking"] = sim_strategy.rank_results(table, objective,
+                                                                    axis_col=axis_col)
+        st.session_state["sim_ranking_axis"] = axis_col
+
+    ranking = st.session_state.get("sim_ranking")
+    if ranking is not None:
+        _render_ranking(ranking, table, st.session_state.get("sim_ranking_axis"))
+
+
+def _render_ranking(ranking, table, axis_col) -> None:
+    if ranking.status == "no_successful_rows":
+        st.info("No successfully-executed scenarios to rank.")
+        return
+    if ranking.status == "no_rankable_metrics":
+        for w in ranking.warnings:
+            st.warning(w)
+        st.info("No rankable metric — pick an objective whose metric exists in the results.")
+        _render_refined_sweep(ranking, table, axis_col)
+        return
+
+    st.success(f"Top scenario: **{ranking.top_scenario_id}** "
+               f"(driven by **{ranking.driving_metric}**).")
+    st.dataframe(ranking.ranked, hide_index=True, use_container_width=True,
+                 height=min(320, 60 + 30 * len(ranking.ranked)))
+    for w in ranking.warnings:
+        st.warning(w)
+    if ranking.tradeoffs:
+        st.markdown("**Tradeoffs**")
+        for t in ranking.tradeoffs:
+            st.caption("⚖️ " + t)
+    st.caption("🏷️ " + sim_strategy.RANKING_NOT_VALIDATION)
+    _render_refined_sweep(ranking, table, axis_col)
+
+
+def _render_refined_sweep(ranking, table, axis_col) -> None:
+    sug = sim_strategy.suggest_refined_sweep(ranking, table, axis_col)
+    if sug.kind == "none":
+        return
+    st.markdown("##### Suggested next sweep")
+    st.info(sug.message)
+    if sug.rationale:
+        st.caption(sug.rationale)
+    if sug.suggested_values:
+        st.caption("Suggested values: "
+                   + ", ".join(f"{v:g}" if isinstance(v, (int, float)) else str(v)
+                               for v in sug.suggested_values)
+                   + " — **review before running. Nothing runs automatically.**")
+    st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
+
+
+# --------------------------------------------------------------------------- #
+# Save-run provenance (Simulate executions → outputs/simulation_runs/)
+# --------------------------------------------------------------------------- #
+def _selected_material_profile():
+    """The material profile currently selected in Step 7 (or None)."""
+    store = st.session_state.get("sim_material_profiles", {})
+    pid = st.session_state.get("sim_mp_select")
+    if not pid or str(pid).startswith("(none"):
+        return None
+    return store.get(pid)
+
+
+def _collect_simulate_batch():
+    """A BatchResult of whatever has been executed (sweep preferred, else single runs)."""
+    batch = st.session_state.get("sim_batch_result")
+    if batch is not None and getattr(batch, "results", None):
+        return batch
+    singles = st.session_state.get("sim_exec_results", {})
+    results = [batch_executor.BatchScenarioResult(sid, v["result"], v.get("parsed"))
+               for sid, v in singles.items() if v.get("result")]
+    if results:
+        return batch_executor.BatchResult(results=results, requested=len(results),
+                                          max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS)
+    return None
+
+
+def _simulate_provenance_caption() -> None:
+    """A one-line provenance trail under a Simulate result table/plot."""
+    bits = ["source: PHREEQC execution of reviewed input"]
+    rid = st.session_state.get("sim_saved_run_id")
+    if rid:
+        bits.append(f"run id `{rid}`")
+    mp = _selected_material_profile()
+    bits.append(f"material profile: {mp.display_name} ({mp.verification_status})"
+                if mp is not None else "material profile: none")
+    pr = st.session_state.get("sim_parse_result")
+    if pr is not None:
+        bits.append(f"parser: {getattr(pr, 'source', 'manual')}")
+    av = phreeqc_executor.check_availability()
+    if av.executable_path:
+        bits.append(f"exe `{av.executable_path}`")
+    if av.database_path:
+        bits.append(f"db `{av.database_path}`")
+    st.caption("🔎 Provenance — " + " · ".join(bits)
+               + ".  **Not validated against measured data.**")
+
+
+def _render_save_simulation_run(matrix) -> None:
+    """Step 9 — save the executed run (single or sweep) with full provenance."""
+    batch = _collect_simulate_batch()
+    if batch is None:
+        return
+    st.markdown("##### Save simulation run")
+    reg = run_registry.SimulationRunRegistry()
+    counts = batch.status_counts()
+    st.caption("Save this run with its full provenance chain — experiment text → parsed "
+               "scenario → assumptions → material profile → generated input → executable / "
+               "database → output files → parser status → warnings.")
+    st.markdown("**What will be saved:** "
+                + f"{len(batch.results)} scenario(s) — "
+                + " · ".join(f"`{k}`: {v}" for k, v in counts.items())
+                + " · `run_metadata.json` · `parsed_results.csv` · `scenario_matrix.csv` · "
+                "`assumptions_warnings.json`")
+    st.caption(f"**Where:** `{_rel(reg.base_dir)}/<run_id>/` — a gitignored generated-output "
+               "folder (never `data/raw`, the source tree, or any validation CSV).")
+    if _selected_material_profile() is None:
+        st.warning("No material profile is selected — that is recorded as a **warning** in the "
+                   "saved run (composition was not included).")
+    app_ui.render_warning_panel(
+        "This saves a simulation result, not a validation",
+        "It records a PHREEQC simulation run for provenance. It does not validate the model "
+        "against measured data and never affects mapping / residuals / validation / comparison.",
+        level="warning")
+
+    label = st.text_input("Run label (optional)", key="sim_save_label")
+    notes = st.text_area("Notes (optional)", key="sim_save_notes", height=68)
+    confirm = st.checkbox("I understand this saves a simulation run (not a validation result).",
+                          key="sim_save_confirm")
+    if st.button("Save simulation run", disabled=not confirm, key="sim_save_btn"):
+        import datetime as _dt
+        now = _dt.datetime.now()
+        rid = run_registry.generate_run_id(now, label)
+        record = run_registry.build_run_record(
+            run_id=rid, created_at=now.isoformat(timespec="seconds"), batch=batch, matrix=matrix,
+            scenario=st.session_state.get("sim_scenario"),
+            parse_result=st.session_state.get("sim_parse_result"),
+            material_profile=_selected_material_profile(),
+            previews=st.session_state.get("sim_previews"),
+            experiment_text=st.session_state.get("sim_desc"),
+            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes)
+        try:
+            out_dir = reg.save_run(record)
+            st.session_state["sim_saved_run_id"] = rid
+            st.success(f"Saved simulation run `{rid}` → `{_rel(out_dir)}`.")
+        except Exception as exc:                              # noqa: BLE001
+            st.error(f"Could not save the run: {type(exc).__name__}: {exc}")
+
+    rid = st.session_state.get("sim_saved_run_id")
+    if rid and reg.run_dir(rid).is_dir():
+        _render_saved_run_downloads(reg, rid)
+
+
+def _render_saved_run_downloads(reg, rid) -> None:
+    d = reg.run_dir(rid)
+    meta = d / run_registry.RUN_METADATA_FILE
+    results = d / run_registry.PARSED_RESULTS_FILE
+    c1, c2, c3 = st.columns(3)
+    if meta.is_file():
+        c1.download_button("run_metadata.json", meta.read_text(encoding="utf-8"),
+                           file_name="run_metadata.json", mime="application/json",
+                           key=f"sim_dl_meta_{rid}")
+    if results.is_file():
+        c2.download_button("parsed_results.csv", results.read_text(encoding="utf-8"),
+                           file_name="parsed_results.csv", mime="text/csv",
+                           key=f"sim_dl_res_{rid}")
+    try:
+        c3.download_button("Download run package (zip)", reg.export_zip(rid),
+                           file_name=f"{rid}.zip", mime="application/zip",
+                           key=f"sim_dl_zip_{rid}")
+    except Exception:                                         # noqa: BLE001
+        pass
+
+
+def _render_previous_simulation_runs() -> None:
+    """Export-tab list of saved Simulate runs — kept separate from validation runs."""
+    app_ui.section_header("Previous simulation runs",
+                          "saved Simulate-tab PHREEQC executions — simulation outputs, "
+                          "not measured-data validation")
+    reg = run_registry.SimulationRunRegistry()
+    runs = reg.list_runs()
+    if not runs:
+        st.caption("No saved simulation runs yet. Run a scenario or sweep in the **Simulate** "
+                   "tab, then click **Save simulation run**.")
+        return
+    st.caption("These are **simulation runs** (model predictions under your assumptions), kept "
+               "separate from measured-data validation runs.")
+    st.dataframe(pd.DataFrame(runs), hide_index=True, use_container_width=True,
+                 height=min(320, 60 + 30 * len(runs)))
+    ids = [r["run_id"] for r in runs]
+    chosen = st.selectbox("Download a run package", ids, key="exp_sim_run_choice")
+    if chosen:
+        try:
+            st.download_button("Download run package (zip)", reg.export_zip(chosen),
+                               file_name=f"{chosen}.zip", mime="application/zip",
+                               key="exp_sim_run_zip")
+        except Exception:                                     # noqa: BLE001
+            pass
+
+
+def _render_simulation_result(result, parsed) -> None:
+    """Render one execution result — status, parsed values, logs, paths (clearly labelled)."""
+    st.markdown(
+        f"**{result.scenario_id}** · "
+        + app_ui.status_badge(result.status.replace("_", " "),
+                              _EXEC_STATUS_LEVEL.get(result.status, "neutral")),
+        unsafe_allow_html=True)
+
+    if result.status == phreeqc_executor.STATUS_MISSING:
+        st.warning(result.error_message or phreeqc_executor.NOT_CONFIGURED_MESSAGE)
+        return
+    if result.status in (phreeqc_executor.STATUS_FAILED, phreeqc_executor.STATUS_TIMEOUT):
+        st.error(f"PHREEQC did not produce a usable result: {result.error_message}")
+        with st.expander("Execution log (stdout / stderr / paths)"):
+            if result.stdout_tail:
+                st.markdown("**stdout (tail)**")
+                st.code(result.stdout_tail, language="text")
+            if result.stderr_tail:
+                st.markdown("**stderr (tail)**")
+                st.code(result.stderr_tail, language="text")
+            _render_exec_paths(result)
+        return
+
+    # success
+    st.success(f"PHREEQC completed in {result.runtime_seconds:.2f}s.")
+    st.caption("📌 " + phreeqc_executor.SIM_OUTPUT_LABEL)
+    _simulate_provenance_caption()
+
+    if parsed is None:
+        st.info("Run succeeded but outputs were not parsed.")
+        _render_exec_paths(result)
+        return
+
+    cols = st.columns(3)
+    cols[0].metric("Predicted pH", "—" if parsed.pH is None else f"{parsed.pH:.2f}")
+    cols[1].metric("Predicted pe", "—" if parsed.pe is None else f"{parsed.pe:.2f}")
+    cols[2].metric("Elements", len(parsed.element_totals_mM))
+
+    if parsed.element_totals_mM:
+        st.markdown("**Predicted dissolved totals** (simulation output)")
+        tdf = pd.DataFrame(
+            [{"element": el, "mM": round(v, 4)}
+             for el, v in sorted(parsed.element_totals_mM.items())])
+        st.dataframe(tdf, hide_index=True, use_container_width=True,
+                     height=min(280, 60 + 28 * len(tdf)))
+        # A graph only because an actual execution result exists.
+        st.bar_chart(tdf.set_index("element")["mM"])
+        st.caption("Predicted dissolved totals (mM) from PHREEQC execution — a simulation "
+                   "output, **not** validated against measured data. This is separate from the "
+                   "measured-vs-model pH/residual graphs in **Validate** / **Compare Results**.")
+
+    if parsed.saturation_indices:
+        with st.expander(f"Saturation indices ({len(parsed.saturation_indices)})"):
+            sidf = pd.DataFrame(parsed.saturation_indices)
+            sidf = sidf.reindex(sidf["SI"].abs().sort_values(ascending=False).index)
+            st.dataframe(sidf, hide_index=True, use_container_width=True, height=260)
+
+    if parsed.warnings:
+        for w in parsed.warnings:
+            st.caption("⚠️ " + w)
+    if parsed.missing:
+        st.caption("Not available from this run: " + ", ".join(parsed.missing))
+    _render_exec_paths(result)
+
+
+def _render_exec_paths(result) -> None:
+    with st.expander("Generated files (in the safe simulation workspace)"):
+        for label, path in (("input (.pqi)", result.input_path),
+                            ("output (.pqo)", result.output_path),
+                            ("selected output", result.selected_output_path)):
+            st.caption(f"{label}: `{_rel(path)}`" if path else f"{label}: —")
+        st.caption(f"PHREEQC: `{result.phreeqc_executable}`  ·  database: "
+                   f"`{result.database_path}`  ·  run at {result.timestamp}")
+
+
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     """Plan a simulation scenario from a plain-language description (planning layer only).
 
@@ -907,6 +1484,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         st.divider()
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
                                       material_profile=selected_profile)
+        st.divider()
+        _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
@@ -5423,6 +6002,8 @@ def _render_export_tab(selected_run: str | None) -> None:
     _render_next_step(selected_run)
 
     _render_export_report(selected_run)
+    st.divider()
+    _render_previous_simulation_runs()
     st.divider()
     _render_audit_trail(selected_run)
 

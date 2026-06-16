@@ -26,6 +26,9 @@ reviewable **scenario** and a **simulation plan/matrix**. It is a *planning laye
    `needs_material_composition`.
 8. **PHREEQC input preview** — template a reviewable, draft `.pqi` input per scenario
    (deterministic code, **not** AI). Still no execution — see *PHREEQC input preview* below.
+9. **Run deterministic model** — *optionally* execute PHREEQC on the reviewed input and show the
+   basic predicted outputs. Gated and explicit; results are **simulation outputs, not validated
+   predictions**. See [`phreeqc_execution.md`](phreeqc_execution.md).
 
 ## What the planner extracts
 
@@ -168,11 +171,16 @@ The preview is **in-memory and downloadable only** (a `<scenario_id>_preview.pqi
 
 ## Boundaries (what it never does)
 
-- It **never runs PHREEQC** (pinned by `tests/test_ai_boundary.py`). To actually run a
-  simulation, use the deliberate PHREEQC generation step in the **Match** tab.
-- It **never overwrites measured data** and **never becomes verified data**.
+- The **planning** modules (Steps 1–8) **never run PHREEQC** (pinned by
+  `tests/test_ai_boundary.py`). Execution is a *separate*, gated step — **Step 9** (see
+  [`phreeqc_execution.md`](phreeqc_execution.md)) — that runs only on an explicit click and only
+  the reviewed input text; **AI never writes or runs the input.**
+- It **never overwrites measured data** and **never becomes verified data**. A Step-9 execution
+  result is a **simulation output, not a validated prediction**.
 - It **never affects** mapping status, residuals, validation status, the comparison CSV, or any
-  scientific claim — the planner is off the scientific result path.
+  scientific claim — the planner *and* the executor are off the scientific result path. The pH /
+  residual graphs in **Validate** and **Compare Results** are separate and a Simulate run changes
+  none of them.
 
 ## Implementation
 
@@ -187,5 +195,9 @@ The preview is **in-memory and downloadable only** (a `<scenario_id>_preview.pqi
   confirm a material profile (oxide / element / mg-kg / mol-kg → element wt %), gated so only a
   *confirmed* profile feeds the preview. Off the result path; writes nothing. See
   [`material_profiles.md`](material_profiles.md); pinned by `tests/test_material_profile.py`.
+- `flyash_phreeqc_ml/simulation/phreeqc_executor.py` — the gated **execution** layer (Step 9):
+  `check_availability` / `execute_preview` / `parse_outputs`, structured + never-crashing, writing
+  only to `outputs/simulations/`. Off the result path (no AI, no comparison module). See
+  [`phreeqc_execution.md`](phreeqc_execution.md); pinned by `tests/test_phreeqc_executor.py`.
 - `flyash_phreeqc_ml/ai/scenario_parser.py` — the AI extractor + AI-or-fallback orchestrator
   (uses the shared, key-safe AI client; see [`ai_configuration.md`](ai_configuration.md)).
