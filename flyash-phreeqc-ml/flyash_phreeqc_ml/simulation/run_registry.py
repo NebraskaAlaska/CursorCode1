@@ -156,6 +156,7 @@ class SimulationRunRecord:
     plot_axis: str | None = None
     notes: str | None = None
     refinement: dict | None = None                       # parent-run / objective / refined-sweep provenance
+    target_match: dict | None = None                     # inverse-search: target spec / grid / best candidate
     scenarios: list = field(default_factory=list)        # list[SimulationScenarioRecord]
     outputs: list = field(default_factory=list)          # list[SimulationOutputRecord]
     app_version: str = APP_VERSION
@@ -190,6 +191,7 @@ class SimulationRunRecord:
             "execution_status_summary": self.execution_status_summary,
             "plot_axis": self.plot_axis,
             "refinement": self.refinement,
+            "target_match": self.target_match,
             "n_scenarios": self.n_scenarios,
             "scenarios": [s.to_dict() for s in self.scenarios],
             "outputs": [o.to_dict() for o in self.outputs],
@@ -249,12 +251,16 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
                      parse_result=None, material_profile=None, previews=None,
                      experiment_text: str | None = None, desired_outputs_text: str | None = None,
                      label: str | None = None, notes: str = "",
-                     refinement: dict | None = None) -> SimulationRunRecord:
+                     refinement: dict | None = None,
+                     target_match: dict | None = None) -> SimulationRunRecord:
     """Assemble a :class:`SimulationRunRecord` from whatever the Simulate tab has in hand.
 
     ``batch`` is a :class:`batch_executor.BatchResult` (a single run is wrapped as a
     one-scenario batch by the caller). Everything else is optional and recorded if present;
     a **missing material profile is recorded as a warning**, never silently ignored.
+    ``target_match`` (when the run came from an inverse target search) carries the target
+    spec / search parameters / candidate grid / best candidate — a **simulation search
+    record, not validation** (kept distinct from measured-data validation runs).
     """
     scenario_json = {}
     if scenario is not None:
@@ -322,6 +328,7 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
         execution_status_summary=batch.status_counts(), parsed_result_table=parsed_table,
         plot_axis=plot_axis, notes=notes or None, refinement=(dict(refinement) if refinement
                                                               else None),
+        target_match=(dict(target_match) if target_match else None),
         scenarios=scenario_records, outputs=output_records)
 
 

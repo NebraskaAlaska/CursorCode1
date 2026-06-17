@@ -1,63 +1,72 @@
-# app.py refactor plan (preparation only — not yet executed)
+# UI architecture — app.py + the `ui/` package (refactor executed)
 
-`app.py` is ~4,370 lines: a six-tab Streamlit workflow (Start · Import · Validate ·
-Match · Compare · Export) plus ~120 helper/render functions. Before the
-simulation / mass-balance / AI expansion, the tab bodies should move into a `ui/`
-package so app.py becomes a thin wiring layer. **This file is the plan; only the
-trivially-safe parts (a `ui/` package + a few pure helpers) have been executed so far
-— every `_render_*` tab function stays in app.py for now.**
+`app.py` was a ~6,650-line Streamlit script holding the whole seven-tab workflow plus ~165
+helper/render functions. It has been split into a thin entry point (`app.py`) plus a `ui/`
+package of tab modules. **Behavior is unchanged** — the split was a verbatim move (every
+function body and constant value is byte-identical to the pre-refactor `app.py`, every
+session-state key and widget label is preserved), verified by `tests/test_ui_modularization.py`,
+`tests/test_app_tabs_smoke.py`, and the full suite.
 
-## Target module map
+## Where things live now
 
-| Future module | Current tab / responsibility | Main `_render_*` functions to move (later) |
-| --- | --- | --- |
-| `ui/start_tab.py` | Start (overview + checklist + next-step) | `_render_start_tab`, `_render_overview`, `_render_presentation_summary` |
-| `ui/data_tab.py` | Import (data entry, file import, unit review) | `_render_import_tab`, `_lab_data_import`, `_generic_table_import`, `_dissolution_import`, `_render_model_predictions_import`, `_render_run_data_and_edit`, `_lab_entry_form`, `_literature_entry`, `_demo_entry`, `_render_legacy_global_form`, `_render_ai_import_assist` |
-| `ui/simulate_tab.py` | Simulate (PHREEQC run + surrogate; **grows with the new sim/mass-balance work**) | `_render_run_workflow_tab`, `_render_generate_simulation`, `_render_surrogate_expander` |
-| `ui/mapping_tab.py` | Match (measured ↔ model mapping) | `_render_match_tab` + its mapping/suggestion helpers |
-| `ui/results_tab.py` | Validate + Compare (overview, comparison, residuals, bias, correction) | `_render_validate_tab`, `_render_measured_overview`, `_render_overview_plot`, `_render_basic_validation_summary`, `_render_compare_tab`, `_render_results_tab`, `_render_condition_results`, `_render_condition_errorbar`, `_render_comparison_inclusion`, `_render_systematic_bias`, `_render_residual_correction`, `_render_comparison_figures` |
-| `ui/audit_tab.py` | Validate (calc verification) + Export (report, audit trail, help, assistant) | `_render_calc_verification_tab`, `_render_unit_registry`, `_render_conversion_verification`, `_render_unit_calculator`, `_render_processed_viewer`, `_render_phreeqc_only_figures`, `_render_export_tab`, `_render_export_report`, `_render_audit_trail`, `_render_user_guide`, `_render_help_tab`, `_render_assistant` |
+| File | Responsibility |
+| --- | --- |
+| **`app.py`** (~210 code lines) | Thin entry point: page config + hero, the run-management **sidebar** (`_render_run_sidebar`), the **AI settings** panel (`_render_ai_settings_panel`), `DEV_MODE`, and the `st.tabs([...])` **dispatch** to `ui.<tab>.render(...)`. |
+| **`ui/state.py`** | Shared cross-tab **state** — constants (`MODEL_NAME`, `_PROJECT_ROOT`, `_ICP_MEASURED_COLS`, the validity-wording constants, the figure-name sets, …), paths, and cached data readers (`_read_csv`, `_scenario_manifest`, `_manifest_if_available`, `_rel`, `_next_step_hint`, …). No tab-specific rendering. |
+| **`ui/common.py`** | Shared **render helpers** used by more than one tab (`_render_next_step`, `_render_valid_now_section`, `_render_mapping_status_definitions`, `_png_provenance_caption`, `_audit_once`). |
+| **`ui/formatters.py`** | Pure formatters / data-prep (no Streamlit). |
+| **`ui/start_tab.py`** | Start tab — overview, product modes, workflow checklist, next-step. |
+| **`ui/simulate_tab.py`** | Simulate tab — describe → parse → plan → material/release/database → input preview → gated run + plots → ranking/refinement → target matching. (Largest module.) |
+| **`ui/import_tab.py`** | Import Data tab — measured-data entry + flexible/dissolution file import. |
+| **`ui/validate_tab.py`** | Validate tab — measured overview, basic validation, calc verification, model-output viewer. |
+| **`ui/match_tab.py`** | Match tab — measured ↔ model-prediction mapping (suggestions + manual). |
+| **`ui/compare_tab.py`** | Compare Results tab — run workflow + comparison/residuals/bias/correction + assistant + surrogate. |
+| **`ui/export_tab.py`** | Export tab — validation report, audit trail, previous simulation runs, user guide. |
 
-`app.py` would keep: page config, the run-management sidebar, `DEV_MODE`, the
-`st.tabs([...])` wiring, and shared cross-tab constants (`_PROJECT_ROOT`, `MODEL_NAME`,
-the cached `_read_csv` / `_scenario_manifest`, `_manifest_if_available`).
+Each `ui/<tab>_tab.py` keeps its original `_render_<tab>_tab` function (unchanged name + body)
+and exposes it as **`render`** (an alias), which `app.py` calls: `ui.start_tab.render(run)`.
 
-## Why this is deferred (not done now)
+## Where the *scientific* logic lives (unchanged)
 
-Moving a `_render_*` function is **not** trivially safe today because most of them
-reference app-level shared state that would have to move or be injected first:
+All chemistry / statistics / ML / parsing lives in the **`flyash_phreeqc_ml/`** package
+(parsers, `compare/`, `scenarios`, `replicates`, `mapping_table`, `mass_balance`, `attribution`,
+`simulation/`, `ml/`, `ai/`, …). The UI **calls** these modules to render; the science never
+calls the UI. This direction is enforced by
+`tests/test_ui_modularization.py::test_scientific_package_does_not_import_ui_or_app`.
 
-- **Streamlit + `st.session_state`** keys (widget keys, the `_audit_seen` set, report
-  zip blobs) are scattered through the render functions.
-- **Module-level caches** `@st.cache_data`-decorated `_read_csv`, `_scenario_manifest`
-  and helpers like `_manifest_if_available`, `_next_step_hint`, `_run_type_warning`.
-- **Shared constants** `_PROJECT_ROOT`, `MODEL_NAME`, `_ICP_MEASURED_COLS`,
-  `WORKFLOW_STEPS`, `MANUAL_ENTRY_PATH`.
+## The import graph (an acyclic DAG)
 
-The safe sequence for the real refactor (a later, dedicated PR):
-1. Extract shared constants + cached readers into `ui/state.py` (no Streamlit widget
-   calls), import them back into app.py.
-2. Move one tab at a time (start → data → … ), running `compileall` + `pytest` +
-   the AppTest smoke after each move.
-3. Keep the `st.tabs([...])` wiring in app.py calling `ui.<tab>.render(selected_run)`.
+```
+app.py ──▶ ui/<tab>_tab.py ──▶ ui/common.py ──▶ ui/state.py ──▶ ui/formatters.py
+                          └────────────────────▶ ui/state.py
+all ui modules ──▶ flyash_phreeqc_ml/**   (science; never imports ui)
+```
 
-## Executed now (trivially safe only)
+- A tab module imports only `ui.state`, `ui.common`, `ui.formatters`, and scientific modules.
+- `ui.state` / `ui.common` never import a tab module; no tab imports another tab.
+- The partition was computed by **reachability** from the seven tab entry points: a helper
+  reached by exactly one tab lives in that tab; a helper reached by ≥ 2 tabs (or the sidebar)
+  is shared (`ui.state` / `ui.common`). This guarantees the DAG above with no cycles.
 
-- Created the `ui/` package (`ui/__init__.py`, `ui/formatters.py`).
-- Moved **only pure, self-contained formatters / data-prep** (no Streamlit, no
-  `session_state`, no app-level globals) into `ui/formatters.py`, re-imported into
-  app.py so all call sites are unchanged:
-  - `is_present(value)` — non-blank cell check.
-  - `has_numeric(df, col)` — column has ≥1 numeric value.
-  - `nearest_manifest_row(manifest, naoh, ls)` — closest batch scenario (display only).
+## How to add a new UI section safely
 
-## Deferred move candidates (pure-ish but NOT moved — need a shared seam first)
+1. **Put rendering in the right tab module.** Add helper + render functions to the relevant
+   `ui/<tab>_tab.py`. Keep them Streamlit-only — call into `flyash_phreeqc_ml/` for any
+   calculation; never compute results in the UI.
+2. **Share via state/common, not across tabs.** If two tabs need the same helper, put it in
+   `ui/common.py` (render) or `ui/state.py` (constants / cached readers / pure helpers) and
+   import it. **Never import one tab module from another** (the DAG test will fail).
+3. **Never import a UI module from `flyash_phreeqc_ml/`.** The science stays UI-free.
+4. **Keep `app.py` thin.** Only page config, the sidebar, and the tab dispatch belong there.
+   New tabs are wired as `with tab_x: x_tab.render(...)`.
+5. **Run the guards:** `pytest tests/test_ui_modularization.py tests/test_app_tabs_smoke.py`
+   (plus the full suite) — they check the import graph, that every module imports cleanly and
+   exposes `render`, that `app.py` stays thin, and that all seven tabs render end-to-end.
 
-These read app-level globals or cached readers, so moving them now would create churn
-or coupling; they move with their tab in the real refactor:
+## Why `app.py` must stay thin
 
-- `_rel(path)` — needs `_PROJECT_ROOT`.
-- `_next_step_hint`, `_has_numeric`-using helpers, `_inclusion_variables`,
-  `_residual_elements_with_data`, `_residual_col`, `_variable_element` — read
-  `_read_csv` / `config` / `compare_inclusion` module references.
-- All `_render_*` — Streamlit + session-state bound (move per the sequence above).
+`app.py` is a Streamlit *script* (it runs `st.set_page_config` at import, so it cannot be
+imported as a module — only executed). Keeping logic out of it means: render functions are
+importable + unit-testable (the `ui/` modules import cleanly without a Streamlit runtime), the
+seven tabs are independently navigable in the code, and a change to one tab touches one file.
+The entry point's only job is wiring: sidebar → run selection → dispatch.

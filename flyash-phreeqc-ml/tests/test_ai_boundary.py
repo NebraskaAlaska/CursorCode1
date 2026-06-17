@@ -350,3 +350,32 @@ def test_result_path_does_not_import_db_compat_or_phase_templates():
         offenders = _mentions(_import_targets(mod),
                               ("database_compatibility", "phase_templates"))
         assert not offenders, f"{mod} imports db-compat/phase-template code: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Target-matching (inverse search) boundary — a pure target-parse + scoring helper
+# --------------------------------------------------------------------------- #
+TARGET_MATCHING_MODULE = "simulation/target_matching.py"
+
+
+def test_target_matching_imports_no_ai_executor_or_result_path():
+    """Inverse search parses targets + scores an executed result table only: no AI (it cannot
+    invent a target value or a release fraction), no executor / subprocess (it runs nothing
+    itself — execution happens via the batch executor on an explicit UI click), and no
+    comparison/residual/mapping code (it is off the scientific result path)."""
+    forbidden = ("import_assist", "scenario_parser", "ai.literature", "ai.config", "ai.client",
+                 ".assistant", ".literature", "phreeqc_executor", "batch_executor",
+                 "phreeqc_runner", "phreeqc_input_builder", "subprocess", "residuals",
+                 "inclusion", "mapping_table", "scenarios", "replicates", "attribution",
+                 "mass_balance", "run_manager", "run_registry")
+    targets = _import_targets(TARGET_MATCHING_MODULE)
+    offenders = _mentions(targets, forbidden) + [
+        t for t in targets if t in ("..ai", ".ai") or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{TARGET_MATCHING_MODULE} imports forbidden module: {offenders}"
+
+
+def test_result_path_does_not_import_target_matching():
+    """The result path never imports the inverse-search layer (a match is not validation)."""
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("target_matching",))
+        assert not offenders, f"{mod} imports target_matching: {offenders}"
