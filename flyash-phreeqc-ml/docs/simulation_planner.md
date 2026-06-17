@@ -37,6 +37,11 @@ reviewable **scenario** and a **simulation plan/matrix**. It is a *planning laye
 9. **Run deterministic model** — *optionally* execute PHREEQC on the reviewed input and show the
    basic predicted outputs. Gated and explicit; results are **simulation outputs, not validated
    predictions**. See [`phreeqc_execution.md`](phreeqc_execution.md).
+10. **Target matching (inverse search)** — *optionally* work backwards from a desired result:
+   define a target (a pH range, a target element value, a max/min, or a constraint), choose a few
+   reviewed parameter values (concentration / release fraction), then — on an explicit click —
+   run a small **capped** grid and rank each candidate by how well it matches. It is **inverse
+   search over model predictions, not validation**. See [`target_matching.md`](target_matching.md).
 
 ## What the planner extracts
 
@@ -207,5 +212,10 @@ The preview is **in-memory and downloadable only** (a `<scenario_id>_preview.pqi
   `check_availability` / `execute_preview` / `parse_outputs`, structured + never-crashing, writing
   only to `outputs/simulations/`. Off the result path (no AI, no comparison module). See
   [`phreeqc_execution.md`](phreeqc_execution.md); pinned by `tests/test_phreeqc_executor.py`.
+- `flyash_phreeqc_ml/simulation/target_matching.py` — the **inverse target search** (Step 10):
+  `parse_target_spec` (deterministic) / `build_search_grid` (capped) / `score_results` (pure
+  feasible-first scoring) / `target_match_provenance`. Pure (stdlib + pandas) — no AI, no
+  executor, off the result path. See [`target_matching.md`](target_matching.md); pinned by
+  `tests/test_target_matching.py`.
 - `flyash_phreeqc_ml/ai/scenario_parser.py` — the AI extractor + AI-or-fallback orchestrator
   (uses the shared, key-safe AI client; see [`ai_configuration.md`](ai_configuration.md)).

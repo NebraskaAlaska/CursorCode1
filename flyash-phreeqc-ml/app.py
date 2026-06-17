@@ -85,6 +85,7 @@ from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated 
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
 from flyash_phreeqc_ml.simulation import strategy as sim_strategy  # noqa: E402  (objective + ranking)
+from flyash_phreeqc_ml.simulation import target_matching as sim_target  # noqa: E402  (inverse search)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.parsers import (  # noqa: E402
     has_measured_data,
@@ -1463,6 +1464,323 @@ def _render_saved_run_downloads(reg, rid) -> None:
         pass
 
 
+# --------------------------------------------------------------------------- #
+# Step 10 — Target matching (inverse simulation search; gated, capped, off result path)
+# --------------------------------------------------------------------------- #
+_TARGET_KINDS = [sim_target.TARGET_RANGE, sim_target.TARGET_VALUE, sim_target.TARGET_MAXIMIZE,
+                 sim_target.TARGET_MINIMIZE, sim_target.TARGET_CONSTRAINT]
+_TARGET_COLUMN_OPTIONS = (["pH"] + [f"{e}_mM" for e in sim_target.KNOWN_ELEMENTS]
+                          + ["leachant_concentration_M", "release_fraction"])
+
+
+def _target_spec_editor(detected) -> "sim_target.TargetSpec":
+    """Editable target table (pre-filled from the detected spec); rebuild a TargetSpec from it."""
+    with st.expander("Edit / set the target", expanded=not detected.is_defined):
+        rows = [{"use": True, "kind": m.kind, "column": m.column, "label": m.label,
+                 "op": m.op or "<", "low": m.low, "high": m.high, "value": m.value,
+                 "tolerance": m.tolerance, "threshold": m.threshold, "weight": m.weight}
+                for m in detected.metrics]
+        if not rows:
+            rows = [{"use": True, "kind": sim_target.TARGET_RANGE, "column": "pH", "label": "pH",
+                     "op": "<", "low": 10.0, "high": 12.0, "value": None, "tolerance": None,
+                     "threshold": None, "weight": 1.0}]
+        edited = st.data_editor(
+            pd.DataFrame(rows), num_rows="dynamic", use_container_width=True, hide_index=True,
+            key="sim_tm_editor", column_config={
+                "use": st.column_config.CheckboxColumn("use"),
+                "kind": st.column_config.SelectboxColumn("kind", options=_TARGET_KINDS),
+                "column": st.column_config.SelectboxColumn("column", options=_TARGET_COLUMN_OPTIONS),
+                "label": st.column_config.TextColumn("label"),
+                "op": st.column_config.SelectboxColumn("op", options=["<", "<=", ">", ">="]),
+                "low": st.column_config.NumberColumn("low"),
+                "high": st.column_config.NumberColumn("high"),
+                "value": st.column_config.NumberColumn("value"),
+                "tolerance": st.column_config.NumberColumn("± tol"),
+                "threshold": st.column_config.NumberColumn("threshold"),
+                "weight": st.column_config.NumberColumn("weight", min_value=0.0),
+            })
+        st.caption("`column` is `pH` or `<Element>_mM` (e.g. `Ca_mM`). **range** needs low+high · "
+                   "**target_value** needs value (+ optional ± tol) · **constraint** needs op + "
+                   "threshold · **maximize**/**minimize** need only a column.")
+    metrics = []
+    for _, r in edited.iterrows():
+        if not bool(r.get("use", True)):
+            continue
+        kind = str(r.get("kind") or "").strip()
+        col = str(r.get("column") or "").strip()
+        if kind not in _TARGET_KINDS or not col:
+            continue
+        metrics.append(sim_target.TargetMetric(
+            kind=kind, column=col, label=(str(r.get("label") or "").strip() or col),
+            low=sim_schema.as_float(r.get("low")), high=sim_schema.as_float(r.get("high")),
+            value=sim_schema.as_float(r.get("value")),
+            tolerance=sim_schema.as_float(r.get("tolerance")),
+            op=((str(r.get("op")).strip() or None) if kind == sim_target.TARGET_CONSTRAINT
+                else None),
+            threshold=sim_schema.as_float(r.get("threshold")),
+            weight=sim_schema.as_float(r.get("weight")) or 1.0))
+    return sim_target.target_from_metrics(metrics, source=(detected.source or "manual"))
+
+
+def _build_target_previews(candidates, *, material_profile, phase_template, base_release_model):
+    """One deterministic `.pqi` preview per candidate (its own release fraction → source term).
+
+    A candidate that varies the release fraction gets ``global_release(fraction)``; one that
+    only varies concentration inherits the Step-7b release model. Pure templating — nothing runs.
+    """
+    previews = []
+    for c in candidates:
+        sc = sim_schema.SimulationScenario.from_flat_dict(c.scenario_flat)
+        dm = (sim_source_terms.global_release(c.release_fraction)
+              if c.release_fraction is not None else base_release_model)
+        previews.append(phreeqc_input_builder.build_phreeqc_input_preview(
+            sc, scenario_id=c.scenario_id, material_profile=material_profile,
+            dissolution_model=dm, phase_template=phase_template))
+    return previews
+
+
+def _render_score_breakdown(bd) -> None:
+    st.markdown(f"**{bd.scenario_id}** — objective score {bd.objective_score:g} · "
+                + ("**feasible**" if bd.feasible else "**infeasible**"))
+    if bd.metric_scores:
+        st.markdown("Objective metrics")
+        for ms in bd.metric_scores:
+            v = ms.get("value")
+            vtxt = f"{v:g}" if isinstance(v, (int, float)) else "—"
+            st.caption(f"• {ms['label']} ({ms['kind']}): value {vtxt} → score "
+                       f"{ms['score']:g} (weight {ms['weight']:g})")
+    if bd.constraint_results:
+        st.markdown("Constraints")
+        for cr in bd.constraint_results:
+            v = cr.get("value")
+            vtxt = f"{v:g}" if isinstance(v, (int, float)) else "—"
+            sat = cr.get("satisfied")
+            icon = "✅" if sat is True else ("❌" if sat is False else "❓")
+            st.caption(f"{icon} {cr['display']} — value {vtxt}")
+
+
+def _render_target_match_results(result) -> None:
+    """Best candidate + ranked table + per-candidate breakdown + honesty captions."""
+    st.markdown("##### Results")
+    if result.status == sim_target.MATCH_NO_ROWS:
+        st.info("No successfully-executed candidates to rank — see the inputs / configuration.")
+        for w in result.warnings:
+            st.warning(w)
+        return
+    if result.status == sim_target.MATCH_NO_METRICS:
+        for w in result.warnings:
+            st.warning(w)
+        st.info("No target metric could be scored against the executed results (nothing fabricated).")
+        return
+
+    best = result.best or {}
+    feasible = best.get("feasible")
+    head = (f"Best match: **{best.get('scenario_id')}** · objective score "
+            f"**{best.get('objective_score')}** · "
+            + ("**feasible** (all constraints met)" if feasible
+               else "**does not meet all constraints**"))
+    (st.success if feasible else st.warning)(head)
+    bits = []
+    if best.get("leachant_concentration_M") is not None:
+        bits.append(f"conc {best['leachant_concentration_M']:g} M")
+    if best.get("release_fraction") is not None:
+        bits.append(f"release {best['release_fraction'] * 100:g}%")
+    for col, val in (best.get("values") or {}).items():
+        if isinstance(val, (int, float)):
+            bits.append(f"{col} {val:g}")
+    if bits:
+        st.caption("Best candidate — " + " · ".join(bits))
+    st.caption(f"{result.n_feasible} of {len(result.ranked)} executed candidate(s) meet every "
+               "constraint.")
+
+    st.dataframe(result.ranked, hide_index=True, use_container_width=True,
+                 height=min(360, 60 + 30 * len(result.ranked)))
+    st.download_button("Download match results (CSV)", result.ranked.to_csv(index=False),
+                       file_name="target_match_results.csv", mime="text/csv", key="sim_tm_dl")
+    for w in result.warnings:
+        st.warning(w)
+    if result.breakdowns:
+        ids = [b.scenario_id for b in result.breakdowns]
+        chosen = st.selectbox("Score breakdown for candidate", ids, key="sim_tm_bd")
+        bd = next((b for b in result.breakdowns if b.scenario_id == chosen), None)
+        if bd is not None:
+            _render_score_breakdown(bd)
+    st.caption("🏷️ " + sim_target.NOT_VALIDATION + "  " + sim_target.DEPENDS_ON_RANGES)
+
+
+def _render_save_target_run(state, material_profile) -> None:
+    """Save the inverse search with full provenance — separate from validation runs."""
+    batch, meta, result = state["batch"], state["meta"], state["result"]
+    st.markdown("##### Save target-search run")
+    reg = run_registry.SimulationRunRegistry()
+    counts = batch.status_counts()
+    st.caption("Saves the search with full provenance — target spec, search parameters, candidate "
+               "grid, scoring method, best candidate, and warnings. Kept **separate** from "
+               "measured-data validation runs.")
+    st.markdown("**What will be saved:** "
+                + f"{len(batch.results)} candidate(s) — "
+                + " · ".join(f"`{k}`: {v}" for k, v in counts.items())
+                + " · `run_metadata.json` (incl. `target_match`) · `parsed_results.csv` · "
+                "`scenario_matrix.csv` · `assumptions_warnings.json`")
+    app_ui.render_warning_panel(
+        "This saves a simulation search, not a validation",
+        "It records an inverse target search over model predictions under your assumptions. It "
+        "does not validate the model against measured data and never affects mapping / residuals "
+        "/ validation / comparison.", level="warning")
+
+    label = st.text_input("Run label (optional)", key="sim_tm_save_label")
+    notes = st.text_area("Notes (optional)", key="sim_tm_save_notes", height=68)
+    confirm = st.checkbox("I understand this saves a simulation search (not a validation result).",
+                          key="sim_tm_save_confirm")
+    if st.button("Save target-search run", disabled=not confirm, key="sim_tm_save_btn"):
+        import datetime as _dt
+        now = _dt.datetime.now()
+        rid = run_registry.generate_run_id(now, label or "target-search")
+        prov = sim_target.target_match_provenance(
+            state["spec"], state["params"], state["candidates"], result,
+            created_at=now.isoformat(timespec="seconds"), max_scenarios=state["cap"],
+            truncated=state["truncated"])
+        record = run_registry.build_run_record(
+            run_id=rid, created_at=now.isoformat(timespec="seconds"), batch=batch, matrix=meta,
+            scenario=st.session_state.get("sim_scenario"),
+            parse_result=st.session_state.get("sim_parse_result"),
+            material_profile=material_profile, previews=None,
+            experiment_text=st.session_state.get("sim_desc"),
+            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes,
+            target_match=prov)
+        try:
+            out_dir = reg.save_run(record)
+            st.session_state["sim_tm_saved_run_id"] = rid
+            st.success(f"Saved target-search run `{rid}` → `{_rel(out_dir)}`.")
+        except Exception as exc:                              # noqa: BLE001
+            st.error(f"Could not save the run: {type(exc).__name__}: {exc}")
+
+    rid = st.session_state.get("sim_tm_saved_run_id")
+    if rid and reg.run_dir(rid).is_dir():
+        _render_saved_run_downloads(reg, rid)
+
+
+def _render_target_matching(scenario, material_profile, phase_template, base_release_model) -> None:
+    """Step 10 — inverse search: define a target, build a small reviewed grid, run + rank.
+
+    Off the scientific result path: it imports no comparison/mapping module, runs PHREEQC only on
+    an explicit click, caps the grid, never invents a target value or a release fraction, and never
+    calls a result 'validated'. A match ranking is inverse search over model predictions.
+    """
+    st.markdown("#### Step 10 — Target matching (inverse search)")
+    st.caption(
+        "Work backwards from a desired result: define a **target** (a pH range, a target element "
+        "value, an element to maximise/minimise, or a constraint like 'Fe below 0.1 mM'), choose "
+        "a few **reviewed parameter values** to try, then — on an explicit click — run the small "
+        "grid and rank each candidate by how well it matches.")
+    st.caption("🏷️ " + sim_target.NOT_VALIDATION)
+    if scenario is None:
+        st.info("Generate a plan (Step 6) first.")
+        return
+
+    # 1) target spec ------------------------------------------------------- #
+    st.markdown("##### 1 · Target")
+    detected = sim_target.parse_target_spec(st.session_state.get("sim_outputs", ""))
+    st.markdown(f"**Detected from your desired outputs:** {detected.display()}")
+    for n in detected.notes:
+        st.caption("• " + n)
+    spec = _target_spec_editor(detected)
+    st.caption((f"Will match against: **{spec.display()}**") if spec.is_defined
+               else "No target set — add at least one row in the editor above.")
+
+    # 2) search parameters ------------------------------------------------- #
+    st.markdown("##### 2 · Search parameters (reviewed values to try)")
+    st.caption("📌 " + sim_target.RELEASE_FRACTION_ASSUMPTION)
+    cur = sim_schema.as_float(getattr(scenario.leachant, "leachant_concentration_M", None))
+    conc_default = (", ".join(f"{v:g}" for v in sorted({round(cur * f, 4) for f in (0.5, 1.0, 2.0)}))
+                    if cur else "0.1, 0.5, 1.0")
+    conc_raw = st.text_input(
+        "Leachant concentration values (M, comma-separated — blank = keep fixed)",
+        value=conc_default, key="sim_tm_conc")
+    rf_raw = st.text_input(
+        "Global release fraction values (%, comma-separated — blank = keep current release model)",
+        value="0.5, 1, 2", key="sim_tm_rf",
+        help="e.g. 0.1, 0.5, 1, 2, 5 — compares how much of the material you assume dissolves.")
+
+    params = []
+    conc_vals = [v for v in (sim_schema.as_float(x) for x in conc_raw.split(",")) if v and v > 0]
+    if conc_vals:
+        params.append(sim_target.scenario_parameter(
+            "leachant_concentration_M", conc_vals, label="leachant_concentration_M"))
+    rf_vals = [v / 100.0 for v in (sim_schema.as_float(x) for x in rf_raw.split(",")) if v and v > 0]
+    if rf_vals:
+        params.append(sim_target.release_fraction_parameter(rf_vals))
+
+    cap = batch_executor.DEFAULT_MAX_SCENARIOS
+    candidates, truncated = sim_target.build_search_grid(scenario, params, max_scenarios=cap)
+    if not candidates:
+        st.info("Add at least one parameter value (concentration or release fraction) to build a "
+                "search grid.")
+        return
+    st.markdown(f"**Search grid:** {len(candidates)} candidate scenario(s) — plan-only, capped at "
+                f"{cap}.")
+    if truncated:
+        st.warning(f"The full grid exceeds the cap of {cap} — only the first {cap} candidates are "
+                   "kept. " + sim_target.LARGE_SEARCH_MESSAGE)
+    st.dataframe(sim_target.grid_preview_frame(candidates), hide_index=True,
+                 use_container_width=True, height=min(280, 60 + 30 * len(candidates)))
+    st.caption(sim_target.LARGE_SEARCH_MESSAGE)
+    if material_profile is None or not getattr(material_profile, "is_usable", False):
+        st.warning("No confirmed material profile (Step 7) — material composition is not included, "
+                   "so predicted element totals will be ~0 and element targets cannot be matched. "
+                   "Confirm a profile to make element matching meaningful (pH-only targets still "
+                   "work).")
+
+    # 3) run --------------------------------------------------------------- #
+    st.markdown("##### 3 · Run the search")
+    if not spec.is_defined:
+        st.info("Define a target (step 1) before running the search.")
+        return
+    av = phreeqc_executor.check_availability()
+    if not av.can_run:
+        app_ui.render_warning_panel(
+            "PHREEQC execution is not configured",
+            av.message + " Target matching runs PHREEQC on each candidate; the grid above is "
+            "plan-only. Set `PHREEQC_EXE` + `PHREEQC_DATABASE` to enable it.", level="warning")
+        return
+    app_ui.render_warning_panel(
+        "This runs deterministic PHREEQC for each candidate",
+        f"It executes {len(candidates)} reviewed input(s) exactly — not AI-generated, not "
+        "validated against measured data. Nothing runs automatically.", level="warning")
+    confirm = st.checkbox(
+        f"I have reviewed the target + grid and want to run {len(candidates)} PHREEQC scenario(s).",
+        key="sim_tm_confirm")
+    if st.button("Run target search", disabled=not confirm, key="sim_tm_run"):
+        prog = st.progress(0.0, text="Starting…")
+
+        def _cb(i, total, sid, status):
+            prog.progress(i / max(1, total), text=f"[{i}/{total}] {sid} — {status}")
+
+        with st.spinner("Building inputs + running candidates…"):
+            previews = _build_target_previews(
+                candidates, material_profile=material_profile, phase_template=phase_template,
+                base_release_model=base_release_model)
+            batch = batch_executor.run_batch(previews, max_scenarios=cap, on_progress=_cb)
+        prog.empty()
+        meta = sim_target.candidate_metadata_frame(candidates)
+        table = batch_executor.build_result_table(batch, meta)
+        if sim_target.RELEASE_FRACTION_COLUMN not in table.columns:
+            table = table.merge(meta[["scenario_id", sim_target.RELEASE_FRACTION_COLUMN]],
+                                on="scenario_id", how="left")
+        result = sim_target.score_results(spec, table)
+        st.session_state["sim_tm_state"] = {
+            "batch": batch, "meta": meta, "table": table, "result": result,
+            "candidates": candidates, "params": params, "spec": spec, "cap": cap,
+            "truncated": truncated}
+        st.session_state.pop("sim_tm_saved_run_id", None)
+
+    state = st.session_state.get("sim_tm_state")
+    if state:
+        _render_target_match_results(state["result"])
+        st.divider()
+        _render_save_target_run(state, material_profile)
+
+
 def _render_previous_simulation_runs() -> None:
     """Export-tab list of saved Simulate runs — kept separate from validation runs."""
     app_ui.section_header("Previous simulation runs",
@@ -1751,6 +2069,9 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
                                       phase_template=phase_template)
         st.divider()
         _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
+        st.divider()
+        _render_target_matching(st.session_state.get("sim_scenario"), selected_profile,
+                                phase_template, release_model)
 
 
 def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
