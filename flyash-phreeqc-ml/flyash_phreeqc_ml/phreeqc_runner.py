@@ -326,6 +326,32 @@ def is_configured() -> bool:
         return False
 
 
+# Phases the generated ``.pqi`` requires, in CEMDATA18 naming. A standard database such as
+# the shipped ``phreeqc.dat`` defines ``Calcite`` / ``Portlandite`` but NOT the CEMDATA
+# abbreviation ``Cal`` — so it would error on this input rather than run it.
+REQUIRED_DATABASE_PHASES = ("Cal", "Portlandite")
+
+
+def database_defines_phases(phases, database: str | None = None) -> bool:
+    """True if the configured (or given) PHREEQC database defines every name in ``phases``.
+
+    Delegates to :mod:`simulation.database_compatibility` (the single source of truth for
+    "does this database define these phases"). Used to gate CEMDATA18-specific integration
+    tests — the runner templates CEMDATA phase names that other databases lack. Never raises.
+    """
+    from .simulation import database_compatibility as _dbcompat
+    return _dbcompat.database_defines_phases(phases, database)
+
+
+def is_cemdata_compatible(database: str | None = None) -> bool:
+    """True when the configured database defines the CEMDATA18 phases the runner templates.
+
+    A run-gating check: even with a PHREEQC binary + *some* database configured, the
+    on-demand runner's input only runs on a CEMDATA18-compatible database.
+    """
+    return database_defines_phases(REQUIRED_DATABASE_PHASES, database)
+
+
 def run(input_text: str, workdir, *, basename: str = "gen", exe: str | None = None,
         database: str | None = None, timeout: float | None = None) -> Path:
     """Run PHREEQC on ``input_text`` in ``workdir``; return the ``.pqo`` output path.

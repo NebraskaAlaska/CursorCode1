@@ -241,10 +241,34 @@ def test_run_timeout_raises(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Optional integration test (real PHREEQC) — skipped unless configured
+# Database-capability gate (pins the CEMDATA-compatibility check itself)
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not pr.is_configured(),
-                    reason="no real PHREEQC binary + PHREEQC_DATABASE configured")
+def test_database_defines_phases_distinguishes_cal_from_calcite(tmp_path):
+    # a standard database defines Calcite + Portlandite but NOT the CEMDATA name "Cal"
+    std = tmp_path / "phreeqc.dat"
+    std.write_text("PHASES\nCalcite\n\tCaCO3 = CO3-2 + Ca+2\nPortlandite\n\tCa(OH)2 = Ca+2 + 2 OH-\n")
+    assert pr.database_defines_phases(["Portlandite"], database=str(std))
+    assert not pr.database_defines_phases(["Cal"], database=str(std))   # "Calcite" must not match
+    assert not pr.is_cemdata_compatible(database=str(std))
+
+    # a CEMDATA-like database that DOES define Cal + Portlandite at column 0
+    cem = tmp_path / "cemdata18.dat"
+    cem.write_text("PHASES\nCal\n\tCaCO3 = CO3-2 + Ca+2\nPortlandite\n\tCa(OH)2 = Ca+2 + 2 OH-\n")
+    assert pr.is_cemdata_compatible(database=str(cem))
+
+
+def test_cemdata_compatible_false_without_a_real_file(tmp_path):
+    assert not pr.is_cemdata_compatible(database="")                     # unset
+    assert not pr.is_cemdata_compatible(database=str(tmp_path / "missing.dat"))
+
+
+# --------------------------------------------------------------------------- #
+# Optional integration test (real PHREEQC) — runs only with a CEMDATA18-compatible
+# database, because the generated input uses CEMDATA phase names (e.g. ``Cal``).
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not (pr.is_configured() and pr.is_cemdata_compatible()),
+                    reason="no real PHREEQC binary + CEMDATA18-compatible PHREEQC_DATABASE "
+                           "configured (the runner's input needs CEMDATA phases like 'Cal')")
 def test_integration_real_phreeqc(tmp_path):  # pragma: no cover - env-dependent
     text, _ = pr.build_single_input(0.5, 5.0, 25.0, "atm_CO2", ph=13.1)
     out = pr.run(text, tmp_path, basename="it")

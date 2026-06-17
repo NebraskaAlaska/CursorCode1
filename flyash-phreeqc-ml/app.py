@@ -79,6 +79,8 @@ from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: 
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
 from flyash_phreeqc_ml.simulation import source_terms as sim_source_terms  # noqa: E402  (release model)
+from flyash_phreeqc_ml.simulation import phase_templates as sim_phase_templates  # noqa: E402
+from flyash_phreeqc_ml.simulation import database_compatibility as sim_dbcompat  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
@@ -759,6 +761,67 @@ def _render_release_model_section(scenario, material_profile):
     return model
 
 
+_DB_LEVEL_STATUS = {
+    sim_dbcompat.LEVEL_SUITABLE: "exact",
+    sim_dbcompat.LEVEL_PARTIAL: "scenario-level",
+    sim_dbcompat.LEVEL_BASIC_AQUEOUS: "preliminary",
+    sim_dbcompat.LEVEL_UNKNOWN: "neutral",
+}
+
+
+def _render_database_phases_section(scenario):
+    """Step 7c — show database compatibility + pick a reviewed candidate-phase template.
+
+    Returns the selected ``phase_templates.PhaseTemplate``. Only phases the configured database
+    actually defines will be added to the input (the builder enforces this); this section makes
+    that transparent. Nothing here runs PHREEQC.
+    """
+    st.markdown("#### Step 7c — Database & candidate phases")
+    st.caption(
+        "Precipitation and saturation-index predictions depend on the **thermodynamic database** "
+        "and the **candidate phases**. Only phases your configured database actually defines are "
+        "added — **nothing is invented, and missing phases are never silently added**. Default: "
+        "**aqueous only** (no precipitation modelled).")
+
+    templates = list(sim_phase_templates.TEMPLATES)
+    keys = [t.key for t in templates]
+    labels = {t.key: t.label for t in templates}
+    chosen = st.selectbox("Candidate phase template", keys,
+                          format_func=lambda k: labels[k], key="sim_phase_template")
+    template = sim_phase_templates.get_template(chosen)
+    report = sim_dbcompat.build_report(expected_phases=template.phase_names())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Database", report.database_label)
+    c2.metric("Detected family", report.detected_family)
+    c3.metric("Present", "yes" if report.database_exists else "no")
+    st.caption("Configured database path: "
+               + (f"`{report.database_path}`" if report.database_path
+                  else "`(none — set the PHREEQC_DATABASE environment variable)`"))
+    st.markdown("Compatibility: " + app_ui.status_badge(
+        report.compatibility_level.replace("_", " "),
+        _DB_LEVEL_STATUS.get(report.compatibility_level, "neutral")), unsafe_allow_html=True)
+
+    if template.is_aqueous_only:
+        st.info("Aqueous-only — **no equilibrium phases**; only aqueous speciation + saturation "
+                "indices are reported (no precipitation modelled).")
+    else:
+        if report.available_phases:
+            st.success("Phases that **will be added** (defined in the database): "
+                       + ", ".join(report.available_phases))
+        if report.missing_phases:
+            st.warning("Phases **skipped** (absent from the database — NOT added): "
+                       + ", ".join(report.missing_phases))
+        st.caption("Precipitation / SI interpretation is "
+                   + ("**meaningful**." if report.precipitation_meaningful
+                      else "**limited** (no available phases / no database)."))
+    for w in report.warnings:
+        st.warning(w)
+    if template.note:
+        st.caption("ℹ️ " + template.note)
+    return template
+
+
 def _release_model_key(model):
     """A hashable identity for a DissolutionModel, to invalidate cached previews on change."""
     if model is None:
@@ -770,7 +833,7 @@ def _release_model_key(model):
 
 
 def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
-                                  dissolution_model=None) -> None:
+                                  dissolution_model=None, phase_template=None) -> None:
     """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
 
     No PHREEQC is run, no file is written to a run folder, and AI does not write the input
@@ -799,8 +862,9 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
     else:
         st.caption(f"Material profile **{material_profile.display_name}** is selected but **not "
                    "confirmed** — confirm it in Step 7 to include its composition.")
-    # Stale-preview guard: rebuild if the profile OR the release model changed.
-    cache_key = (mpid, _release_model_key(dissolution_model))
+    # Stale-preview guard: rebuild if the profile, release model, or phase template changed.
+    cache_key = (mpid, _release_model_key(dissolution_model),
+                 getattr(phase_template, "key", None))
     if st.session_state.get("sim_previews_key", cache_key) != cache_key:
         st.session_state.pop("sim_previews", None)
 
@@ -808,7 +872,7 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
         with st.spinner("Templating PHREEQC input…"):
             st.session_state["sim_previews"] = phreeqc_input_builder.build_previews_for_matrix(
                 scenario, matrix, material_profile=material_profile,
-                dissolution_model=dissolution_model)
+                dissolution_model=dissolution_model, phase_template=phase_template)
         st.session_state["sim_previews_key"] = cache_key
         st.session_state["sim_previews_mpid"] = mpid
     previews = st.session_state.get("sim_previews")
@@ -1679,9 +1743,12 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         release_model = _render_release_model_section(st.session_state.get("sim_scenario"),
                                                       selected_profile)
         st.divider()
+        phase_template = _render_database_phases_section(st.session_state.get("sim_scenario"))
+        st.divider()
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
                                       material_profile=selected_profile,
-                                      dissolution_model=release_model)
+                                      dissolution_model=release_model,
+                                      phase_template=phase_template)
         st.divider()
         _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
 

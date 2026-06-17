@@ -28,6 +28,10 @@ reviewable **scenario** and a **simulation plan/matrix**. It is a *planning laye
    reviewable source term: none / global fraction / per-element / measured liquid). Composition
    alone introduces nothing into PHREEQC; the release model is what adds material elements. See
    [`material_release.md`](material_release.md).
+7c. **Database & candidate phases** — see which phases your configured database defines and pick a
+   reviewed phase template (aqueous-only default / fly ash / red mud). Only **available** phases are
+   added; missing ones are never added silently. See
+   [`database_compatibility.md`](database_compatibility.md).
 8. **PHREEQC input preview** — template a reviewable, draft `.pqi` input per scenario
    (deterministic code, **not** AI). Still no execution — see *PHREEQC input preview* below.
 9. **Run deterministic model** — *optionally* execute PHREEQC on the reviewed input and show the

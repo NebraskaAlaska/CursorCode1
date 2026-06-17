@@ -322,3 +322,31 @@ def test_result_path_does_not_import_source_terms():
     for mod in RESULT_PATH_MODULES:
         offenders = _mentions(_import_targets(mod), ("source_terms",))
         assert not offenders, f"{mod} imports source_terms: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Database-compatibility + phase-template layer boundary — pure helpers
+# --------------------------------------------------------------------------- #
+DB_PHASE_MODULES = ("simulation/database_compatibility.py", "simulation/phase_templates.py")
+
+
+def test_db_compat_and_phase_modules_import_no_ai_executor_or_result_path():
+    """They read database text + describe phase templates only: no AI (cannot control phase
+    selection), no executor / subprocess (run nothing), no comparison/residual/mapping code."""
+    forbidden = ("import_assist", "scenario_parser", "ai.literature", "ai.config", "ai.client",
+                 ".assistant", ".literature", "phreeqc_executor", "batch_executor",
+                 "phreeqc_runner", "subprocess", "residuals", "inclusion", "mapping_table",
+                 "scenarios", "replicates", "attribution", "mass_balance", "run_manager")
+    for mod in DB_PHASE_MODULES:
+        targets = _import_targets(mod)
+        offenders = _mentions(targets, forbidden) + [
+            t for t in targets if t in ("..ai", ".ai")
+            or t.startswith("..ai.") or t.startswith(".ai.")]
+        assert not offenders, f"{mod} imports forbidden module: {offenders}"
+
+
+def test_result_path_does_not_import_db_compat_or_phase_templates():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod),
+                              ("database_compatibility", "phase_templates"))
+        assert not offenders, f"{mod} imports db-compat/phase-template code: {offenders}"

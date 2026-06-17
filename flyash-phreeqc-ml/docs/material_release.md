@@ -79,10 +79,12 @@ phases / precipitation depend on the database + selected phases; expert review r
 ### Candidate phases & the database
 
 Precipitation and saturation-index predictions depend on the **candidate phases** and the
-**thermodynamic database**. The app does **not** invent a phase list — if the profile declares no
-candidate phases, released elements stay fully dissolved (no precipitation), and the app warns that
-SI prediction is limited. It also warns that **high-pH cement/fly-ash phases need CEMDATA18** — the
-standard `phreeqc.dat` predicts them weakly or not at all.
+**thermodynamic database**. The app does **not** invent a phase list — you pick a reviewed phase
+template (Step 7c) and **only the phases your configured database actually defines are added**; the
+rest are listed in warnings, never added silently. With no phases, released elements stay fully
+dissolved (no precipitation) and SI prediction is limited. High-pH cement/fly-ash phases (Portlandite,
+Ettringite, C-S-H) need **CEMDATA18** — `phreeqc.dat` predicts them weakly or not at all. See
+[`database_compatibility.md`](database_compatibility.md).
 
 ## Selected output
 
