@@ -155,6 +155,7 @@ class SimulationRunRecord:
     parsed_result_table: list = field(default_factory=list)
     plot_axis: str | None = None
     notes: str | None = None
+    refinement: dict | None = None                       # parent-run / objective / refined-sweep provenance
     scenarios: list = field(default_factory=list)        # list[SimulationScenarioRecord]
     outputs: list = field(default_factory=list)          # list[SimulationOutputRecord]
     app_version: str = APP_VERSION
@@ -188,6 +189,7 @@ class SimulationRunRecord:
             "phreeqc_output_paths": list(self.phreeqc_output_paths),
             "execution_status_summary": self.execution_status_summary,
             "plot_axis": self.plot_axis,
+            "refinement": self.refinement,
             "n_scenarios": self.n_scenarios,
             "scenarios": [s.to_dict() for s in self.scenarios],
             "outputs": [o.to_dict() for o in self.outputs],
@@ -246,7 +248,8 @@ def _safe_run_id(run_id: str) -> str:
 def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenario=None,
                      parse_result=None, material_profile=None, previews=None,
                      experiment_text: str | None = None, desired_outputs_text: str | None = None,
-                     label: str | None = None, notes: str = "") -> SimulationRunRecord:
+                     label: str | None = None, notes: str = "",
+                     refinement: dict | None = None) -> SimulationRunRecord:
     """Assemble a :class:`SimulationRunRecord` from whatever the Simulate tab has in hand.
 
     ``batch`` is a :class:`batch_executor.BatchResult` (a single run is wrapped as a
@@ -317,8 +320,9 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
         phreeqc_input_paths=input_paths, phreeqc_output_paths=output_paths,
         phreeqc_database_path=db_path, phreeqc_executable_path=exe_path,
         execution_status_summary=batch.status_counts(), parsed_result_table=parsed_table,
-        plot_axis=plot_axis, notes=notes or None, scenarios=scenario_records,
-        outputs=output_records)
+        plot_axis=plot_axis, notes=notes or None, refinement=(dict(refinement) if refinement
+                                                              else None),
+        scenarios=scenario_records, outputs=output_records)
 
 
 def _collect_assumptions(parse_result) -> list:

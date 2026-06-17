@@ -78,6 +78,9 @@ from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: 
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
+from flyash_phreeqc_ml.simulation import source_terms as sim_source_terms  # noqa: E402  (release model)
+from flyash_phreeqc_ml.simulation import phase_templates as sim_phase_templates  # noqa: E402
+from flyash_phreeqc_ml.simulation import database_compatibility as sim_dbcompat  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
@@ -667,14 +670,177 @@ def _material_profile_literature(scenario, store: dict) -> None:
         st.rerun()
 
 
-def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> None:
+def _render_release_model_section(scenario, material_profile):
+    """Step 7b — choose a conservative, reviewable material **release model** (source term).
+
+    Returns a ``source_terms.DissolutionModel``. Default is **no release** — composition stays
+    comment-only and no material elements enter the simulation. Nothing here runs PHREEQC.
+    """
+    st.markdown("#### Step 7b — Material release model (dissolution source term)")
+    st.caption(
+        "A confirmed material profile gives the **bulk** assay; PHREEQC needs to know how much "
+        "**dissolves**. Choose a conservative, reviewable release model. **Default: no release** — "
+        "the assay stays comment-only. Release fractions are **assumptions, not measured truth**, "
+        "and the whole material is never silently dissolved.")
+
+    if material_profile is None or not getattr(material_profile, "is_usable", False):
+        st.info("Confirm a material profile in **Step 7** to enable a release model. Without one, "
+                "**no material elements enter the simulation** (predicted Ca/Si/Al/Fe ≈ 0).")
+        return sim_source_terms.no_release()
+
+    elements = sorted(material_profile.element_assays().keys())
+    mode = st.radio(
+        "Release model", [
+            "No material release (default)",
+            "Global release fraction",
+            "Per-element release fractions",
+            "Measured liquid composition (input, not prediction)",
+        ], key="sim_release_mode",
+        help="No release is the safe default. A release fraction is the assumed % of each element "
+             "that dissolves into the liquid. Measured-liquid uses your measured concentrations "
+             "as input (not a prediction).")
+
+    model = sim_source_terms.no_release()
+    if mode.startswith("Global"):
+        pct = st.number_input("Release fraction — % of each element that dissolves", 0.0, 100.0,
+                              1.0, 0.5, key="sim_release_global",
+                              help="e.g. 1% is a conservative starting assumption; 100% (full "
+                                   "dissolution) is usually unrealistic.")
+        allow = st.checkbox("Allow > 100% (nonphysical — releases more than is present)",
+                            key="sim_release_over")
+        model = sim_source_terms.global_release(pct / 100.0, allow_over_unity=allow)
+    elif mode.startswith("Per-element"):
+        default_pct = st.number_input("Default release fraction (%) for elements not overridden",
+                                      0.0, 100.0, 1.0, 0.5, key="sim_release_default")
+        seed = pd.DataFrame({"element": elements, "release_%": [default_pct] * len(elements)})
+        edited = st.data_editor(seed, hide_index=True, use_container_width=True,
+                                key="sim_release_table", height=min(320, 60 + 30 * len(elements)))
+        per = {}
+        for row in edited.to_dict("records"):
+            v = sim_schema.as_float(row.get("release_%"))
+            if v is not None:
+                per[str(row.get("element"))] = v / 100.0
+        model = sim_source_terms.global_release(default_pct / 100.0, per_element=per)
+    elif mode.startswith("Measured"):
+        st.caption("These are **measured input**, not a prediction. Enter measured dissolved "
+                   "concentrations (mM); leave blank to omit.")
+        seed = pd.DataFrame({"element": elements, "measured_mM": [None] * len(elements)})
+        edited = st.data_editor(seed, hide_index=True, use_container_width=True,
+                                key="sim_release_measured", height=min(320, 60 + 30 * len(elements)))
+        meas = {}
+        for row in edited.to_dict("records"):
+            v = sim_schema.as_float(row.get("measured_mM"))
+            if v is not None:
+                meas[str(row.get("element"))] = v
+        model = sim_source_terms.measured_liquid(meas)
+
+    # Live preview of the computed source terms (no PHREEQC run)
+    result = sim_source_terms.compute_source_terms(
+        model, material_profile=material_profile, solid_mass_g=scenario.material.solid_mass_g,
+        liquid_volume_mL=scenario.leachant.liquid_volume_mL)
+    if result.status == sim_source_terms.STATUS_RELEASE_INCLUDED:
+        st.success("✓ The input preview **will include** material source terms (a REACTION block).")
+        df = pd.DataFrame([
+            {"element": r.element, "release %": round(r.fraction * 100, 4),
+             "released mol": float(f"{r.moles_released:.4g}"),
+             "conc (mM)": (round(r.concentration_mM, 4) if r.concentration_mM is not None else None)}
+            for r in result.released])
+        st.dataframe(df, hide_index=True, use_container_width=True,
+                     height=min(300, 60 + 30 * len(df)))
+    elif result.status == sim_source_terms.STATUS_MEASURED_LIQUID:
+        st.success("✓ The input preview will create the solution from your **measured** "
+                   "concentrations (labelled measured input, not prediction).")
+    else:
+        st.caption("No material source terms will be added.")
+    for w in result.warnings:
+        st.warning(w.message)
+    if result.assumptions:
+        with st.expander("Source-term assumptions"):
+            for a in result.assumptions:
+                st.caption("• " + a)
+    return model
+
+
+_DB_LEVEL_STATUS = {
+    sim_dbcompat.LEVEL_SUITABLE: "exact",
+    sim_dbcompat.LEVEL_PARTIAL: "scenario-level",
+    sim_dbcompat.LEVEL_BASIC_AQUEOUS: "preliminary",
+    sim_dbcompat.LEVEL_UNKNOWN: "neutral",
+}
+
+
+def _render_database_phases_section(scenario):
+    """Step 7c — show database compatibility + pick a reviewed candidate-phase template.
+
+    Returns the selected ``phase_templates.PhaseTemplate``. Only phases the configured database
+    actually defines will be added to the input (the builder enforces this); this section makes
+    that transparent. Nothing here runs PHREEQC.
+    """
+    st.markdown("#### Step 7c — Database & candidate phases")
+    st.caption(
+        "Precipitation and saturation-index predictions depend on the **thermodynamic database** "
+        "and the **candidate phases**. Only phases your configured database actually defines are "
+        "added — **nothing is invented, and missing phases are never silently added**. Default: "
+        "**aqueous only** (no precipitation modelled).")
+
+    templates = list(sim_phase_templates.TEMPLATES)
+    keys = [t.key for t in templates]
+    labels = {t.key: t.label for t in templates}
+    chosen = st.selectbox("Candidate phase template", keys,
+                          format_func=lambda k: labels[k], key="sim_phase_template")
+    template = sim_phase_templates.get_template(chosen)
+    report = sim_dbcompat.build_report(expected_phases=template.phase_names())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Database", report.database_label)
+    c2.metric("Detected family", report.detected_family)
+    c3.metric("Present", "yes" if report.database_exists else "no")
+    st.caption("Configured database path: "
+               + (f"`{report.database_path}`" if report.database_path
+                  else "`(none — set the PHREEQC_DATABASE environment variable)`"))
+    st.markdown("Compatibility: " + app_ui.status_badge(
+        report.compatibility_level.replace("_", " "),
+        _DB_LEVEL_STATUS.get(report.compatibility_level, "neutral")), unsafe_allow_html=True)
+
+    if template.is_aqueous_only:
+        st.info("Aqueous-only — **no equilibrium phases**; only aqueous speciation + saturation "
+                "indices are reported (no precipitation modelled).")
+    else:
+        if report.available_phases:
+            st.success("Phases that **will be added** (defined in the database): "
+                       + ", ".join(report.available_phases))
+        if report.missing_phases:
+            st.warning("Phases **skipped** (absent from the database — NOT added): "
+                       + ", ".join(report.missing_phases))
+        st.caption("Precipitation / SI interpretation is "
+                   + ("**meaningful**." if report.precipitation_meaningful
+                      else "**limited** (no available phases / no database)."))
+    for w in report.warnings:
+        st.warning(w)
+    if template.note:
+        st.caption("ℹ️ " + template.note)
+    return template
+
+
+def _release_model_key(model):
+    """A hashable identity for a DissolutionModel, to invalidate cached previews on change."""
+    if model is None:
+        return None
+    return (getattr(model, "mode", None), getattr(model, "global_fraction", None),
+            tuple(sorted((getattr(model, "per_element", {}) or {}).items())),
+            tuple(sorted((getattr(model, "measured_liquid_mM", {}) or {}).items())),
+            getattr(model, "allow_over_unity", False), getattr(model, "confirmed", False))
+
+
+def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
+                                  dissolution_model=None, phase_template=None) -> None:
     """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
 
     No PHREEQC is run, no file is written to a run folder, and AI does not write the input
     (the LLM only extracted the scenario; this `.pqi` text is templated by deterministic code
     in `simulation/phreeqc_input_builder.py`). ``material_profile`` is the user-confirmed
-    composition (or ``None`` → composition is not included and the preview stays
-    `needs_material_composition`).
+    composition and ``dissolution_model`` the user-chosen release model (or ``None`` → the
+    composition stays comment-only and no material elements enter the system).
     """
     st.markdown("#### Step 8 — PHREEQC input preview (draft)")
     st.caption(
@@ -696,14 +862,18 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> No
     else:
         st.caption(f"Material profile **{material_profile.display_name}** is selected but **not "
                    "confirmed** — confirm it in Step 7 to include its composition.")
-    # Stale-preview guard: rebuild if the selected profile changed since the last build.
-    if st.session_state.get("sim_previews_mpid", mpid) != mpid:
+    # Stale-preview guard: rebuild if the profile, release model, or phase template changed.
+    cache_key = (mpid, _release_model_key(dissolution_model),
+                 getattr(phase_template, "key", None))
+    if st.session_state.get("sim_previews_key", cache_key) != cache_key:
         st.session_state.pop("sim_previews", None)
 
     if st.button("Generate PHREEQC input preview", key="sim_pqi_btn"):
         with st.spinner("Templating PHREEQC input…"):
             st.session_state["sim_previews"] = phreeqc_input_builder.build_previews_for_matrix(
-                scenario, matrix, material_profile=material_profile)
+                scenario, matrix, material_profile=material_profile,
+                dissolution_model=dissolution_model, phase_template=phase_template)
+        st.session_state["sim_previews_key"] = cache_key
         st.session_state["sim_previews_mpid"] = mpid
     previews = st.session_state.get("sim_previews")
     if not previews:
@@ -1076,15 +1246,96 @@ def _render_refined_sweep(ranking, table, axis_col) -> None:
     sug = sim_strategy.suggest_refined_sweep(ranking, table, axis_col)
     if sug.kind == "none":
         return
-    st.markdown("##### Suggested next sweep")
+    st.markdown("##### Suggested refined sweep")
     st.info(sug.message)
     if sug.rationale:
         st.caption(sug.rationale)
-    if sug.suggested_values:
-        st.caption("Suggested values: "
-                   + ", ".join(f"{v:g}" if isinstance(v, (int, float)) else str(v)
-                               for v in sug.suggested_values)
-                   + " — **review before running. Nothing runs automatically.**")
+
+    plan = sim_strategy.refined_sweep_plan(
+        sug, ranking, table, max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS)
+    if plan.blocked or not plan.axis:
+        st.warning(plan.info)
+        st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
+        return
+
+    st.markdown(f"**Suggested sweep parameter:** `{plan.axis}`")
+    st.caption(plan.info)
+    for w in plan.warnings:
+        st.warning(w)
+    _render_refined_matrix_builder(plan, ranking)
+
+
+def _render_refined_matrix_builder(plan, ranking) -> None:
+    """Editable refined values → confirmed, plan-only matrix (never auto-runs)."""
+    default = ", ".join(f"{v:g}" for v in plan.values)
+    raw = st.text_input(f"Refined `{plan.axis}` values (comma-separated, editable)",
+                        value=default, key="sim_refine_vals")
+    edited = [v for v in (sim_schema.as_float(x) for x in raw.split(",")) if v is not None]
+    physical = [v for v in edited if sim_strategy.is_physical_value(plan.axis, v)]
+    dropped = len(edited) - len(physical)
+    if dropped:
+        st.warning(f"Ignored {dropped} nonphysical value(s) for `{plan.axis}` (must be above its "
+                   "physical floor).")
+    cap = batch_executor.DEFAULT_MAX_SCENARIOS
+    if len(physical) > cap:
+        st.warning(f"{len(physical)} values exceed the small-sweep cap of {cap} — only the first "
+                   f"{cap} will be used. {sim_strategy.LARGE_SCALE_MESSAGE}")
+        physical = sorted(physical)[:cap]
+    user_edited = sorted(round(v, 6) for v in physical) != list(plan.values)
+
+    st.markdown(f"**New refined matrix:** {len(physical)} scenario(s) over `{plan.axis}` "
+                "(plan-only until you review the input previews and run it).")
+    st.caption("📌 " + sim_strategy.REFINEMENT_LABEL)
+
+    replace = st.checkbox("Replace the current sweep plan with this refined matrix",
+                          value=True, key="sim_refine_replace")
+    confirm = st.checkbox("I have reviewed these refined values.", key="sim_refine_confirm")
+    if st.button("Generate refined matrix", disabled=not (confirm and physical),
+                 key="sim_refine_btn"):
+        sc = st.session_state.get("sim_scenario")
+        new_matrix = sim_matrix.build_simulation_matrix(sc, ranges={plan.axis: physical})
+        st.session_state["sim_refined_matrix"] = new_matrix
+        import datetime as _dt
+        top_score = None
+        try:
+            if ranking.ranked is not None and not ranking.ranked.empty:
+                top_score = float(ranking.ranked.iloc[0].get("score"))
+        except Exception:                                    # noqa: BLE001
+            top_score = None
+        st.session_state["sim_refinement"] = {
+            "parent_run_id": st.session_state.get("sim_saved_run_id"),
+            "parent_top_scenario_id": ranking.top_scenario_id,
+            "objective": ranking.objective.display() if ranking.objective else None,
+            "objective_kind": ranking.objective.kind if ranking.objective else None,
+            "ranking_top_score": top_score,
+            "reason": plan.info,
+            "suggestion_kind": plan.kind,
+            "axis": plan.axis,
+            "suggested_values": list(plan.values),
+            "applied_values": list(physical),
+            "user_edited": bool(user_edited),
+            "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        if replace:
+            st.session_state["sim_matrix"] = new_matrix
+            for k in ("sim_previews", "sim_previews_mpid", "sim_batch_result",
+                      "sim_batch_matrix", "sim_exec_results", "sim_ranking",
+                      "sim_ranking_axis", "sim_saved_run_id"):
+                st.session_state.pop(k, None)
+            st.success("Replaced the plan with the refined matrix. Review the input previews "
+                       "(Step 8) and run it (Step 9) — **nothing runs automatically**.")
+            st.rerun()
+        else:
+            st.success("Built a refined matrix below (it did **not** replace your current plan).")
+
+    refined = st.session_state.get("sim_refined_matrix")
+    if refined is not None and not replace:
+        st.markdown("**Refined matrix (plan-only)**")
+        st.dataframe(refined, hide_index=True, use_container_width=True,
+                     height=min(240, 60 + 30 * len(refined)))
+        st.download_button("Download refined plan (CSV)", refined.to_csv(index=False),
+                           file_name="refined_simulation_plan.csv", mime="text/csv",
+                           key="sim_refine_dl")
     st.caption(sim_strategy.LARGE_SCALE_MESSAGE)
 
 
@@ -1177,7 +1428,8 @@ def _render_save_simulation_run(matrix) -> None:
             material_profile=_selected_material_profile(),
             previews=st.session_state.get("sim_previews"),
             experiment_text=st.session_state.get("sim_desc"),
-            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes)
+            desired_outputs_text=st.session_state.get("sim_outputs"), label=label, notes=notes,
+            refinement=st.session_state.get("sim_refinement"))
         try:
             out_dir = reg.save_run(record)
             st.session_state["sim_saved_run_id"] = rid
@@ -1313,20 +1565,23 @@ def _render_exec_paths(result) -> None:
 
 
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
-    """Plan a simulation scenario from a plain-language description (planning layer only).
+    """Plan a simulation scenario from a plain-language description, then optionally run it.
 
     Flow: describe → desired outputs → parse (AI if consented, else rule-based) → review
     what was understood + missing/assumptions/warnings → edit/confirm → choose a strategy →
-    generate a plan matrix. **No deterministic simulation is run, no measured data is
-    touched, nothing becomes verified.**
+    generate a plan matrix → material profile → PHREEQC input preview → (gated, user-confirmed)
+    run + plots + ranking + refinement → save the run. **Generating the plan runs nothing;
+    PHREEQC runs only on an explicit confirmed step, no measured data is touched, and every
+    output is a simulation prediction — not validated against measured data.**
     """
-    st.subheader("Simulate — describe an experiment, plan a simulation")
+    st.subheader("Simulate — describe an experiment, plan and run a simulation")
     st.caption(
-        "This is the **planning layer**. It converts experiment descriptions into "
-        "structured scenarios and simulation matrices. It does **not** yet prove scientific "
-        "predictions until deterministic model execution and validation are performed. "
-        "Describe a batch reaction / leaching experiment below — **no deterministic "
-        "simulation (e.g. PHREEQC) is run here.**")
+        "Describe a batch reaction / leaching experiment; the tab converts it into a "
+        "structured scenario and a simulation matrix, then — on an explicit, user-confirmed "
+        "step (Step 9) — runs PHREEQC and plots the predicted outputs. **Generating the plan "
+        "runs nothing, and nothing runs automatically.** Every output here is a **simulation "
+        "prediction, not validated** against measured data — validation lives in the "
+        "**Compare Results** tab.")
 
     cfg = ai_config.resolve_config()
     if cfg.enabled:
@@ -1354,7 +1609,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         with st.spinner("Extracting scenario…"):
             st.session_state["sim_parse_result"] = ai_scenario_parser.parse_scenario(
                 desc, outputs, prefer_ai=use_ai)
-        st.session_state.pop("sim_matrix", None)
+        for k in ("sim_matrix", "sim_refinement", "sim_refined_matrix", "sim_ranking"):
+            st.session_state.pop(k, None)
 
     res = st.session_state.get("sim_parse_result")
     if res is None:
@@ -1458,7 +1714,9 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         sc.liquid_solid_ratio = sc.computed_ls_ratio()
         st.session_state["sim_matrix"] = sim_matrix.build_simulation_matrix(sc, ranges=ranges)
         st.session_state["sim_scenario"] = sc      # confirmed scenario → drives the .pqi preview
-        st.session_state.pop("sim_previews", None)
+        # A fresh, non-refined plan supersedes any prior refinement provenance.
+        for k in ("sim_previews", "sim_refinement", "sim_refined_matrix"):
+            st.session_state.pop(k, None)
     if not confirmed:
         st.caption("Confirm the reviewed scenario (Step 5) to enable plan generation.")
 
@@ -1466,11 +1724,11 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     if mtx is not None:
         st.success(sim_schema.PLAN_ONLY_LABEL)
         st.info(
-            "ℹ️ **Changing simulation-plan values does not update result graphs** (pH, "
-            "residuals, measured-vs-model) until a deterministic model is executed. The "
-            "Simulate tab produces a **plan table only** — it runs no model, writes no output "
-            "file, and draws no result graph. The pH/residual graphs in **Validate** and "
-            "**Compare Results** are driven by measured data + model results, not by this plan.")
+            "ℹ️ **Generating this plan runs nothing.** To run the model, use **Step 9 — Run "
+            "deterministic model** below (gated and user-confirmed). The **measured-vs-model** "
+            "pH / residual graphs in **Validate** and **Compare Results** are driven by "
+            "measured data + model results — **changing simulation-plan values never updates "
+            "them.**")
         st.dataframe(mtx, use_container_width=True, height=160, hide_index=True)
         st.download_button(
             "Download plan (CSV)", mtx.to_csv(index=False), file_name="simulation_plan.csv",
@@ -1482,8 +1740,15 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         st.divider()
         selected_profile = _render_material_profile_section(st.session_state.get("sim_scenario"))
         st.divider()
+        release_model = _render_release_model_section(st.session_state.get("sim_scenario"),
+                                                      selected_profile)
+        st.divider()
+        phase_template = _render_database_phases_section(st.session_state.get("sim_scenario"))
+        st.divider()
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
-                                      material_profile=selected_profile)
+                                      material_profile=selected_profile,
+                                      dissolution_model=release_model,
+                                      phase_template=phase_template)
         st.divider()
         _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
 
@@ -3854,9 +4119,10 @@ def _render_modes_panel() -> None:
     m1, m2, m3 = st.columns(3)
     m1.markdown(
         "**1 · Simulate**  \nDescribe an experiment and the variables you care about. AI "
-        "extracts a structured scenario, flags missing info and assumptions, and builds a "
-        "simulation plan/matrix.  \n_Planning layer — deterministic model execution is "
-        "future work._")
+        "extracts a structured scenario, flags missing info and assumptions, builds a "
+        "simulation plan/matrix, and — on an explicit, user-confirmed step — runs PHREEQC "
+        "and plots the predicted outputs.  \n_Outputs are simulation predictions, not "
+        "validated against measured data._")
     m2.markdown(
         "**2 · Validate**  \nCompare measured data against model predictions using "
         "transparent mapping status and residuals, with an honest validity status.  \n"
@@ -5260,7 +5526,9 @@ def _render_help_tab() -> None:
         "1. **Start** — create or open a run in the sidebar (a 'save file' for one "
         "experiment set) and read the three-mode overview + status.\n"
         "2. **Simulate** — describe an experiment in plain language → a structured scenario → "
-        "a simulation plan/matrix. _Planning layer — no deterministic model is run yet._\n"
+        "a simulation plan/matrix → optionally run PHREEQC (gated, user-confirmed) and "
+        "rank/refine the predictions. _Outputs are simulation predictions, not validated "
+        "against measured data._\n"
         "3. **Import Data** — add measured rows (lab), upload/enter literature rows, or add "
         "synthetic demo rows, depending on run type, and review unit conversions.\n"
         "4. **Validate** — measured-data overview, data-quality validation, and "
@@ -6027,7 +6295,7 @@ app_ui.render_hero(
     "structured scenario, clarifies assumptions, and plans a geochemical simulation — "
     "then, where you have measured data, validates and corrects the predictions against "
     "it. Three modes: Simulate, Validate, Learn & Improve.",
-    eyebrow="Describe experiment → AI scenario → simulation plan → (future) predicted variables + uncertainty → validate against measured data",
+    eyebrow="Describe experiment → AI scenario → simulation plan → run model → predicted variables → validate against measured data",
     chips=[
         ("Simulate · Validate · Learn", "info"),
         ("Transparent, auditable methods", "neutral"),

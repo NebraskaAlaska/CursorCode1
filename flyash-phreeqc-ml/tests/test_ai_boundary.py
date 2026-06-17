@@ -119,6 +119,9 @@ PLANNER_MODULES = [
     "simulation/phreeqc_input_builder.py",
     "ai/scenario_parser.py",
 ]
+# Note: simulation/source_terms.py is a materials-adjacent helper (it legitimately imports
+# materials.profile_schema for atomic weights / oxide stoichiometry), so it is NOT in
+# PLANNER_MODULES; its no-AI / no-executor / no-result-path boundary is pinned separately below.
 
 
 def test_planner_does_not_execute_phreeqc():
@@ -294,3 +297,56 @@ def test_result_path_does_not_import_strategy():
     for mod in RESULT_PATH_MODULES:
         offenders = _mentions(_import_targets(mod), ("simulation.strategy", ".strategy"))
         assert not offenders, f"{mod} imports the strategy module: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Material source-term / dissolution layer boundary — planning helper only
+# --------------------------------------------------------------------------- #
+SOURCE_TERMS_MODULE = "simulation/source_terms.py"
+
+
+def test_source_terms_imports_no_ai_or_executor_or_result_path():
+    """The dissolution/source-term layer templates text only: no AI (it cannot decide release
+    fractions), no executor (it runs nothing), and no comparison/residual/mapping code."""
+    forbidden = ("import_assist", "scenario_parser", "ai.literature", "ai.config", "ai.client",
+                 ".assistant", ".literature", "phreeqc_executor", "batch_executor",
+                 "phreeqc_runner", "subprocess", "residuals", "inclusion", "mapping_table",
+                 "scenarios", "replicates", "attribution", "mass_balance", "run_manager")
+    targets = _import_targets(SOURCE_TERMS_MODULE)
+    offenders = _mentions(targets, forbidden) + [
+        t for t in targets if t in ("..ai", ".ai") or t.startswith("..ai.") or t.startswith(".ai.")]
+    assert not offenders, f"{SOURCE_TERMS_MODULE} imports forbidden module: {offenders}"
+
+
+def test_result_path_does_not_import_source_terms():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("source_terms",))
+        assert not offenders, f"{mod} imports source_terms: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Database-compatibility + phase-template layer boundary — pure helpers
+# --------------------------------------------------------------------------- #
+DB_PHASE_MODULES = ("simulation/database_compatibility.py", "simulation/phase_templates.py")
+
+
+def test_db_compat_and_phase_modules_import_no_ai_executor_or_result_path():
+    """They read database text + describe phase templates only: no AI (cannot control phase
+    selection), no executor / subprocess (run nothing), no comparison/residual/mapping code."""
+    forbidden = ("import_assist", "scenario_parser", "ai.literature", "ai.config", "ai.client",
+                 ".assistant", ".literature", "phreeqc_executor", "batch_executor",
+                 "phreeqc_runner", "subprocess", "residuals", "inclusion", "mapping_table",
+                 "scenarios", "replicates", "attribution", "mass_balance", "run_manager")
+    for mod in DB_PHASE_MODULES:
+        targets = _import_targets(mod)
+        offenders = _mentions(targets, forbidden) + [
+            t for t in targets if t in ("..ai", ".ai")
+            or t.startswith("..ai.") or t.startswith(".ai.")]
+        assert not offenders, f"{mod} imports forbidden module: {offenders}"
+
+
+def test_result_path_does_not_import_db_compat_or_phase_templates():
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod),
+                              ("database_compatibility", "phase_templates"))
+        assert not offenders, f"{mod} imports db-compat/phase-template code: {offenders}"

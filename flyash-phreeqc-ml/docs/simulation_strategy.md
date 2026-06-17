@@ -78,6 +78,49 @@ After ranking, the layer proposes a **cautious** next sweep — it never runs it
 The suggestion lists concrete values to *consider*. You review them and decide — nothing runs
 automatically, and the [small-sweep cap](phreeqc_execution.md) still applies.
 
+## The refined-sweep loop (suggestion → confirmed plan)
+
+A suggestion can be turned into a **new confirmed simulation matrix** — without anything running
+automatically. This closes the loop *rank → refine → re-run* while keeping every step a deliberate,
+reviewed action.
+
+**Ranking vs. refined sweep.** Ranking *scores the sweep you already ran*. A refined sweep *proposes
+the next sweep to run*. Neither is validation, and neither executes anything on its own.
+
+**How the loop works:**
+
+1. After ranking, the tab shows the suggested **sweep parameter**, concrete **suggested values**,
+   the **reason**, and any **warnings**.
+2. `strategy.refined_sweep_plan` converts the suggestion into concrete values deterministically:
+   - `extend_upper` → a couple of higher values beyond the edge;
+   - `extend_lower` → lower values, **never nonphysical** (a concentration/time is never taken to
+     ≤ 0 — a halved value is used instead, and the clamp is flagged);
+   - `refine_internal` → a finer grid around the best region;
+   - `narrow_failures` → a smaller, safer range;
+   - `add_selected_output` → **no chemistry values are generated** (it is blocked with a note to
+     add the missing `SELECTED_OUTPUT` / parser definitions instead).
+3. The values are **editable** — you can change them. You then tick a confirmation checkbox and
+   press **Generate refined matrix**.
+4. The new matrix is **plan-only** (every row `status = plan_only`). It does **not** overwrite the
+   current plan unless you choose *Replace the current sweep plan*. To actually run it you go back
+   through the input previews (Step 8) and the explicit run step (Step 9) — exactly as for any
+   sweep.
+
+**Why confirmation is required.** The refined values are a *suggestion*, possibly edited by you,
+and they will (eventually) drive real PHREEQC runs. Confirming them generates a *plan*, never a
+result — so nothing is built on an unreviewed extrapolation, and AI never runs anything.
+
+**Provenance is preserved.** When you later run and **save** the refined sweep, the saved
+[simulation run](simulation_runs.md) records the refinement chain: the **parent run id**, the
+**parent top-ranked scenario**, the **objective** + its **ranking score**, the **reason** for the
+refinement, the **suggested vs. applied** values (so your edits are visible), and a timestamp.
+
+**Why this is not full automatic optimization.** Each refinement is one small, reviewed step that
+*you* confirm. The app never chains refinements on its own, never runs a search loop, and keeps the
+small-sweep cap. Repeating the loop by hand — rank, refine, confirm, run, rank again — *approximates*
+an adaptive search, but every step stays a deliberate human decision over model predictions, with
+the standing label *"This is a small reviewed refinement, not large-scale automatic optimization."*
+
 ## Why large-scale / adaptive search is future work
 
 This is a small-sweep prototype. For hundreds or thousands of scenarios, or an *adaptive* search
@@ -92,9 +135,14 @@ space cheaply and runs PHREEQC only at promising points) are out of scope for th
 ## Implementation
 
 - `flyash_phreeqc_ml/simulation/strategy.py` — `SimulationObjective` / `ObjectiveMetric` /
-  `RankingResult` / `RefinedSweepSuggestion`, `parse_objective` (rule-based), `rank_results`, and
-  `suggest_refined_sweep`. Pure: it imports only `re` / `dataclasses` / `pandas` — no executor (so
-  it cannot run anything), no AI, no comparison module.
-- The Simulate ranking UI lives in `app.py` (`_render_rank_simulation_results` / `_objective_editor`
-  / `_render_ranking` / `_render_refined_sweep`).
-- Covered by `tests/test_strategy.py`; boundaries by `tests/test_ai_boundary.py`.
+  `RankingResult` / `RefinedSweepSuggestion` / `RefinedSweepPlan`, `parse_objective` (rule-based),
+  `rank_results`, `suggest_refined_sweep`, and `refined_sweep_plan` (suggestion → physical, capped
+  sweep values; `is_physical_value`). Pure: it imports only `re` / `dataclasses` / `pandas` — no
+  executor (so it cannot run anything), no AI, no comparison module.
+- `flyash_phreeqc_ml/simulation/run_registry.py` — a saved run's `refinement` block records the
+  parent run / objective / score / reason / suggested-vs-applied values / timestamp.
+- The Simulate ranking + refined-loop UI lives in `app.py` (`_render_rank_simulation_results` /
+  `_objective_editor` / `_render_ranking` / `_render_refined_sweep` /
+  `_render_refined_matrix_builder`).
+- Covered by `tests/test_strategy.py` + `tests/test_refined_sweep.py`; boundaries by
+  `tests/test_ai_boundary.py`.

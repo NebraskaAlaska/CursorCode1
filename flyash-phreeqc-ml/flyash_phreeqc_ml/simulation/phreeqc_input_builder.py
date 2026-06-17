@@ -25,7 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .. import config, profiles
+from . import database_compatibility as _dbcompat
 from . import scenario_schema as S
+from . import source_terms as _source_terms
 from .scenario_schema import SimulationScenario
 
 # --------------------------------------------------------------------------- #
@@ -87,6 +89,9 @@ class PhreeqcInputPreview:
     warnings: list = field(default_factory=list)
     assumptions: list = field(default_factory=list)
     unsupported_features: list = field(default_factory=list)
+    includes_source_terms: bool = False     # True when a material release model is applied
+    phase_template_key: str | None = None   # the selected candidate-phase template (if any)
+    database_report: object = None          # DatabaseCompatibilityReport (if a template was used)
 
     @property
     def is_ready(self) -> bool:
@@ -100,6 +105,8 @@ class PhreeqcInputPreview:
             "warnings": list(self.warnings),
             "assumptions": list(self.assumptions),
             "unsupported_features": list(self.unsupported_features),
+            "includes_source_terms": self.includes_source_terms,
+            "phase_template_key": self.phase_template_key,
             "phreeqc_input_text": self.phreeqc_input_text,
         }
 
@@ -277,17 +284,104 @@ def _solution_block(kind: str, scenario: SimulationScenario, temp: float,
     return lines
 
 
+def _apply_solution_source_terms(sol_lines, source_term) -> list:
+    """Inject measured-liquid concentrations + set ``-water`` (the real L/S) into a SOLUTION.
+
+    ``-water`` is set to the liquid volume so released *moles* map to the right dissolved
+    *concentration*; any default ``-water`` from the template is replaced.
+    """
+    out = list(sol_lines)
+    out += list(getattr(source_term, "solution_extra_lines", []) or [])
+    water_kg = getattr(source_term, "solution_water_kg", None)
+    if water_kg is not None:
+        out = [ln for ln in out if not ln.strip().startswith("-water")]
+        out.append(f"    -water    {_fmt(water_kg)}   # kg = liquid volume (sets the real L/S so "
+                   "released moles map to the right concentration)")
+    return out
+
+
+def _phase_block_lines(material_profile, phase_template, report, effective_phases,
+                       st_status) -> list:
+    """Database-compatibility comment block + EQUILIBRIUM_PHASES (available phases only)."""
+    lines: list[str] = ["# --- database compatibility ---"]
+    if report is not None:
+        lines.append(f"#   configured database: {report.database_label} "
+                     f"(family: {report.detected_family}, present: {report.database_exists})")
+        lines.append(f"#   compatibility level: {report.compatibility_level}")
+        if not report.database_exists:
+            lines.append("#   NOTE: no database configured — phase availability is NOT verified; "
+                         "precipitation / SI prediction is unverified.")
+    lines.append("# NOTE: high-pH cement/fly-ash phases need CEMDATA18; phreeqc.dat predicts "
+                 "these weakly or not at all (it lacks Portlandite / Ettringite / C-S-H).")
+    lines.append("")
+
+    lines.append("# --- candidate precipitate phases (EQUILIBRIUM_PHASES) ---")
+    avail = list(effective_phases or [])
+    missing = list(getattr(report, "missing_phases", []) or []) if report is not None else []
+    why = {p.name: p.why for p in getattr(phase_template, "phases", ())} \
+        if phase_template is not None else {}
+
+    if phase_template is not None and getattr(phase_template, "is_aqueous_only", True):
+        lines.append(f"# Aqueous-only template ('{phase_template.label}') — NO equilibrium phases; "
+                     "only aqueous speciation + saturation indices are reported (no precipitation).")
+    elif phase_template is not None and phase_template.phases:
+        if not (report and report.database_exists):
+            lines.append(f"# Phase template '{phase_template.label}' selected, but no database is "
+                         "configured to verify availability — phases are NOT added (never add "
+                         "unverified phases). Set PHREEQC_DATABASE, then re-generate. Candidates:")
+            for p in phase_template.phases:
+                lines.append(f"#   {p.name} — {p.why}")
+        elif avail:
+            lines.append(f"# Phase template '{phase_template.label}' — adding ONLY the phases the "
+                         f"configured database ({report.database_label}) defines:")
+            lines.append("EQUILIBRIUM_PHASES 1")
+            for ph in avail:
+                lines.append(f"    {ph:<13} 0   0   # {why.get(ph, 'candidate phase')}")
+            if missing:
+                lines.append("#   SKIPPED (absent from this database, NOT added): "
+                             + ", ".join(missing))
+        else:
+            lines.append(f"# Phase template '{phase_template.label}' — the configured database "
+                         f"({report.database_label}) defines NONE of its phases; none added "
+                         "(aqueous-only result). Missing: " + ", ".join(missing))
+    else:
+        frozen = list(dict(getattr(material_profile, "candidate_phases", {}) or {}))
+        if frozen and avail:
+            lines.append("EQUILIBRIUM_PHASES 1")
+            for ph in avail:
+                lines.append(f"    {ph:<13} 0   0   # candidate phase (allowed to precipitate)")
+            if missing:
+                lines.append("#   SKIPPED (absent from this database): " + ", ".join(missing))
+        elif frozen:
+            lines.append("# Candidate phases declared but none available in the configured "
+                         "database (or no database) — none added. Phases: " + ", ".join(frozen))
+        else:
+            lines.append("# No candidate phases — select a phase template (Step 7c) to model "
+                         "precipitation. Without phases, released elements stay fully dissolved "
+                         "and SI prediction is limited.")
+    lines.append("")
+    return lines
+
+
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 def build_phreeqc_input_preview(scenario: SimulationScenario, *,
                                 scenario_id: str = "SIM-001",
-                                material_profile=None) -> PhreeqcInputPreview:
+                                material_profile=None,
+                                dissolution_model=None,
+                                phase_template=None,
+                                database_path=None) -> PhreeqcInputPreview:
     """Build a deterministic, draft PHREEQC input preview for one confirmed scenario.
 
     ``material_profile`` is an optional :class:`MaterialProfile`; if ``None`` it is
     best-effort resolved from the scenario's material name (fly ash / red mud / generic).
-    Never raises on missing data — it returns a labelled draft + warnings instead.
+    ``dissolution_model`` is an optional :class:`source_terms.DissolutionModel`; when it
+    introduces material release, a ``REACTION`` source-term block is templated into the input.
+    ``phase_template`` is an optional :class:`phase_templates.PhaseTemplate`; its phases are
+    checked against the configured (``database_path``, default ``config.PHREEQC_DATABASE_PATH``)
+    database and **only the available ones** are added to ``EQUILIBRIUM_PHASES`` (the rest are
+    listed in warnings — never added silently). Never raises — returns a labelled draft.
     """
     warnings: list[str] = []
     assumptions: list[str] = []
@@ -317,6 +411,30 @@ def build_phreeqc_input_preview(scenario: SimulationScenario, *,
             "meaningful PHREEQC prediction requires a measured or literature-confirmed "
             "material composition. The draft is structural only.")
         unsupported.append("dissolved material composition (no usable declared assay)")
+
+    # --- material source term (dissolution / release model) --------------- #
+    source_term = _source_terms.compute_source_terms(
+        dissolution_model, material_profile=material_profile,
+        solid_mass_g=scenario.material.solid_mass_g,
+        liquid_volume_mL=scenario.leachant.liquid_volume_mL,
+        target_elements=_target_elements(scenario))
+    assumptions += list(source_term.assumptions)
+    warnings += source_term.warning_messages()
+
+    # --- candidate phases + database compatibility ------------------------ #
+    template_phase_names = list(phase_template.phase_names()) if phase_template is not None else []
+    frozen_phases = list(dict(getattr(material_profile, "candidate_phases", {}) or {}))
+    database_report = _dbcompat.build_report(
+        database_path, expected_phases=(template_phase_names or frozen_phases))
+    warnings += list(database_report.warnings)
+    # Which phases will actually be added (only those the configured database defines).
+    effective_phases = database_report.available_phases if database_report.database_exists else []
+    if source_term.status == _source_terms.STATUS_RELEASE_INCLUDED and not effective_phases:
+        warnings.append(
+            "Material release is included but NO precipitate phases will be added (none selected, "
+            "none available in the database, or no database configured) — predicted dissolved "
+            "totals assume full dissolution with no precipitation, and SI / mineral predictions "
+            "are limited.")
 
     if kind == TEMPLATE_UNSUPPORTED:
         warnings.append(
@@ -349,14 +467,19 @@ def build_phreeqc_input_preview(scenario: SimulationScenario, *,
         status = STATUS_DRAFT
 
     text = _assemble_text(scenario, scenario_id, kind, temp, composition, material_profile,
-                          assumptions, warnings, unsupported, status)
+                          assumptions, warnings, unsupported, status, source_term,
+                          phase_template, database_report, effective_phases)
     return PhreeqcInputPreview(
         scenario_id=scenario_id, phreeqc_input_text=text, template_type=kind, status=status,
-        warnings=warnings, assumptions=assumptions, unsupported_features=unsupported)
+        warnings=warnings, assumptions=assumptions, unsupported_features=unsupported,
+        includes_source_terms=source_term.has_source_terms,
+        phase_template_key=getattr(phase_template, "key", None),
+        database_report=database_report)
 
 
 def _assemble_text(scenario, scenario_id, kind, temp, composition, material_profile,
-                   assumptions, warnings, unsupported, status) -> str:
+                   assumptions, warnings, unsupported, status, source_term=None,
+                   phase_template=None, database_report=None, effective_phases=None) -> str:
     flat = scenario.to_flat_dict()
     material = flat.get("material_name") or flat.get("material_type") or "unspecified"
     targets = _target_elements(scenario)
@@ -392,50 +515,68 @@ def _assemble_text(scenario, scenario_id, kind, temp, composition, material_prof
             lines.append(f"#     - {w}")
     lines.append("")
 
-    # 3) TITLE + leachant SOLUTION
+    st_status = getattr(source_term, "status", None)
+    released = list(getattr(source_term, "released", []) or [])
+
+    # 3) TITLE + leachant SOLUTION (+ -water for L/S, + measured-liquid additions)
     lines.append(f"TITLE {scenario_id} — DRAFT preview ({kind} leaching of {material})")
     lines.append("")
-    lines += _solution_block(kind, scenario, temp, assumptions)
+    sol_lines = _solution_block(kind, scenario, temp, assumptions)
+    if source_term is not None:
+        sol_lines = _apply_solution_source_terms(sol_lines, source_term)
+    lines += sol_lines
     lines.append("")
 
     # 4) dissolved material composition (only from a usable assay; never invented)
     lines.append("# --- dissolved material composition ---")
     if composition:
         name = getattr(material_profile, "display_name", None) or material
-        lines.append(f"# From the usable declared assay of '{name}' (review the dissolution "
-                     "assumption — this lists the BULK assay, not a computed dissolved amount):")
+        lines.append(f"# Usable declared assay of '{name}' (BULK assay, not a measured dissolved "
+                     "amount):")
         lines += _composition_provenance_lines(material_profile)
         for el, av in composition.items():
             lines.append(f"#   {el} = {_fmt(getattr(av, 'value', av))} "
                          f"{getattr(av, 'unit', '')} ({getattr(av, 'provenance', 'declared')})")
-        lines.append("# Convert the bulk assay to dissolved mol/L (with a dissolution model) "
-                     "before running — this draft does not assume a dissolution extent.")
+        if st_status == _source_terms.STATUS_RELEASE_INCLUDED and released:
+            lines.append("# Material RELEASE model APPLIED — the REACTION block below introduces "
+                         "the USER-ASSUMED released fraction of each element (NOT measured):")
+            for r in released:
+                conc = f" -> {_fmt(r.concentration_mM)} mM" if r.concentration_mM is not None else ""
+                lines.append(f"#   {r.element}: {_fmt(r.fraction * 100)}% release -> "
+                             f"{_fmt(r.moles_released)} mol{conc}  ({r.source})")
+        else:
+            lines.append("# Convert the bulk assay to dissolved mol/L (with a release model) "
+                         "before running — this draft does not assume a dissolution extent. "
+                         "NO material elements enter the system until a release model is chosen.")
     else:
         lines.append("# NOT INCLUDED — no usable measured/literature-confirmed material assay is "
                      "available.")
         lines.append("# A meaningful prediction REQUIRES the dissolved material composition. "
                      "Supply it from a measured assay or a confirmed literature value, then add "
-                     "the dissolved elements (mol/L) to SOLUTION 1 above.")
+                     "a material release model.")
     lines.append("")
 
-    # 5) candidate precipitate phases (from the material profile, if any) — draft
-    phases = dict(getattr(material_profile, "candidate_phases", {}) or {}) \
-        if material_profile is not None else {}
-    lines.append("# --- candidate precipitate phases (EQUILIBRIUM_PHASES) ---")
-    if phases:
-        lines.append("EQUILIBRIUM_PHASES 1")
-        for phase in phases:
-            lines.append(f"    {phase}    0   0   # allowed to precipitate (draft — verify "
-                         "against the database)")
-    else:
-        lines.append("# No candidate phases declared for this material — define the precipitate "
-                     "phases to model (predictions depend entirely on this list + the database).")
-    lines.append("")
+    # 4b) material source-term REACTION block (user-assumed release)
+    if st_status == _source_terms.STATUS_RELEASE_INCLUDED and getattr(source_term, "reaction_lines", None):
+        lines.append("# --- material source term (USER-ASSUMED release, NOT measured) ---")
+        lines.append("#   Release fractions are assumptions you chose; they control the predicted "
+                     "dissolved totals.")
+        lines.append("#   " + _source_terms.NON_KINETIC_NOTE)
+        lines.append("#   Solid phases / precipitation depend on the database + EQUILIBRIUM_PHASES "
+                     "below. Expert review required.")
+        lines += source_term.reaction_lines
+        lines.append("")
 
-    # 6) SELECTED_OUTPUT for the requested variables
+    # 5) database compatibility + candidate precipitate phases (only available ones added)
+    lines += _phase_block_lines(material_profile, phase_template, database_report,
+                                effective_phases, st_status)
+
+    # 6) SELECTED_OUTPUT — pH, pe, target + released element totals, so they are parseable
+    out_elements = list(dict.fromkeys(list(targets) + [r.element for r in released]))
     lines.append("SELECTED_OUTPUT")
     lines.append("    -pH        true")
-    lines.append(f"    -totals    {' '.join(targets)}")
+    lines.append("    -pe        true")
+    lines.append(f"    -totals    {' '.join(out_elements)}")
     lines.append("")
     lines.append("END")
     lines.append("")
@@ -444,11 +585,15 @@ def _assemble_text(scenario, scenario_id, kind, temp, composition, material_prof
 
 
 def build_previews_for_matrix(scenario: SimulationScenario, matrix_df, *,
-                              material_profile=None) -> list[PhreeqcInputPreview]:
+                              material_profile=None,
+                              dissolution_model=None,
+                              phase_template=None,
+                              database_path=None) -> list[PhreeqcInputPreview]:
     """One preview per simulation-matrix row (handles single scenario + parameter sweeps).
 
     Each row's swept values (concentration / time / temperature / L:S) override the base
-    confirmed scenario; the row's ``scenario_id`` labels the preview.
+    confirmed scenario; the row's ``scenario_id`` labels the preview. ``dissolution_model``
+    and ``phase_template`` (if any) are applied to every row.
     """
     from . import matrix as _matrix
     base = scenario.to_flat_dict()
@@ -462,5 +607,8 @@ def build_previews_for_matrix(scenario: SimulationScenario, matrix_df, *,
                 flat[f] = row.get(f)
         sc = SimulationScenario.from_flat_dict(flat)
         sid = str(row.get("scenario_id") or f"SIM-{i:03d}")
-        out.append(build_phreeqc_input_preview(sc, scenario_id=sid, material_profile=material_profile))
+        out.append(build_phreeqc_input_preview(
+            sc, scenario_id=sid, material_profile=material_profile,
+            dissolution_model=dissolution_model, phase_template=phase_template,
+            database_path=database_path))
     return out
