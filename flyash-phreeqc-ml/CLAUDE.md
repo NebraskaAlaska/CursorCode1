@@ -891,6 +891,45 @@ experiment — **not** a blind replacement for the chemistry.
   (`engine_settings` added, app.py top-func set tightened). README updated (four-section nav table, Research
   Assistant workspace, future plugin-engine architecture).
 
+- **Dark research-cockpit makeover — seven-section nav + design system** (UI/UX + presentation + agent
+  message/routing data; **no scientific / PHREEQC / execution / source-term / database / ranking /
+  validation logic change**). Reworked the app into a **dark, Apple/Squarespace-inspired** assistant-first
+  cockpit. **Design system:** `.streamlit/config.toml` switched to a dark base theme; `app_ui.py` CSS +
+  `STATUS_STYLES` rewritten to the dark palette (bg `#0E1014`, sidebar `#090B0F`, main `#12151B`, card
+  `#191D24`, border `#2D333D`, accent `#6EA8FE`, success `#4FC58A` / warning `#D8A03D` / danger `#E06C75`;
+  design tokens in `:root`, dark cards/sidebar/buttons/chat/expanders, a hidden-dot left-rail nav). **Nav
+  expanded 4 → 7 sections** (`st.sidebar.radio(key="nav_section")`): **Assistant · Workspace · Results ·
+  Data & Validation · Projects · Engine Library · Settings**. Mapping (no workflow removed): **Assistant** =
+  `assistant_tab` (the chat is no longer a peer of "Advanced Simulate"); **Workspace** = `simulate_tab` (the
+  full manual builder, promoted out of an expander); **Results** = new `ui/results.py` (clean read-out of
+  the agent state's latest prediction — pH / element totals / target match / sweep plots, labelled *model
+  prediction only, not validated*, raw table under an expander); **Data & Validation** = Import/Validate/
+  Match/Compare sub-tabs; **Projects** = `export_tab`; **Engine Library** = new `ui/engine_library.py` (the
+  modular engine registry — PHREEQC executable, fly-ash mature demo, planning domains, future engines);
+  **Settings** = new `ui/settings.py` (AI provider/model + PHREEQC status + dev-mode + future-architecture).
+  `ui/engine_settings.py` was **split** into `settings.py` + `engine_library.py` (functionality preserved,
+  not removed); `DEV_MODE` moved from the sidebar into Settings (read via `st.session_state["dev_mode"]`).
+  The **Assistant** right panel was refined to the four spec cards (**Current experiment · Engine status ·
+  Missing details · Recommended next action**) + new prompt chips; technical content stays under collapsed
+  expanders. **Agent behaviour for the four example prompts** (message/routing data only — no scientific
+  calc): `domains._THERMAL_RE` improved so "heat … at NNN °C / phase change(s)" classifies as
+  **thermal_treatment** (was mis-routing to `red_mud_upcycling`); the mechanical/battery `classify` branches
+  gained the `and not leaching` guard (a leaching prompt mentioning "cathode"/"ionic strength" stays
+  leaching → PHREEQC offered); `PLANNING_DOMAIN_INFO` for polymer/thermal enriched (plastic type/form/size,
+  binder, water/binder, curing, geometry, test standard; ramp rate, dwell, XRD/FTIR/TGA); the leaching
+  ASK_USER lead now says **PHREEQC is available**; red-mud-upcycling's future-engine string no longer leads
+  with PHREEQC. Result: leaching + red-mud-acid → PHREEQC offered; polymer-strength + thermal-calcination →
+  planning-only, no PHREEQC; thermal classified correctly. **`EXECUTABLE_DOMAINS` unchanged**
+  (`{leaching_geochemistry → phreeqc}`); the policy gate still blocks PHREEQC for every planning-only domain.
+  Verified by a 4-lens adversarial review (no-science-change / nothing-removed / domain-routing-correct
+  incl. 10+ leaching+temperature edge cases / dark-advanced-identity — **all pass, 0 real bugs**);
+  `tests/test_app_tabs_smoke.py` rewritten for the 7-section nav, `tests/test_ui_modularization.py` updated
+  (10 render modules: + results / engine_library / settings, − engine_settings), `tests/test_agent.py` gained
+  the four-prompt routing + leaching-cue-wins + domain-specific-planning-vars tests; three pre-existing
+  AppTest tests (`test_target_matching` / `test_material_profile` / `test_batch_executor`) gained a one-line
+  `nav_section="Workspace"` step (Simulate now lives in Workspace, not a default tab). README + docs updated
+  (dark seven-section nav, `docs/ai_architecture.md` future plugin-engine roadmap).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -1430,20 +1469,23 @@ modules together and own all file I/O paths.
   run-management **sidebar** (`_render_run_sidebar` — now the **only** top-level render function) + the
   **four-section nav** (`st.sidebar.radio(key="nav_section")`), page config + hero, and inline **dispatch** to
   `ui.<module>.render(...)`. **All workflow rendering lives in the `ui/` package** (see the *UI modularization*
-  + *Assistant-first redesign* completed-phase bullets + `docs/refactor_plan.md`): one module per workflow/
-  section (`ui/<name>_tab.py` + `ui/engine_settings.py`, each exposing `render`) plus shared `ui/state.py` /
-  `ui/common.py` / `ui/formatters.py`, with the design system in `app_ui.py` (+ base palette in
-  `.streamlit/config.toml`). The app is presented as a **Materials Research Assistant** with a **four-section
-  navigation** — **Research Assistant · Projects / Runs · Data & Validation · Engine Settings** — and the
-  **Research Assistant** (`ui/assistant_tab.py`, a two-column chat workspace) is the main product. The other
-  sections hold every advanced workflow (none removed): **Advanced Simulate** lives in the Research Assistant's
-  **Advanced Mode** expander (the forward-looking core: NL → scenario → plan → material/release/database →
-  input preview → **gated PHREEQC run + small sweep + plots → ranking / target matching → saved provenance** —
-  plan generation runs nothing, execution is a separate confirmed step, every output is a *prediction, not
-  validated*); **Data & Validation** holds Import/Validate/Match/Compare sub-tabs (the measured-vs-model
-  mapping + comparison is the **Validation module**, the current strongest workflow); **Projects / Runs** holds
-  `export_tab` (saved runs / report / audit / guide); **Engine Settings** holds the engine roadmap, PHREEQC
-  status, and the AI provider/model panel. Every section carries a one-line header
+  + *Assistant-first redesign* + *Dark research-cockpit makeover* completed-phase bullets +
+  `docs/refactor_plan.md`): one module per workflow/section (`ui/<name>_tab.py` + `ui/results.py` /
+  `ui/engine_library.py` / `ui/settings.py`, each exposing `render`) plus shared `ui/state.py` /
+  `ui/common.py` / `ui/formatters.py`, with the **dark** design system in `app_ui.py` (+ base palette in
+  `.streamlit/config.toml`). The app is presented as a **Materials Research Assistant** with a **dark
+  seven-section left-rail navigation** — **Assistant · Workspace · Results · Data & Validation · Projects ·
+  Engine Library · Settings** — and the **Assistant** (`ui/assistant_tab.py`, a two-column chat workspace) is
+  the main product / front door. The other sections hold every advanced workflow (none removed): **Workspace**
+  = the full manual Simulate builder (`simulate_tab`: NL → scenario → plan → material/release/database → input
+  preview → **gated PHREEQC run + small sweep + plots → ranking / target matching → saved provenance** — plan
+  generation runs nothing, execution is a separate confirmed step, every output is a *prediction, not
+  validated*); **Results** (`results`) is a clean read-out of the latest prediction (not validation);
+  **Data & Validation** holds Import/Validate/Match/Compare sub-tabs (the measured-vs-model mapping +
+  comparison is the **Validation module**, the current strongest workflow); **Projects** holds `export_tab`
+  (saved runs / report / audit / guide); **Engine Library** (`engine_library`) is the modular engine registry;
+  **Settings** (`settings`) holds the AI provider/model panel + PHREEQC status + dev-mode + the future
+  architecture. Every section carries a one-line header
   + a **➡️ Next step** hint and a specific empty state. **The numbered list below predates the Simulate
   execution arc, the identity renovation, the Prompt-20 reorg, AND the UI modularization — it documents the
   underlying render functions (now living in `ui/<tab>_tab.py`, not `app.py`), not the current tab names/order;

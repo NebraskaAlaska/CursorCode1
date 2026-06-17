@@ -85,9 +85,11 @@ PLANNING_DOMAIN_INFO = {
     POLYMER_COMPOSITE: {
         "outcome": "mechanical strength",
         "response_variables": ["compressive strength", "flexural strength", "density",
-                               "water absorption", "toughness", "curing condition"],
-        "input_variables": ["mix ratio", "plastic type/size", "binder composition",
-                            "curing time", "specimen geometry", "measured strength values"],
+                               "water absorption", "toughness"],
+        "input_variables": ["plastic type (e.g. PET / HDPE / PP)", "plastic form (fiber / flake / pellet)",
+                            "plastic size", "fly ash : plastic ratio", "binder / activator composition",
+                            "water / binder ratio", "curing time + condition", "specimen geometry",
+                            "test standard", "measured strength / density / absorption values"],
         "future_engine": "a strength / mechanical-property prediction model (empirical or ML)",
     },
     MECHANICAL_TESTING: {
@@ -100,11 +102,12 @@ PLANNING_DOMAIN_INFO = {
     },
     THERMAL_TREATMENT: {
         "outcome": "thermal transformation",
-        "response_variables": ["mass loss", "phase change / crystallinity", "specific surface area",
-                               "calcination yield", "reactivity"],
-        "input_variables": ["heating rate", "peak temperature", "dwell time", "atmosphere",
-                            "starting composition", "particle size"],
-        "future_engine": "a thermodynamic / phase-evolution model",
+        "response_variables": ["phase changes", "mass loss", "crystallinity",
+                               "specific surface area", "calcination yield", "reactivity"],
+        "input_variables": ["atmosphere", "ramp rate", "dwell time", "peak temperature",
+                            "starting composition", "particle size",
+                            "measurements (XRD / FTIR / TGA)"],
+        "future_engine": "a thermodynamic / phase-evolution (calcination) model",
     },
     CEMENTITIOUS_BINDER: {
         "outcome": "binder performance",
@@ -134,9 +137,11 @@ PLANNING_DOMAIN_INFO = {
         "outcome": "recovery / upcycling performance",
         "response_variables": ["element recovery", "product yield", "residual composition",
                                "leachate composition"],
-        "input_variables": ["process route", "reagent + dose", "temperature/time",
-                            "starting assay", "measured product/leachate composition"],
-        "future_engine": "a process / recovery model (a leaching framing can use PHREEQC today)",
+        "input_variables": ["process route", "reagent + dose", "temperature / time",
+                            "starting assay", "measured product / leachate composition"],
+        # If framed as a leaching/dissolution step, the assistant classifies it as
+        # leaching_geochemistry and the PHREEQC engine becomes available (handled by classify()).
+        "future_engine": "a process / recovery model",
     },
     UNKNOWN: {
         "outcome": "the property of interest",
@@ -215,8 +220,10 @@ _POLYMER_RE = re.compile(
     r"\b(polymer|plastic|composite|resin|epoxy|thermoplastic|hdpe|ldpe|pp\b|pvc|"
     r"pet\b|fibre|fiber[-\s]?reinforced|filler[-\s]?loading|matrix\s+composite)\b", re.I)
 _THERMAL_RE = re.compile(
-    r"\b(calcin\w*|sinter\w*|pyroly\w*|roast\w*|thermal treatment|heat treatment|"
-    r"firing|tga\b|dsc\b|furnace|kiln|degree[s]? c\b.*\b(?:furnace|calcin))\b", re.I)
+    r"\b(?:calcin\w*|sinter\w*|pyroly\w*|roast\w*|thermal treatment|heat treatment|"
+    r"firing|tga|dsc|dta|furnace|kiln|anneal\w*|"
+    r"phase\s+(?:change|evolution|transformation)|ramp\s*rate|dwell|xrd|ftir)\b"
+    r"|\bheat\w*\b[^.]{0,40}?\b\d+\s*(?:°\s*)?c\b", re.I)
 _CORROSION_RE = re.compile(
     r"\b(corros\w*|rebar|chloride ingress|carbonation depth|passivat\w*|"
     r"durability|freeze[-\s]?thaw|rebar corrosion|electrochemical impedance)\b", re.I)
@@ -258,13 +265,15 @@ def classify(text: str, *, hint: str | None = None) -> str:
     s = str(text or "")
     leaching = bool(_LEACHING_RE.search(s))
 
-    # 1) Non-aqueous test framings win — never simulate these with PHREEQC.
-    if _MECHANICAL_RE.search(s):
+    # 1) Non-aqueous test framings win — never simulate these with PHREEQC. Each is gated by
+    # `not leaching` so a real leaching experiment that merely mentions a token like "ionic
+    # strength" or "cathode" is not hijacked away from the executable PHREEQC engine.
+    if _MECHANICAL_RE.search(s) and not leaching:
         # A strength/mechanical test of a plastic/polymer composite, or anything else.
         return POLYMER_COMPOSITE if _POLYMER_RE.search(s) else MECHANICAL_TESTING
     if _POLYMER_RE.search(s) and not leaching:
         return POLYMER_COMPOSITE
-    if _BATTERY_RE.search(s):
+    if _BATTERY_RE.search(s) and not leaching:
         return BATTERY_MATERIAL
     if _THERMAL_RE.search(s) and not leaching:
         return THERMAL_TREATMENT

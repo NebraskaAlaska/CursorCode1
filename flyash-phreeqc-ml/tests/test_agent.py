@@ -187,6 +187,59 @@ def test_planning_only_domain_returns_useful_planning_actions():
 # --------------------------------------------------------------------------- #
 # 5) Unsupported domain gets a planning-only response (with a mocked model that overreaches)
 # --------------------------------------------------------------------------- #
+def test_domain_routing_for_the_four_example_prompts():
+    """The assistant classifies each example prompt correctly and offers PHREEQC only for
+    leaching/geochemistry — never for unsupported domains."""
+    def domain_of(msg):
+        s = agent_state.AgentState()
+        r = orch.respond(s, msg)
+        return s.domain, r.assistant_message
+
+    # leaching → PHREEQC offered (mentioned)
+    d, msg = domain_of("I am leaching Class C fly ash with NaOH and want pH and calcium")
+    assert d == domains.LEACHING_GEOCHEMISTRY and "PHREEQC" in msg
+    # polymer composite strength → planning-only, NO PHREEQC
+    d, msg = domain_of("I am mixing fly ash with waste plastic and I want to predict "
+                       "compressive strength after 28 days")
+    assert d == domains.POLYMER_COMPOSITE and "PHREEQC" not in msg
+    # red mud + acid leach → leaching/geochemistry (PHREEQC available)
+    d, msg = domain_of("I want to leach red mud with HCl to estimate Fe, Al, Sc, and pH")
+    assert d == domains.LEACHING_GEOCHEMISTRY and "PHREEQC" in msg
+    # thermal calcination → thermal_treatment (NOT red mud), planning-only, NO PHREEQC
+    d, msg = domain_of("I heat red mud at 800 C for 2 hours and want to know phase changes")
+    assert d == domains.THERMAL_TREATMENT and "PHREEQC" not in msg
+
+
+def test_leaching_cue_wins_over_incidental_tokens():
+    """A real leaching experiment that incidentally mentions a non-aqueous token (ionic
+    strength, cathode, heated to a temperature) must stay leaching_geochemistry — so PHREEQC is
+    not wrongly denied. Pure non-leaching framings still route to their planning-only domain."""
+    leaches = [
+        "leach 2 g fly ash in 10 mL 0.5 M NaOH at high ionic strength",
+        "dissolve spent cathode material in 1 M HCl and measure the dissolved metals",
+        "leach fly ash in 1 M NaOH heated to 80 C, measure pH and Ca",
+        "pretreat by heating at 800 C, then leach the calcine in NaOH and measure Si",
+    ]
+    for msg in leaches:
+        assert domains.classify(msg) == domains.LEACHING_GEOCHEMISTRY, msg
+    # Pure non-aqueous framings are unaffected.
+    assert domains.classify("compressive strength of a fly ash plastic composite") in (
+        domains.POLYMER_COMPOSITE, domains.MECHANICAL_TESTING)
+    assert domains.classify(
+        "calcine red mud at 800 C in air and measure phase changes by XRD") == (
+        domains.THERMAL_TREATMENT)
+
+
+def test_planning_variables_are_domain_specific():
+    """Planning support lists the domain-specific variables a future model would need."""
+    poly = domains.planning_support(domains.POLYMER_COMPOSITE)
+    inputs = " ".join(poly["input_variables"]).lower()
+    assert "plastic type" in inputs and "binder" in inputs and "test standard" in inputs
+    thermal = domains.planning_support(domains.THERMAL_TREATMENT)
+    tin = " ".join(thermal["input_variables"]).lower()
+    assert "ramp rate" in tin and "dwell" in tin and ("xrd" in tin or "ftir" in tin)
+
+
 def test_data_template_is_domain_aware():
     """A planning-only domain gets a materials data-collection template (input + response
     variables); a leaching scenario gets the measured-release validation template."""

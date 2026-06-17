@@ -32,38 +32,39 @@ import streamlit as st
 # Each entry: status keyword -> (foreground colour, translucent background tint).
 # Translucent tints keep the palette readable on both light and dark themes.
 # --------------------------------------------------------------------------- #
-# Apple/Squarespace-inspired system palette (see .streamlit/config.toml for the base theme).
-_GREEN = "#1f8f43"   # success (text-readable variant of #34C759)
-_AMBER = "#b3650a"   # warning (text-readable variant of #FF9500)
-_RED = "#d6332a"     # danger  (text-readable variant of #FF3B30)
-_PURPLE = "#5856D6"  # Apple system indigo
-_BLUE = "#0066d6"    # accent  (text-readable variant of #007AFF)
-_NEUTRAL = "#6E6E73"  # Apple secondary label
+# Dark, Apple/Squarespace-inspired palette (see .streamlit/config.toml for the base theme).
+# Status foregrounds are bright enough to read on the dark cards; tints are translucent.
+_GREEN = "#4FC58A"   # success
+_AMBER = "#D8A03D"   # warning
+_RED = "#E06C75"     # error
+_PURPLE = "#9C8CFF"  # indigo (needs new simulation)
+_BLUE = "#6EA8FE"    # accent
+_NEUTRAL = "#858E9C"  # muted text
 
 STATUS_STYLES: dict[str, tuple[str, str]] = {
     # Canonical mapping statuses (from replicates.MAPPING_STATUS_*).
-    "exact": (_GREEN, "rgba(52,199,89,.12)"),
-    "scenario-level only": (_AMBER, "rgba(255,149,0,.13)"),
-    "scenario-level": (_AMBER, "rgba(255,149,0,.13)"),
-    "unsafe": (_RED, "rgba(255,59,48,.11)"),
-    "needs new simulation": (_PURPLE, "rgba(88,86,214,.11)"),
+    "exact": (_GREEN, "rgba(79,197,138,.15)"),
+    "scenario-level only": (_AMBER, "rgba(216,160,61,.16)"),
+    "scenario-level": (_AMBER, "rgba(216,160,61,.16)"),
+    "unsafe": (_RED, "rgba(224,108,117,.15)"),
+    "needs new simulation": (_PURPLE, "rgba(156,140,255,.15)"),
     # Validation / generic statuses.
-    "valid": (_GREEN, "rgba(52,199,89,.12)"),
-    "preliminary": (_AMBER, "rgba(255,149,0,.13)"),
-    "single-sample": (_AMBER, "rgba(255,149,0,.13)"),
-    "needs new simulations": (_PURPLE, "rgba(88,86,214,.11)"),
-    "nothing to compare": (_NEUTRAL, "rgba(110,110,115,.10)"),
+    "valid": (_GREEN, "rgba(79,197,138,.15)"),
+    "preliminary": (_AMBER, "rgba(216,160,61,.16)"),
+    "single-sample": (_AMBER, "rgba(216,160,61,.16)"),
+    "needs new simulations": (_PURPLE, "rgba(156,140,255,.15)"),
+    "nothing to compare": (_NEUTRAL, "rgba(133,142,156,.14)"),
     # Generic severities (map onto Streamlit's success/warning/error/info).
-    "ok": (_GREEN, "rgba(52,199,89,.12)"),
-    "success": (_GREEN, "rgba(52,199,89,.12)"),
-    "good": (_GREEN, "rgba(52,199,89,.12)"),
-    "warning": (_AMBER, "rgba(255,149,0,.13)"),
-    "error": (_RED, "rgba(255,59,48,.11)"),
-    "danger": (_RED, "rgba(255,59,48,.11)"),
-    "info": (_BLUE, "rgba(0,122,255,.11)"),
-    "accent": (_BLUE, "rgba(0,122,255,.11)"),
-    "neutral": (_NEUTRAL, "rgba(110,110,115,.10)"),
-    "muted": (_NEUTRAL, "rgba(110,110,115,.10)"),
+    "ok": (_GREEN, "rgba(79,197,138,.15)"),
+    "success": (_GREEN, "rgba(79,197,138,.15)"),
+    "good": (_GREEN, "rgba(79,197,138,.15)"),
+    "warning": (_AMBER, "rgba(216,160,61,.16)"),
+    "error": (_RED, "rgba(224,108,117,.15)"),
+    "danger": (_RED, "rgba(224,108,117,.15)"),
+    "info": (_BLUE, "rgba(110,168,254,.15)"),
+    "accent": (_BLUE, "rgba(110,168,254,.15)"),
+    "neutral": (_NEUTRAL, "rgba(133,142,156,.14)"),
+    "muted": (_NEUTRAL, "rgba(133,142,156,.14)"),
 }
 
 
@@ -78,24 +79,28 @@ def _style_for(status: str | None) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 _GLOBAL_CSS = """
 <style id="rd-theme">
-/* ===== Materials Research Assistant — Apple/Squarespace-inspired design system =====
-   Light neutral background, white cards, rounded corners, restrained accent, minimal
-   borders, clear type hierarchy. Tokens mirror .streamlit/config.toml. ===== */
+/* ===== Materials Research Assistant — dark, Apple/Squarespace-inspired research cockpit =====
+   Dark neutral background, clean dark cards, minimal borders, restrained blue accent, clear
+   type hierarchy. Tokens mirror .streamlit/config.toml. ===== */
 :root {
-  --rd-bg: #F5F5F7;
-  --rd-card: #FFFFFF;
-  --rd-text: #111111;
-  --rd-text2: #6E6E73;
-  --rd-border: #E5E5EA;
-  --rd-accent: #007AFF;
-  --rd-success: #34C759;
-  --rd-warning: #FF9500;
-  --rd-danger: #FF3B30;
-  --rd-radius: 16px;
-  --rd-radius-sm: 12px;
-  --rd-shadow: 0 1px 3px rgba(0,0,0,.04), 0 1px 2px rgba(0,0,0,.03);
+  --rd-bg: #0E1014;
+  --rd-main: #12151B;
+  --rd-sidebar: #090B0F;
+  --rd-card: #191D24;
+  --rd-card2: #20252E;
+  --rd-text: #F5F7FA;
+  --rd-text2: #B8C0CC;
+  --rd-muted: #858E9C;
+  --rd-border: #2D333D;
+  --rd-accent: #6EA8FE;
+  --rd-success: #4FC58A;
+  --rd-warning: #D8A03D;
+  --rd-danger: #E06C75;
+  --rd-radius: 18px;
+  --rd-radius-sm: 14px;
+  --rd-shadow: 0 1px 2px rgba(0,0,0,.30), 0 6px 18px rgba(0,0,0,.18);
   --rd-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-             "Inter", "Helvetica Neue", Arial, sans-serif;
+             "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 
 /* ---- Base canvas + typography ----------------------------------------- */
@@ -104,38 +109,51 @@ html, body, [class*="css"], .stApp, [data-testid="stMarkdownContainer"] {
   font-feature-settings: "kern" 1, "liga" 1;
   -webkit-font-smoothing: antialiased;
 }
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background: var(--rd-bg); }
-.block-container { padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1180px; }
+.stApp, [data-testid="stAppViewContainer"] { background: var(--rd-bg); color: var(--rd-text); }
+[data-testid="stMain"] { background: var(--rd-bg); }
+.block-container { padding-top: 2.2rem; padding-bottom: 3.5rem; max-width: 1240px; }
 [data-testid="stHeader"] { background: transparent; }
-h1, h2, h3 { letter-spacing: -.012em; color: var(--rd-text); }
+h1, h2, h3, h4 { letter-spacing: -.014em; color: var(--rd-text); }
+p, li, label, .stMarkdown { color: var(--rd-text); }
+[data-testid="stCaptionContainer"], small { color: var(--rd-muted) !important; }
+a { color: var(--rd-accent); }
 
-/* ---- Sidebar (clean white rail) --------------------------------------- */
-[data-testid="stSidebar"] { background: var(--rd-card); border-right: 1px solid var(--rd-border); }
+/* ---- Sidebar (dark, compact rail) ------------------------------------- */
+[data-testid="stSidebar"] { background: var(--rd-sidebar); border-right: 1px solid var(--rd-border); }
 [data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
-/* Primary section nav: a clean vertical list of large targets. */
-[data-testid="stSidebar"] [role="radiogroup"] { gap: 2px; }
+[data-testid="stSidebar"] * { color: var(--rd-text2); }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+  color: var(--rd-text); }
+/* Primary section nav: a clean vertical list of large, clearly-active targets. */
+[data-testid="stSidebar"] [role="radiogroup"] { gap: 3px; }
 [data-testid="stSidebar"] [role="radiogroup"] label {
-  border-radius: 10px; padding: 7px 10px; margin: 0; transition: background .12s ease;
+  border-radius: 10px; padding: 9px 12px; margin: 0; transition: background .12s ease;
+  font-weight: 550; color: var(--rd-text2);
 }
-[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: rgba(0,122,255,.06); }
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: rgba(110,168,254,.08); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  background: rgba(110,168,254,.14); color: var(--rd-text);
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--rd-text);
+  font-weight: 600; }
+/* Hide the radio dots — the nav reads as a list of items, not a form. */
+[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child { display: none; }
 
-/* ---- Hero (a calm white card, not a loud gradient) -------------------- */
+/* ---- Hero (a calm dark card) ------------------------------------------ */
 .rd-hero {
-  border: 1px solid var(--rd-border);
-  border-radius: var(--rd-radius);
-  padding: 26px 30px;
-  margin-bottom: 14px;
-  background: var(--rd-card);
+  border: 1px solid var(--rd-border); border-radius: var(--rd-radius);
+  padding: 26px 30px; margin-bottom: 16px;
+  background: linear-gradient(180deg, var(--rd-card) 0%, rgba(25,29,36,.7) 100%);
   box-shadow: var(--rd-shadow);
 }
 .rd-hero-eyebrow {
   font-size: .70rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--rd-accent); margin-bottom: 8px;
+  color: var(--rd-accent); margin-bottom: 9px;
 }
 .rd-hero-title { font-size: 2.0rem; font-weight: 700; line-height: 1.12; margin: 0;
   letter-spacing: -.02em; color: var(--rd-text); }
-.rd-hero-sub { font-size: 1.02rem; color: var(--rd-text2); margin-top: 8px; max-width: 74ch;
-  line-height: 1.5; }
+.rd-hero-sub { font-size: 1.02rem; color: var(--rd-text2); margin-top: 9px; max-width: 76ch;
+  line-height: 1.55; }
 .rd-hero-chips { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---- Page header (per section) ---------------------------------------- */
@@ -143,15 +161,15 @@ h1, h2, h3 { letter-spacing: -.012em; color: var(--rd-text); }
   font-size: .68rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
   color: var(--rd-accent);
 }
-.rd-page-title { font-size: 1.5rem; font-weight: 700; line-height: 1.18; margin: 2px 0 0 0;
-  letter-spacing: -.015em; color: var(--rd-text); }
-.rd-page-sub { font-size: .96rem; color: var(--rd-text2); margin: 5px 0 2px 0; max-width: 78ch;
-  line-height: 1.5; }
+.rd-page-title { font-size: 1.55rem; font-weight: 700; line-height: 1.18; margin: 2px 0 0 0;
+  letter-spacing: -.016em; color: var(--rd-text); }
+.rd-page-sub { font-size: .96rem; color: var(--rd-text2); margin: 6px 0 2px 0; max-width: 80ch;
+  line-height: 1.55; }
 
 /* ---- Section heading --------------------------------------------------- */
-.rd-section { display: flex; align-items: baseline; gap: 10px; margin: 8px 0 4px 0; }
+.rd-section { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 5px 0; }
 .rd-section-title { font-size: 1.02rem; font-weight: 650; color: var(--rd-text); }
-.rd-section-sub { font-size: .84rem; color: var(--rd-text2); }
+.rd-section-sub { font-size: .84rem; color: var(--rd-muted); }
 
 /* ---- Badges (status pills) -------------------------------------------- */
 .rd-badge {
@@ -163,107 +181,116 @@ h1, h2, h3 { letter-spacing: -.012em; color: var(--rd-text); }
 /* ---- Metric / status cards (HTML grid) -------------------------------- */
 .rd-card-grid {
   display: grid; gap: 12px; margin: 8px 0 4px 0;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 .rd-card {
-  border: 1px solid var(--rd-border);
-  border-radius: var(--rd-radius-sm);
-  padding: 14px 16px;
-  background: var(--rd-card);
-  box-shadow: var(--rd-shadow);
+  border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
+  padding: 16px 18px; background: var(--rd-card); box-shadow: var(--rd-shadow);
 }
-.rd-card-accent { border-left: 4px solid var(--rd-border); }
+.rd-card-accent { border-left: 3px solid var(--rd-border); }
 .rd-card-label {
-  font-size: .70rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--rd-text2);
+  font-size: .70rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--rd-muted);
 }
-.rd-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.25; margin-top: 3px;
+.rd-card-value { font-size: 1.55rem; font-weight: 700; line-height: 1.25; margin-top: 4px;
   color: var(--rd-text); }
-.rd-card-caption { font-size: .76rem; color: var(--rd-text2); margin-top: 3px; }
+.rd-card-caption { font-size: .76rem; color: var(--rd-muted); margin-top: 4px; }
 
 /* ---- Engine roadmap cards --------------------------------------------- */
 .rd-engine { border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
-  padding: 14px 16px; background: var(--rd-card); box-shadow: var(--rd-shadow); height: 100%; }
-.rd-engine-h { font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
-  margin-bottom: 8px; display: flex; align-items: center; gap: 7px; }
+  padding: 16px 18px; background: var(--rd-card); box-shadow: var(--rd-shadow); height: 100%; }
+.rd-engine-h { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  margin-bottom: 10px; display: flex; align-items: center; gap: 8px; color: var(--rd-text2); }
 .rd-dot { width: 9px; height: 9px; border-radius: 999px; display: inline-block; }
-.rd-engine-row { font-size: .9rem; color: var(--rd-text); padding: 3px 0; line-height: 1.4; }
-.rd-engine-sub { font-size: .78rem; color: var(--rd-text2); }
+.rd-engine-row { font-size: .9rem; color: var(--rd-text); padding: 4px 0; line-height: 1.45; }
+.rd-engine-sub { font-size: .78rem; color: var(--rd-muted); }
 
 /* ---- Native st.metric -> card ----------------------------------------- */
 [data-testid="stMetric"] {
   border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
-  padding: 14px 16px; background: var(--rd-card); box-shadow: var(--rd-shadow);
+  padding: 16px 18px; background: var(--rd-card); box-shadow: var(--rd-shadow);
 }
 [data-testid="stMetricLabel"] p {
-  font-size: .70rem !important; font-weight: 600; letter-spacing: .03em;
-  text-transform: uppercase; color: var(--rd-text2);
+  font-size: .70rem !important; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--rd-muted);
 }
-[data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 700; }
+[data-testid="stMetricValue"] { font-size: 1.55rem; font-weight: 700; color: var(--rd-text); }
 
 /* ---- Callout panels ---------------------------------------------------- */
 .rd-panel {
-  border: 1px solid var(--rd-c); border-left-width: 4px;
-  border-radius: var(--rd-radius-sm); padding: 13px 16px; margin: 6px 0;
+  border: 1px solid var(--rd-c); border-left-width: 3px;
+  border-radius: var(--rd-radius-sm); padding: 13px 16px; margin: 8px 0;
   background: var(--rd-bg-tint);
 }
 .rd-panel-title { font-weight: 650; margin-bottom: 2px; color: var(--rd-text); }
-.rd-panel-body { font-size: .9rem; color: var(--rd-text); opacity: .92; }
+.rd-panel-body { font-size: .9rem; color: var(--rd-text2); }
 
 /* ---- Workflow stepper -------------------------------------------------- */
 .rd-steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 8px 0; }
 .rd-step {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 5px 12px; border-radius: 999px; font-size: .82rem; font-weight: 550;
-  border: 1px solid var(--rd-border); background: var(--rd-card); color: var(--rd-text2);
+  border: 1px solid var(--rd-border); background: var(--rd-card2); color: var(--rd-text2);
 }
 .rd-step .rd-step-n {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 999px; font-size: .70rem; font-weight: 700;
   background: var(--rd-border); color: var(--rd-text);
 }
-.rd-step-done { border-color: rgba(52,199,89,.45); color: var(--rd-text); }
-.rd-step-done .rd-step-n { background: var(--rd-success); color: #fff; }
+.rd-step-done { border-color: rgba(79,197,138,.45); color: var(--rd-text); }
+.rd-step-done .rd-step-n { background: var(--rd-success); color: #07120c; }
 .rd-step-current {
-  border-color: rgba(0,122,255,.55); background: rgba(0,122,255,.07); color: var(--rd-text);
+  border-color: rgba(110,168,254,.55); background: rgba(110,168,254,.12); color: var(--rd-text);
   font-weight: 650;
 }
-.rd-step-current .rd-step-n { background: var(--rd-accent); color: #fff; }
-.rd-step-sep { color: var(--rd-text2); opacity: .5; font-size: .8rem; }
+.rd-step-current .rd-step-n { background: var(--rd-accent); color: #08111f; }
+.rd-step-sep { color: var(--rd-muted); font-size: .8rem; }
 
 /* ---- Buttons (rounded, restrained) ------------------------------------ */
 .stButton > button, .stDownloadButton > button {
-  border-radius: 10px; border: 1px solid var(--rd-border); font-weight: 550;
-  transition: all .12s ease;
+  border-radius: 11px; border: 1px solid var(--rd-border); font-weight: 550;
+  background: var(--rd-card2); color: var(--rd-text); transition: all .12s ease;
 }
-.stButton > button:hover { border-color: var(--rd-accent); color: var(--rd-accent); }
+.stButton > button:hover, .stDownloadButton > button:hover {
+  border-color: var(--rd-accent); color: var(--rd-accent); background: var(--rd-card);
+}
 .stButton > button[kind="primary"] {
-  background: var(--rd-accent); border-color: var(--rd-accent); color: #fff;
+  background: var(--rd-accent); border-color: var(--rd-accent); color: #08111f; font-weight: 650;
+}
+.stButton > button[kind="primary"]:hover { filter: brightness(1.08); color: #08111f; }
+
+/* ---- Inputs / selects -------------------------------------------------- */
+[data-baseweb="select"] > div, .stTextInput input, .stTextArea textarea, .stNumberInput input {
+  background: var(--rd-card2); border-radius: 11px;
 }
 
 /* ---- Chat bubbles ------------------------------------------------------ */
 [data-testid="stChatMessage"] {
   background: var(--rd-card); border: 1px solid var(--rd-border);
-  border-radius: 14px; box-shadow: var(--rd-shadow); padding: 4px 6px;
+  border-radius: 16px; box-shadow: var(--rd-shadow); padding: 6px 8px;
 }
-[data-testid="stChatInput"] textarea { border-radius: 12px; }
+[data-testid="stChatInput"] { background: var(--rd-bg); }
+[data-testid="stChatInput"] textarea { border-radius: 12px; background: var(--rd-card2); }
 
 /* ---- Tabs (sub-navigation) -------------------------------------------- */
 .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--rd-border); }
-.stTabs [data-baseweb="tab"] { border-radius: 10px 10px 0 0; padding: 8px 16px; font-weight: 550; }
+.stTabs [data-baseweb="tab"] { border-radius: 11px 11px 0 0; padding: 8px 16px; font-weight: 550;
+  color: var(--rd-text2); }
 .stTabs [aria-selected="true"] { color: var(--rd-accent); }
 
-/* ---- Expanders + bordered containers = white cards -------------------- */
+/* ---- Expanders + bordered containers = dark cards --------------------- */
 [data-testid="stExpander"] {
   border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
   background: var(--rd-card); box-shadow: var(--rd-shadow);
 }
+[data-testid="stExpander"] summary { color: var(--rd-text2); font-weight: 550; }
 [data-testid="stVerticalBlockBorderWrapper"] {
   border-radius: var(--rd-radius-sm); border-color: var(--rd-border) !important;
   background: var(--rd-card);
 }
-hr { opacity: .5; border-color: var(--rd-border); }
-.rd-muted { color: var(--rd-text2); font-size: .85rem; }
+[data-testid="stDataFrame"] { border-radius: var(--rd-radius-sm); }
+hr { border-color: var(--rd-border); opacity: .8; }
+.rd-muted { color: var(--rd-muted); font-size: .85rem; }
 </style>
 """
 
@@ -400,9 +427,9 @@ def render_engine_cards(status: dict) -> None:
             for e in status.get("planning_now", [])]
     future = [_html.escape(str(e)) for e in status.get("future", [])]
     cols = "".join([
-        f'<div>{_card("Available now", "#34C759", avail)}</div>',
-        f'<div>{_card("Planning support now", "#FF9500", plan)}</div>',
-        f'<div>{_card("Future (modular)", "#8E8E93", future)}</div>',
+        f'<div>{_card("Available now", "#4FC58A", avail)}</div>',
+        f'<div>{_card("Planning support now", "#D8A03D", plan)}</div>',
+        f'<div>{_card("Future (modular)", "#858E9C", future)}</div>',
     ])
     st.markdown('<div style="display:grid;gap:12px;'
                 f'grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">{cols}</div>',

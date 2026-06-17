@@ -270,6 +270,8 @@ def test_simulate_material_section_renders(tmp_path, monkeypatch):
 
     at = AppTest.from_file(str(app_path), default_timeout=60)
     at.run()
+    # The Simulate workflow lives in the Workspace section (the assistant is the default).
+    at.session_state["nav_section"] = "Workspace"
     at.session_state["sim_parse_result"] = res
     at.session_state["sim_matrix"] = M.build_simulation_matrix(sc)
     at.session_state["sim_scenario"] = sc

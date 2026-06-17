@@ -20,7 +20,8 @@ from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
 APP = "app.py"
-SECTIONS = ["Research Assistant", "Projects / Runs", "Data & Validation", "Engine Settings"]
+SECTIONS = ["Assistant", "Workspace", "Results", "Data & Validation", "Projects",
+            "Engine Library", "Settings"]
 DATA_SUBTABS = ["Import", "Validate", "Match", "Compare"]
 
 
@@ -82,14 +83,13 @@ def synthetic_run(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Identity + default workspace
 # --------------------------------------------------------------------------- #
-def test_app_boots_default_is_research_assistant():
+def test_app_boots_default_is_assistant():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert _no_exception(at)
-    # The default section is the Research Assistant workspace.
-    assert _nav_radio(at).value == "Research Assistant"
+    # The default (first) section is the Assistant.
+    assert _nav_radio(at).value == "Assistant"
     md = _markdown(at)
     assert "Materials Research Assistant" in md
-    assert "Research Assistant" in md
     assert "What can I help with?" in md          # the assistant's example chips
 
 
@@ -105,9 +105,14 @@ def test_identity_is_broad_not_fly_ash_only():
     assert "engine" in md.lower()                            # PHREEQC framed as the engine
 
 
-def test_sidebar_nav_has_four_sections():
+def test_sidebar_nav_has_seven_sections():
     at = AppTest.from_file(APP, default_timeout=60).run()
-    assert list(_nav_radio(at).options) == SECTIONS
+    options = list(_nav_radio(at).options)
+    assert options == SECTIONS
+    # The left nav contains the product sections (not a row of equal technical tabs).
+    for expected in ("Assistant", "Workspace", "Results", "Data & Validation", "Projects",
+                     "Engine Library", "Settings"):
+        assert expected in options
 
 
 # --------------------------------------------------------------------------- #
@@ -138,16 +143,16 @@ def test_assistant_advanced_details_hidden_by_default():
 
 
 def test_advanced_workflows_reachable():
-    """The technical workflows are not gone — Data & Validation exposes the four sub-tabs, and
-    the Research Assistant exposes the Advanced Mode (manual simulate) expander."""
+    """The technical workflows are not gone — Workspace is the full manual builder (Simulate),
+    and Data & Validation exposes the four measured-vs-model sub-tabs."""
     at = AppTest.from_file(APP, default_timeout=90).run()
     _goto(at, "Data & Validation")
     assert _no_exception(at)
     assert [t.label for t in at.tabs] == DATA_SUBTABS
-    # Advanced Mode (manual simulate) lives behind an expander on the Research Assistant.
+    # Workspace = the structured experiment builder (the manual Simulate workflow).
     at2 = AppTest.from_file(APP, default_timeout=90).run()
-    labels = " ".join(getattr(e, "label", "") for e in at2.expander)
-    assert "Advanced Mode" in labels
+    _goto(at2, "Workspace")
+    assert _no_exception(at2)
 
 
 # --------------------------------------------------------------------------- #
