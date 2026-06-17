@@ -253,6 +253,8 @@ def _sweep_app(monkeypatch, with_results):
 
     at = AppTest.from_file(str(config.PROJECT_ROOT / "app.py"), default_timeout=60)
     at.run()
+    # The Simulate workflow lives in the Workspace section (the assistant is the default).
+    at.session_state["nav_section"] = "Workspace"
     at.session_state["sim_parse_result"] = sp.parse_scenario("2 g fly ash", "liquid",
                                                              prefer_ai=False)
     at.session_state["sim_matrix"] = mtx

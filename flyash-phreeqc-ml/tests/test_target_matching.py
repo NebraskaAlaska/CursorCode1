@@ -295,6 +295,9 @@ def test_simulate_tab_renders_target_matching_section(monkeypatch, tmp_path):
 
     at = AppTest.from_file("app.py", default_timeout=120).run()
     assert not at.exception
+    # The Simulate workflow lives in the Workspace section (the assistant is the default).
+    at.session_state["nav_section"] = "Workspace"
+    at.run()
     _by_key(at.text_area, "sim_desc").set_value(
         "2 g of Class C fly ash in 10 mL of 0.5 M NaOH for 60 minutes at room temperature")
     _by_key(at.text_area, "sim_outputs").set_value("maximize Si while keeping Fe below 0.1 mM")

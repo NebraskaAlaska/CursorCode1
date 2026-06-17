@@ -27,10 +27,12 @@ _REPO = Path(pkg.__file__).resolve().parent.parent
 _UI = _REPO / "ui"
 _SCI = Path(pkg.__file__).resolve().parent          # flyash_phreeqc_ml/
 
-# Render-exposing UI modules dispatched by app.py (the seven workflow modules + the
-# Engine Settings section). The Research Assistant (assistant_tab) is the main workspace.
+# Render-exposing UI modules dispatched by app.py: the workflow modules + the section
+# modules (results / engine_library / settings). The Assistant (assistant_tab) is the main
+# workspace; Workspace = simulate_tab; Data & Validation = import/validate/match/compare;
+# Projects = export_tab.
 TAB_MODULES = ["assistant_tab", "simulate_tab", "import_tab", "validate_tab",
-               "match_tab", "compare_tab", "export_tab", "engine_settings"]
+               "match_tab", "compare_tab", "export_tab", "results", "engine_library", "settings"]
 BASE_MODULES = ["state", "common", "formatters"]
 
 

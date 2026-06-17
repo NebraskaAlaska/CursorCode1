@@ -1,32 +1,35 @@
-"""Engine Settings section — engines, AI configuration, and the future engine roadmap.
+"""Settings section — AI configuration, PHREEQC engine status, app preferences (presentation only).
 
-A presentation-only settings page: it shows which **simulation engines** are available
-(PHREEQC for leaching/geochemistry) vs planning-only vs future, lets the user configure the
-**AI assistant** (provider/model — never the key), and shows the **PHREEQC** executable/database
-status. It owns no chemistry and no result-path logic; it only reads status and sets the
-AI provider/model runtime override (which persists for the process).
+Lets the user configure the **AI assistant** (provider/model — never the key) and see the
+**PHREEQC** executable/database status, toggle developer explanations, and read the intended
+AI-framework / future-engine architecture. It owns no chemistry and no result-path logic; it
+only reads status and sets the AI provider/model runtime override (which persists for the
+process) and the dev-mode session flag.
 
-This is one of the four top-level sections of the Materials Research Assistant
-(Research Assistant · Projects / Runs · Data & Validation · Engine Settings).
+One of the seven top-level sections (Assistant · Workspace · Results · Data & Validation ·
+Projects · Engine Library · Settings).
 """
 from __future__ import annotations
 
 import streamlit as st
 
 import app_ui
-from flyash_phreeqc_ml.agent import domains
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.simulation import phreeqc_executor
 
 
-def _render_ai_settings() -> None:
-    """AI provider/model selector + status (moved from the sidebar). Never shows the key.
+def _short_path(path) -> str:
+    if not path:
+        return ""
+    s = str(path)
+    return s if len(s) <= 42 else "…" + s[-40:]
 
-    Sets a process-level runtime override (``ai_config.set_runtime_overrides``) that persists
-    across reruns and every section, so a model picked here applies in the Research Assistant.
-    """
-    app_ui.section_header("AI assistant", "conversation / planning / explanation — never the chemistry")
-    # Default the picker to the env/secret/default model, ignoring any prior UI override.
+
+def _render_ai_settings() -> None:
+    """AI provider/model selector + status. Never shows the key. Sets a process-level runtime
+    override (``ai_config.set_runtime_overrides``) that persists across reruns and every section."""
+    app_ui.section_header("AI assistant",
+                          "conversation / planning / explanation — never the chemistry")
     ai_config.clear_runtime_overrides()
     base_model = ai_config.resolve_config().model
 
@@ -38,8 +41,7 @@ def _render_ai_settings() -> None:
                           help="Used for AI suggestions only. Overrides ANTHROPIC_MODEL for this session.")
     custom = st.text_input("…or enter a model id", key="ai_model_custom",
                            help="Leave blank to use the selected model above.").strip()
-    effective_model = custom or picked
-    ai_config.set_runtime_overrides(provider=provider, model=effective_model)
+    ai_config.set_runtime_overrides(provider=provider, model=(custom or picked))
     cfg = ai_config.resolve_config()
 
     app_ui.render_metric_cards([
@@ -81,50 +83,44 @@ def _render_phreeqc_engine() -> None:
                "assistant still **plans** and builds reviewable input without it.")
 
 
-def _short_path(path) -> str:
-    """A compact tail of a long path (display only)."""
-    if not path:
-        return ""
-    s = str(path)
-    return s if len(s) <= 42 else "…" + s[-40:]
+def _render_preferences() -> None:
+    app_ui.section_header("Preferences")
+    st.checkbox("🛠️ Developer explanation mode", value=False, key="dev_mode",
+                help="Show deeper chemistry/statistics explanations (mainly in Data & Validation).")
 
 
 def _render_future_architecture() -> None:
-    app_ui.section_header("Future engine architecture",
-                          "how more engines plug in — designed for, not yet built")
+    app_ui.section_header("AI framework & future engines",
+                          "designed for, not yet built — no LangGraph dependency added")
     st.markdown(
-        "The assistant is built as a **plugin engine registry**: each domain maps to an engine "
-        "(today, only `leaching_geochemistry → PHREEQC`). New engines slot in behind the same "
-        "policy gate + confirmation flow without changing the conversation:\n\n"
-        "- **LangGraph-style stateful orchestrator** — the current propose → policy-gate → confirm "
-        "→ deterministic-tool loop is already a state machine (`AgentState` + a discrete action "
-        "vocabulary), so it can be re-expressed as a graph without changing the safety model.\n"
-        "- **Literature / RAG agent** — sourced benchmarks (the quarantined literature layer is the seam).\n"
-        "- **ML / surrogate agent** — fast approximations of a simulator (the experimental surrogate is the seam).\n"
-        "- **Simulation-engine agents** — atomistic / mechanical-property / thermal engines, registered per domain.\n"
-        "- **Validation agent** — measured-vs-model comparison (the existing result path).\n\n"
-        "No LangGraph dependency is added yet — the architecture is kept *compatible* with it. "
-        "See `docs/ai_architecture.md`.")
+        "**Current:** a custom AI agent layer → tool/action registry → policy gate → deterministic "
+        "backend tools, with **human confirmation before any execution**.\n\n"
+        "**Future (compatible by design):**\n"
+        "- **LangGraph-style stateful orchestrator** — the propose → policy-gate → confirm → "
+        "deterministic-tool loop is already a state machine (`AgentState` = graph state, actions = "
+        "nodes, the policy = the edge function), so it can be re-expressed as a graph without "
+        "changing the safety model.\n"
+        "- **Plugin engine registry** — engines register per domain (today only "
+        "`leaching_geochemistry → PHREEQC`); see **Engine Library**.\n"
+        "- **Literature / RAG agent**, **ML / surrogate agent**, **simulation-engine agents** "
+        "(atomistic / mechanical-property / thermal), and a **validation / calibration agent**.\n\n"
+        "No LangGraph dependency is added yet. See `docs/ai_architecture.md`.")
 
 
-def _render_engine_settings(selected_run: str | None) -> None:
+def _render_settings(selected_run: str | None) -> None:
     app_ui.render_page_header(
-        "Engine Settings",
-        "Which engines run today, which are planning-only, and how the AI assistant is configured.",
-        eyebrow="Engines · AI · roadmap")
-
-    app_ui.section_header("Engines & capabilities")
-    app_ui.render_engine_cards(domains.engine_status())
-    st.caption("Simulation outputs are model estimates — **not validation**. Validation needs "
-               "measured data (Data & Validation).")
-
+        "Settings",
+        "Configure the AI assistant and the PHREEQC engine, set preferences, and read the "
+        "intended AI-framework architecture.",
+        eyebrow="AI · engine · preferences · architecture")
+    _render_ai_settings()
     st.divider()
     _render_phreeqc_engine()
     st.divider()
-    _render_ai_settings()
+    _render_preferences()
     st.divider()
     _render_future_architecture()
 
 
 # The app dispatches to ``render``.
-render = _render_engine_settings
+render = _render_settings

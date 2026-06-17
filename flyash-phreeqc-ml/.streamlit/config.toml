@@ -1,11 +1,12 @@
-# Materials Research Assistant — Apple/Squarespace-inspired light theme.
-# Presentation only: sets the base palette (a light neutral background, white cards/widgets,
-# a restrained accent). app_ui.inject_global_css() layers the card/typography refinements on
-# top. No secrets live here (the API key is read only from env / st.secrets at runtime).
+# Materials Research Assistant — dark, Apple/Squarespace-inspired research cockpit.
+# Presentation only: sets the base dark palette (neutral background, dark cards, a restrained
+# blue accent). app_ui.inject_global_css() layers the cards/sidebar/typography refinements on
+# top (sidebar #090B0F, main #12151B, card #191D24, …). No secrets live here (the API key is
+# read only from the environment / st.secrets at runtime).
 [theme]
-base = "light"
-primaryColor = "#007AFF"
-backgroundColor = "#F5F5F7"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#111111"
+base = "dark"
+primaryColor = "#6EA8FE"
+backgroundColor = "#0E1014"
+secondaryBackgroundColor = "#191D24"
+textColor = "#F5F7FA"
 font = "sans serif"

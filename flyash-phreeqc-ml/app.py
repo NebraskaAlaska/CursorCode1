@@ -31,11 +31,11 @@ import streamlit as st  # noqa: E402
 
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
 
-# UI section + workflow modules (see docs/refactor_plan.md). The Research Assistant is the
-# main workspace; the technical workflows are grouped into the other three sections.
+# UI section + workflow modules (see docs/refactor_plan.md). The Assistant is the main
+# workspace; the technical workflows are grouped into the other sections.
 from ui import (  # noqa: E402
     assistant_tab, simulate_tab, import_tab, validate_tab, match_tab,
-    compare_tab, export_tab, engine_settings,
+    compare_tab, export_tab, results, engine_library, settings,
 )
 from ui.state import MODEL_NAME, PRODUCT_NAME, PRODUCT_SUBTITLE, _rel  # noqa: E402
 
@@ -478,16 +478,20 @@ def _render_run_sidebar() -> str | None:
 
 
 # --------------------------------------------------------------------------- #
-# Page — assistant-first workspace with a simple four-section navigation.
-# Sections: Research Assistant (main) · Projects / Runs · Data & Validation · Engine Settings.
-# Every existing workflow is still reachable — the technical ones live in Data & Validation
-# and the Research Assistant's Advanced Mode; none was removed.
+# Page — assistant-first cockpit with a simple seven-section left-rail navigation.
+# Assistant (main) · Workspace · Results · Data & Validation · Projects · Engine Library ·
+# Settings. Every existing workflow is still reachable — the technical builder is Workspace
+# (the full manual Simulate), the measured-vs-model workflow is Data & Validation; none removed.
 # --------------------------------------------------------------------------- #
-SEC_ASSISTANT = "Research Assistant"
-SEC_PROJECTS = "Projects / Runs"
+SEC_ASSISTANT = "Assistant"
+SEC_WORKSPACE = "Workspace"
+SEC_RESULTS = "Results"
 SEC_DATA = "Data & Validation"
-SEC_ENGINES = "Engine Settings"
-SECTIONS = [SEC_ASSISTANT, SEC_PROJECTS, SEC_DATA, SEC_ENGINES]
+SEC_PROJECTS = "Projects"
+SEC_ENGINES = "Engine Library"
+SEC_SETTINGS = "Settings"
+SECTIONS = [SEC_ASSISTANT, SEC_WORKSPACE, SEC_RESULTS, SEC_DATA, SEC_PROJECTS, SEC_ENGINES,
+            SEC_SETTINGS]
 
 st.set_page_config(page_title="Materials Research Assistant",
                    layout="wide", page_icon="🔬")
@@ -495,45 +499,43 @@ app_ui.inject_global_css()
 app_ui.render_hero(
     PRODUCT_NAME,
     PRODUCT_SUBTITLE,
-    eyebrow="Broad materials research software · the assistant is the workspace",
+    eyebrow="Broad materials research software · the assistant is the front door",
     chips=[
-        (f"Executable engine: leaching / geochemistry via {MODEL_NAME}", "info"),
+        (f"First executable engine: leaching / geochemistry via {MODEL_NAME}", "info"),
         ("Planning support: composites · thermal · cementitious · battery · corrosion", "neutral"),
         ("Class C fly ash is the first mature demo — not the whole product", "neutral"),
     ],
 )
 
-# Sidebar — run management, then the primary section navigation.
+# Sidebar — run management, then the primary section navigation, then a dev-mode flag (set in
+# Settings, read here so every section can pass it through).
 SELECTED_RUN = _render_run_sidebar()
 st.sidebar.divider()
-st.sidebar.markdown("**Workspace**")
-SECTION = st.sidebar.radio("Workspace", SECTIONS, key="nav_section",
+st.sidebar.markdown("**Navigate**")
+SECTION = st.sidebar.radio("Navigate", SECTIONS, key="nav_section",
                            label_visibility="collapsed")
-DEV_MODE = st.sidebar.checkbox(
-    "🛠️ Developer explanation mode", value=False, key="dev_mode",
-    help="Show deeper chemistry/statistics explanations (mainly in Data & Validation).")
+DEV_MODE = bool(st.session_state.get("dev_mode", False))
 
 if SECTION == SEC_ASSISTANT:
     assistant_tab.render(SELECTED_RUN, DEV_MODE)
-    with st.expander("⚙︎ Advanced Mode — full manual simulation controls (optional)",
-                     expanded=False):
-        app_ui.render_advanced_mode_note("Advanced Simulate")
-        simulate_tab.render(SELECTED_RUN, DEV_MODE)
 
-elif SECTION == SEC_PROJECTS:
+elif SECTION == SEC_WORKSPACE:
     app_ui.render_page_header(
-        "Projects / Runs",
-        "Your saved runs and exports — measured-data runs and saved simulation runs, with "
-        "report export, audit trail, and the user guide.",
-        eyebrow="Runs · reports · provenance")
-    export_tab.render(SELECTED_RUN)
+        "Workspace",
+        "The structured experiment builder behind the assistant — material profile, release model, "
+        "database & phases, input preview, then gated run / sweep / ranking / target matching / save. "
+        "Advanced controls; the assistant is the simple way in.",
+        eyebrow="Build · preview · run · sweep · save")
+    simulate_tab.render(SELECTED_RUN, DEV_MODE)
+
+elif SECTION == SEC_RESULTS:
+    results.render(SELECTED_RUN)
 
 elif SECTION == SEC_DATA:
     app_ui.render_page_header(
         "Data & Validation",
-        "Import measured data, validate it, map it to model predictions, and compare — the "
-        "rigorous measured-vs-model workflow. Simulation outputs are not validation until "
-        "compared here.",
+        "Measured data only — import, validate, map measured samples to model runs, and compare. "
+        "Simulation predicts; validation compares with reality. The two are kept separate.",
         eyebrow="Import · Validate · Match · Compare")
     sub_import, sub_validate, sub_match, sub_compare = st.tabs(
         ["Import", "Validate", "Match", "Compare"])
@@ -550,5 +552,16 @@ elif SECTION == SEC_DATA:
         app_ui.render_advanced_mode_note("Compare")
         compare_tab.render(SELECTED_RUN)
 
+elif SECTION == SEC_PROJECTS:
+    app_ui.render_page_header(
+        "Projects",
+        "Saved simulation runs, planning projects, validation runs, and material profiles — with "
+        "report export, audit trail, and the user guide.",
+        eyebrow="Runs · reports · provenance")
+    export_tab.render(SELECTED_RUN)
+
 elif SECTION == SEC_ENGINES:
-    engine_settings.render(SELECTED_RUN)
+    engine_library.render(SELECTED_RUN)
+
+elif SECTION == SEC_SETTINGS:
+    settings.render(SELECTED_RUN)

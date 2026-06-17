@@ -141,10 +141,12 @@ def deterministic_plan(state, user_message: str) -> A.AgentAction:
 
     # Executable (leaching) domain — walk the readiness ladder.
     if not state.has_scenario_core:
+        engine_note = ("Good news — the **PHREEQC** geochemical engine can run this leaching "
+                       "scenario. " if domains.is_executable(state.domain) else "")
         return A.AgentAction(
             action_name=A.ASK_USER,
-            assistant_message=("To set this up I still need " + _missing_question(state)
-                               + ". Could you give me those?"),
+            assistant_message=(engine_note + "To set this up I still need "
+                               + _missing_question(state) + ". Could you give me those?"),
             reasoning_summary="Core scenario incomplete — ask for missing fields.",
             confidence=0.6)
     if not state.composition_usable:
