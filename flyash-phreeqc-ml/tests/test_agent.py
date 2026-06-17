@@ -1,0 +1,451 @@
+"""Tests for the AI **agent orchestration layer** (mocked AI; no API key, no network).
+
+Covers the product's safety contract: the assistant asks for missing details, natural replies
+merge into the scenario, the AI can never run a simulation without explicit confirmation, the
+policy blocks PHREEQC for non-leaching domains, a confirmed leaching scenario builds the
+preview through the *existing* deterministic builder, confirmed execution routes through the
+*existing* executor, the result explanation always carries the not-validated caveat, a missing
+material profile / release model blocks execution, the agent never writes PHREEQC input, and a
+saved run never stores the raw model response. The AI client is always a fake.
+"""
+from __future__ import annotations
+
+import json
+import types
+
+import pytest
+
+from flyash_phreeqc_ml.agent import agent_actions as A
+from flyash_phreeqc_ml.agent import agent_orchestrator as orch
+from flyash_phreeqc_ml.agent import agent_policy, agent_state, domains
+from flyash_phreeqc_ml.ai import config as ai_config
+from flyash_phreeqc_ml.materials import profile_schema as mp
+from flyash_phreeqc_ml.simulation import phreeqc_executor, run_registry, source_terms
+
+
+# --------------------------------------------------------------------------- #
+# Fakes + fixtures
+# --------------------------------------------------------------------------- #
+class FakeClient:
+    """anthropic.Anthropic() stand-in: client.messages.create(**kw) -> scripted JSON text."""
+
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = (self._payloads.pop(0) if self._payloads
+                   else {"assistant_message": "ok", "action": {"action_name": "ASK_USER"}})
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(type="text", text=text)], stop_reason="end")
+
+
+def _action(name, **arguments):
+    return {"assistant_message": f"doing {name}", "reasoning_summary": "ok", "confidence": 0.8,
+            "action": {"action_name": name, "arguments": arguments}}
+
+
+@pytest.fixture(autouse=True)
+def _no_ai(monkeypatch):
+    """AI disabled + no Streamlit secrets, so AI runs only when a fake client is injected."""
+    for name in (ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV):
+        monkeypatch.delenv(name, raising=False)
+    ai_config.clear_runtime_overrides()
+    monkeypatch.setattr(ai_config, "_secrets_get", lambda name: None)
+    yield
+    ai_config.clear_runtime_overrides()
+
+
+@pytest.fixture
+def usable_profile():
+    """A user-confirmed Class C fly ash composition profile (usable for the input preview)."""
+    return mp.MaterialProfile(
+        profile_id="fa", material_name="Class C fly ash", material_type="class_c_fly_ash",
+        composition_basis=mp.BASIS_OXIDE_WT,
+        entries=[mp.CompositionEntry("CaO", 24.0), mp.CompositionEntry("SiO2", 35.0),
+                 mp.CompositionEntry("Al2O3", 18.0)],
+        verification_status=mp.STATUS_USER_CONFIRMED)
+
+
+@pytest.fixture
+def release_model():
+    return source_terms.global_release(0.01)
+
+
+def _ready_state(profile, release):
+    """A state with a complete NaOH leaching scenario + usable profile + release model."""
+    s = agent_state.AgentState()
+    orch.respond(s, "Leach 2 g of Class C fly ash in 10 mL of 0.5 M NaOH for 60 min at 25 C, "
+                    "measure pH and Ca.", material_profile=profile, release_model=release)
+    return s
+
+
+# --------------------------------------------------------------------------- #
+# 1) Asks missing details from an incomplete leaching scenario
+# --------------------------------------------------------------------------- #
+def test_agent_asks_for_missing_details():
+    s = agent_state.AgentState()
+    r = orch.respond(s, "I'm leaching Class C fly ash with NaOH and want pH and calcium.")
+    assert s.domain == domains.LEACHING_GEOCHEMISTRY
+    assert r.action.action_name == A.ASK_USER
+    # The deterministic plan names the still-missing core fields.
+    assert "solid mass" in r.assistant_message.lower()
+    assert "liquid volume" in r.assistant_message.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 2) Natural replies merge into the scenario (not restart) — corrections win
+# --------------------------------------------------------------------------- #
+def test_natural_reply_merges_scenario():
+    s = agent_state.AgentState()
+    orch.respond(s, "I'm leaching fly ash with NaOH.")
+    orch.respond(s, "0.5 M NaOH")
+    orch.respond(s, "2 g and 10 mL")
+    orch.respond(s, "60 min at 25 C")
+    flat = s.scenario.to_flat_dict()
+    assert flat["leachant_type"] == "NaOH"
+    assert flat["leachant_concentration_M"] == 0.5
+    assert flat["solid_mass_g"] == 2.0
+    assert flat["liquid_volume_mL"] == 10.0
+    assert flat["time_min"] == 60.0
+    assert flat["temperature_C"] == 25.0
+    # A correction overrides the earlier value (merge, not restart).
+    orch.respond(s, "Actually, change the temperature to 40 C")
+    assert s.scenario.to_flat_dict()["temperature_C"] == 40.0
+    # The previously-stated fields survive the correction.
+    assert s.scenario.to_flat_dict()["solid_mass_g"] == 2.0
+
+
+def test_unrelated_reply_does_not_fabricate_temperature():
+    s = agent_state.AgentState()
+    orch.respond(s, "Leach fly ash with 0.5 M NaOH")          # no temperature stated
+    assert s.scenario.process.temperature_C is None
+
+
+# --------------------------------------------------------------------------- #
+# 3) AI cannot run a simulation without confirmation
+# --------------------------------------------------------------------------- #
+def test_ai_cannot_run_without_confirmation(usable_profile, release_model, monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    # Build a preview first (so a run is even a candidate).
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+    assert s.preview is not None
+
+    # If the executor were ever reached here, this would fail the test loudly.
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran without confirm")))
+
+    # The model tries to run immediately — it must be PARKED, never executed.
+    r = orch.respond(s, "please run it now",
+                     client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
+                     material_profile=usable_profile, release_model=release_model)
+    assert r.executed is False
+    assert r.awaiting_confirmation is True
+    assert s.execution_result is None
+    assert s.pending_action is not None
+    assert s.pending_action.action_name == A.RUN_SINGLE_SIMULATION
+
+
+# --------------------------------------------------------------------------- #
+# 4) Policy blocks PHREEQC for a plastic-composite strength scenario
+# --------------------------------------------------------------------------- #
+def test_policy_blocks_phreeqc_for_plastic_strength():
+    s = agent_state.AgentState()
+    s.experiment_text = "compressive strength of a fly ash / HDPE plastic composite at 28 days"
+    s.domain = domains.classify(s.experiment_text)
+    assert s.domain in (domains.POLYMER_COMPOSITE, domains.MECHANICAL_TESTING)
+    action = A.AgentAction(action_name=A.BUILD_PHREEQC_PREVIEW)
+    decision = agent_policy.evaluate(s, action)
+    assert decision.blocked
+    assert decision.code == agent_policy.BLOCK_DOMAIN
+
+
+def test_planning_only_domain_returns_useful_planning_actions():
+    """An unsupported (planning-only) domain must NOT dead-end: it offers planning actions,
+    suggests response/input variables, and never offers to simulate."""
+    s = agent_state.AgentState()
+    r = orch.respond(s, "I want the flexural strength of a fly ash + waste plastic composite.")
+    assert s.domain in (domains.POLYMER_COMPOSITE, domains.MECHANICAL_TESTING)
+    assert not domains.is_executable(s.domain)
+    msg = r.assistant_message.lower()
+    # Honest about the missing engine, but useful (planning + data template + variables).
+    assert "simulation engine" in msg
+    assert "data" in msg and ("template" in msg or "dataset" in msg)
+    assert "strength" in msg                                    # suggests response variables
+    assert r.tool_outcome is not None
+    support = r.tool_outcome.data.get("planning_support")
+    assert support and "compressive strength" in support["response_variables"]
+    assert r.tool_outcome.data.get("executable") is False
+    # It does NOT claim a simulation was/can be run for this domain.
+    assert "run a simulation" not in msg
+
+
+# --------------------------------------------------------------------------- #
+# 5) Unsupported domain gets a planning-only response (with a mocked model that overreaches)
+# --------------------------------------------------------------------------- #
+def test_data_template_is_domain_aware():
+    """A planning-only domain gets a materials data-collection template (input + response
+    variables); a leaching scenario gets the measured-release validation template."""
+    from flyash_phreeqc_ml import config
+    from flyash_phreeqc_ml.agent import tool_registry
+    # planning-only (polymer composite)
+    s = agent_state.AgentState()
+    s.domain = domains.POLYMER_COMPOSITE
+    out = tool_registry._tool_create_validation_template(s, {})
+    assert out.data["planning_only"] is True
+    assert "compressive_strength" in out.data["template_columns"]
+    assert set(out.data["template_columns"]) != set(config.EXPERIMENTAL_RELEASE_COLUMNS)
+    # leaching → the release template
+    s2 = agent_state.AgentState()
+    s2.domain = domains.LEACHING_GEOCHEMISTRY
+    out2 = tool_registry._tool_create_validation_template(s2, {})
+    assert out2.data["planning_only"] is False
+    assert out2.data["template_columns"] == list(config.EXPERIMENTAL_RELEASE_COLUMNS)
+
+
+def test_phreeqc_only_offered_for_leaching():
+    """Every PHREEQC engine action (preview AND run/sweep) is allowed for leaching but blocked
+    for every planning-only domain — no planning-only domain can reach an executable engine."""
+    from flyash_phreeqc_ml.agent import agent_actions as AA
+    preview = AA.AgentAction(action_name=AA.BUILD_PHREEQC_PREVIEW)
+    leach = agent_state.AgentState()
+    leach.domain = domains.LEACHING_GEOCHEMISTRY
+    leach.scenario.material.solid_mass_g = 2.0
+    leach.scenario.leachant.liquid_volume_mL = 10.0
+    leach.scenario.leachant.leachant_type = "NaOH"
+    assert not agent_policy.evaluate(leach, preview).blocked       # leaching → allowed
+    # Every PHREEQC-engine action is blocked by the domain gate for a planning-only domain,
+    # both proposed (confirmed=False) and on a (hypothetical) confirmation (confirmed=True).
+    engine_actions = [AA.AgentAction(action_name=n) for n in
+                      (AA.BUILD_PHREEQC_PREVIEW, AA.RUN_SINGLE_SIMULATION, AA.RUN_SWEEP,
+                       AA.BUILD_SWEEP_MATRIX, AA.CHECK_DATABASE)]
+    for d in (domains.POLYMER_COMPOSITE, domains.MECHANICAL_TESTING, domains.THERMAL_TREATMENT,
+              domains.BATTERY_MATERIAL, domains.CORROSION_DURABILITY, domains.CEMENTITIOUS_BINDER,
+              domains.RED_MUD_UPCYCLING, domains.UNKNOWN):
+        s = agent_state.AgentState()
+        s.domain = d
+        for action in engine_actions:
+            assert agent_policy.evaluate(s, action).code == agent_policy.BLOCK_DOMAIN
+            assert agent_policy.evaluate(s, action, confirmed=True).code == agent_policy.BLOCK_DOMAIN
+
+
+def test_unsupported_domain_blocks_even_when_model_proposes_phreeqc():
+    s = agent_state.AgentState()
+    # The model wrongly proposes a PHREEQC preview for a battery scenario — policy must block it.
+    client = FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)])
+    r = orch.respond(s, "Estimate the cathode capacity of a lithium-ion battery material.",
+                     client=client)
+    assert s.domain == domains.BATTERY_MATERIAL
+    assert r.executed is False
+    assert r.policy.code == agent_policy.BLOCK_DOMAIN
+    assert "planning" in r.assistant_message.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 6) A confirmed leaching scenario builds the preview through the EXISTING builder
+# --------------------------------------------------------------------------- #
+def test_confirmed_scenario_builds_preview_via_existing_builder(usable_profile, release_model):
+    s = _ready_state(usable_profile, release_model)
+    r = orch.respond(s, "build the input preview",
+                     client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                     material_profile=usable_profile, release_model=release_model)
+    assert r.executed is True
+    from flyash_phreeqc_ml.simulation import phreeqc_input_builder as builder
+    assert isinstance(s.preview, builder.PhreeqcInputPreview)
+    # NaOH + a usable composition → the builder's ready status.
+    assert s.preview.status == builder.STATUS_READY
+    assert builder.PREVIEW_HEADER_LABEL in s.preview.phreeqc_input_text
+
+
+# --------------------------------------------------------------------------- #
+# 7) Confirmed execution routes through the EXISTING executor path
+# --------------------------------------------------------------------------- #
+def test_confirmed_execution_uses_existing_executor(usable_profile, release_model, monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+
+    seen = {}
+
+    def fake_run_and_parse(preview, **kwargs):
+        seen["preview"] = preview
+        execution = phreeqc_executor.ExecutionResult(
+            "ASSISTANT-001", phreeqc_executor.STATUS_SUCCESS, output_path="x.pqo")
+        parsed = phreeqc_executor.ParsedSimulation(
+            "ASSISTANT-001", phreeqc_executor.PARSE_PARSED, pH=13.2,
+            element_totals_mM={"Ca": 5.0, "Si": 2.0})
+        return execution, parsed
+
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse", fake_run_and_parse)
+
+    # Propose (parked), then explicitly confirm → executes via phreeqc_executor.run_and_parse.
+    orch.respond(s, "run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
+                 material_profile=usable_profile, release_model=release_model)
+    assert s.pending_action is not None
+    r = orch.confirm_pending_action(s)
+    assert r.executed is True
+    assert seen["preview"] is s.preview                       # the reviewed preview was run
+    assert s.execution_result.status == phreeqc_executor.STATUS_SUCCESS
+    assert s.parsed_result.pH == 13.2
+
+
+# --------------------------------------------------------------------------- #
+# 8) The result explanation always carries the not-validated caveat
+# --------------------------------------------------------------------------- #
+def test_explanation_includes_not_validated_warning(usable_profile, release_model, monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse", lambda preview, **k: (
+        phreeqc_executor.ExecutionResult("ASSISTANT-001", phreeqc_executor.STATUS_SUCCESS,
+                                         output_path="x.pqo"),
+        phreeqc_executor.ParsedSimulation("ASSISTANT-001", phreeqc_executor.PARSE_PARSED,
+                                          pH=13.5, element_totals_mM={"Ca": 5.0})))
+    orch.respond(s, "run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
+                 material_profile=usable_profile, release_model=release_model)
+    orch.confirm_pending_action(s)
+
+    r = orch.respond(s, "explain the results", client=FakeClient([_action(A.EXPLAIN_RESULTS)]),
+                     material_profile=usable_profile, release_model=release_model)
+    assert r.executed is True
+    assert "not validated" in r.assistant_message.lower()
+    assert r.tool_outcome.data["estimated_pH"] == 13.5      # number comes from the tool
+
+
+# --------------------------------------------------------------------------- #
+# 9) Missing material profile / release model blocks execution
+# --------------------------------------------------------------------------- #
+def test_missing_material_profile_blocks_execution():
+    s = agent_state.AgentState()
+    # Complete scenario, but NO usable material profile attached.
+    orch.respond(s, "Leach 2 g of fly ash in 10 mL of 0.5 M NaOH for 60 min at 25 C.")
+    assert s.has_scenario_core and not s.composition_usable
+    # Build a preview → it stops at needs_material_composition (not runnable).
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]))
+    assert s.preview is not None and not s.preview_runnable
+    # Proposing a run is blocked by the precondition (no usable composition).
+    r = orch.respond(s, "run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]))
+    assert r.executed is False
+    assert r.awaiting_confirmation is False
+    assert r.policy.code == agent_policy.BLOCK_PRECONDITION
+    assert s.execution_result is None
+
+
+# --------------------------------------------------------------------------- #
+# 10) The agent never writes PHREEQC input (model-supplied text is ignored)
+# --------------------------------------------------------------------------- #
+def test_agent_does_not_write_phreeqc_input(usable_profile, release_model):
+    s = _ready_state(usable_profile, release_model)
+    # The model tries to inject PHREEQC input text — it is stripped, and the deterministic
+    # builder's text is used instead.
+    payload = _action(A.BUILD_PHREEQC_PREVIEW, phreeqc_input_text="INJECTED EVIL INPUT")
+    orch.respond(s, "build it", client=FakeClient([payload]),
+                 material_profile=usable_profile, release_model=release_model)
+    assert s.preview is not None
+    assert "INJECTED EVIL INPUT" not in s.preview.phreeqc_input_text
+    from flyash_phreeqc_ml.simulation import phreeqc_input_builder as builder
+    assert builder.PREVIEW_HEADER_LABEL in s.preview.phreeqc_input_text
+
+
+def test_forbidden_arguments_are_stripped():
+    act = A.parse_action({"action": {"action_name": A.BUILD_PHREEQC_PREVIEW,
+                                     "arguments": {"phreeqc_input_text": "X", "api_key": "Y",
+                                                   "release_fraction": 1.0, "time_min": 30}}})
+    assert "phreeqc_input_text" not in act.arguments
+    assert "api_key" not in act.arguments
+    assert "release_fraction" not in act.arguments
+    assert act.arguments.get("time_min") == 30        # a benign typed hint survives
+
+
+# --------------------------------------------------------------------------- #
+# 11) A saved run never stores the raw model response / hidden reasoning
+# --------------------------------------------------------------------------- #
+def test_saved_run_does_not_store_raw_llm_response(usable_profile, release_model, monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse", lambda preview, **k: (
+        phreeqc_executor.ExecutionResult("ASSISTANT-001", phreeqc_executor.STATUS_SUCCESS,
+                                         output_path="x.pqo"),
+        phreeqc_executor.ParsedSimulation("ASSISTANT-001", phreeqc_executor.PARSE_PARSED,
+                                          pH=13.5, element_totals_mM={"Ca": 5.0})))
+    # The model payload carries an extra hidden field that must NOT be persisted.
+    sentinel = "HIDDEN_CHAIN_OF_THOUGHT_SENTINEL_XYZ"
+    run_payload = {"assistant_message": "running", "reasoning_summary": "short safe note",
+                   "hidden_chain_of_thought": sentinel,
+                   "action": {"action_name": A.RUN_SINGLE_SIMULATION}}
+    orch.respond(s, "run it", client=FakeClient([run_payload]),
+                 material_profile=usable_profile, release_model=release_model)
+    orch.confirm_pending_action(s)
+
+    record = run_registry.build_run_record(
+        run_id="sim-test", created_at="2026-06-17T00:00:00", batch=s.batch_result,
+        scenario=s.scenario, material_profile=usable_profile,
+        agent_provenance=s.to_provenance_dict())
+    blob = json.dumps(record.to_metadata_dict())
+    assert record.agent_provenance is not None
+    assert "transcript_summary" in blob and "action_trace" in blob   # the safe provenance is kept
+    assert sentinel not in blob                                      # the raw/hidden text is NOT
+    assert "not_validated_warning" in blob
+
+
+# --------------------------------------------------------------------------- #
+# Disabled-AI fallback still drives the workflow
+# --------------------------------------------------------------------------- #
+def test_disabled_ai_falls_back_to_deterministic_planner():
+    s = agent_state.AgentState()
+    r = orch.respond(s, "Leach 2 g fly ash in 10 mL 0.5 M NaOH for 60 min.")   # no client → no AI
+    assert r.used_ai is False
+    assert r.action.is_known
+    assert r.assistant_message                                       # still a helpful reply
+
+
+def test_affirmation_guard_rejects_other_intents():
+    from flyash_phreeqc_ml.agent.agent_orchestrator import _is_affirmation
+    for m in ["yes", "go ahead and run it", "run it", "yes please", "sure", "confirm"]:
+        assert _is_affirmation(m), m
+    # A longer instruction with a different intent must NOT confirm a parked run.
+    for m in ["run the database check", "go look at the results", "change temperature to 40",
+              "build the preview", "no", "what is the pH", "explain the matrix"]:
+        assert not _is_affirmation(m), m
+
+
+def test_other_intent_while_parked_does_not_execute(usable_profile, release_model, monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+    orch.respond(s, "now run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
+                 material_profile=usable_profile, release_model=release_model)
+    assert s.pending_action is not None and s.confirmation_required
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran on other-intent")))
+    # A different request while a run is parked must NOT confirm the run.
+    r = orch.respond(s, "actually, check the database first",
+                     client=FakeClient([_action(A.CHECK_DATABASE)]),
+                     material_profile=usable_profile, release_model=release_model)
+    assert s.execution_result is None
+    assert r.action.action_name != A.RUN_SINGLE_SIMULATION
+
+
+def test_deterministic_propose_run_parks_and_does_not_execute(usable_profile, release_model,
+                                                              monkeypatch):
+    """The deterministic planner's REQUEST_RUN_CONFIRMATION must PARK a run (never a no-op that
+    skips the gate). Reaches the propose-run rung with a ready preview, then confirms."""
+    s = _ready_state(usable_profile, release_model)
+    # Walk the deterministic ladder (no client) until a run is proposed.
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran without confirm")))
+    parked = False
+    for _ in range(4):
+        r = orch.respond(s, "what's next?", material_profile=usable_profile,
+                         release_model=release_model)
+        if r.awaiting_confirmation:
+            parked = True
+            break
+    assert parked, "the deterministic planner never parked a run"
+    assert s.pending_action.action_name == A.RUN_SINGLE_SIMULATION
+    assert s.execution_result is None                       # still not executed

@@ -32,6 +32,15 @@ def _rel(path: Path) -> Path:
 # {MODEL_NAME} simulation"). PHREEQC for this project; swappable via ModelProfile.
 MODEL_NAME = profiles.PHREEQC_PROFILE.name
 
+# Product identity — a broad materials-research assistant, not a PHREEQC-only app.
+# PHREEQC is the first executable engine; more can be added modularly.
+PRODUCT_NAME = "Materials Research Assistant"
+PRODUCT_SUBTITLE = (
+    "Describe a materials experiment. The assistant will ask for the missing details, identify "
+    "the right modelling pathway, run available simulations after your confirmation, and help "
+    "compare predictions with measured data. Leaching / geochemistry runs today (PHREEQC); other "
+    "domains get planning + data-template support, and more engines can be added.")
+
 # The form appends here. Kept out of git (see .gitignore) so manually-entered
 # measured data is never committed by accident.
 MANUAL_ENTRY_FILENAME = "experimental_release_manual_entry.csv"

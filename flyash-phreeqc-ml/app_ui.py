@@ -32,36 +32,38 @@ import streamlit as st
 # Each entry: status keyword -> (foreground colour, translucent background tint).
 # Translucent tints keep the palette readable on both light and dark themes.
 # --------------------------------------------------------------------------- #
-_GREEN = "#1a8f5a"
-_AMBER = "#b67611"
-_RED = "#d0402b"
-_PURPLE = "#6a4bd0"
-_BLUE = "#2f6fb0"
-_NEUTRAL = "#6b7280"
+# Apple/Squarespace-inspired system palette (see .streamlit/config.toml for the base theme).
+_GREEN = "#1f8f43"   # success (text-readable variant of #34C759)
+_AMBER = "#b3650a"   # warning (text-readable variant of #FF9500)
+_RED = "#d6332a"     # danger  (text-readable variant of #FF3B30)
+_PURPLE = "#5856D6"  # Apple system indigo
+_BLUE = "#0066d6"    # accent  (text-readable variant of #007AFF)
+_NEUTRAL = "#6E6E73"  # Apple secondary label
 
 STATUS_STYLES: dict[str, tuple[str, str]] = {
     # Canonical mapping statuses (from replicates.MAPPING_STATUS_*).
-    "exact": (_GREEN, "rgba(26,143,90,.12)"),
-    "scenario-level only": (_AMBER, "rgba(182,118,17,.14)"),
-    "scenario-level": (_AMBER, "rgba(182,118,17,.14)"),
-    "unsafe": (_RED, "rgba(208,64,43,.12)"),
-    "needs new simulation": (_PURPLE, "rgba(106,75,208,.12)"),
+    "exact": (_GREEN, "rgba(52,199,89,.12)"),
+    "scenario-level only": (_AMBER, "rgba(255,149,0,.13)"),
+    "scenario-level": (_AMBER, "rgba(255,149,0,.13)"),
+    "unsafe": (_RED, "rgba(255,59,48,.11)"),
+    "needs new simulation": (_PURPLE, "rgba(88,86,214,.11)"),
     # Validation / generic statuses.
-    "valid": (_GREEN, "rgba(26,143,90,.12)"),
-    "preliminary": (_AMBER, "rgba(182,118,17,.14)"),
-    "single-sample": (_AMBER, "rgba(182,118,17,.14)"),
-    "needs new simulations": (_PURPLE, "rgba(106,75,208,.12)"),
-    "nothing to compare": (_NEUTRAL, "rgba(107,114,128,.12)"),
+    "valid": (_GREEN, "rgba(52,199,89,.12)"),
+    "preliminary": (_AMBER, "rgba(255,149,0,.13)"),
+    "single-sample": (_AMBER, "rgba(255,149,0,.13)"),
+    "needs new simulations": (_PURPLE, "rgba(88,86,214,.11)"),
+    "nothing to compare": (_NEUTRAL, "rgba(110,110,115,.10)"),
     # Generic severities (map onto Streamlit's success/warning/error/info).
-    "ok": (_GREEN, "rgba(26,143,90,.12)"),
-    "success": (_GREEN, "rgba(26,143,90,.12)"),
-    "good": (_GREEN, "rgba(26,143,90,.12)"),
-    "warning": (_AMBER, "rgba(182,118,17,.14)"),
-    "error": (_RED, "rgba(208,64,43,.12)"),
-    "danger": (_RED, "rgba(208,64,43,.12)"),
-    "info": (_BLUE, "rgba(47,111,176,.12)"),
-    "neutral": (_NEUTRAL, "rgba(107,114,128,.12)"),
-    "muted": (_NEUTRAL, "rgba(107,114,128,.12)"),
+    "ok": (_GREEN, "rgba(52,199,89,.12)"),
+    "success": (_GREEN, "rgba(52,199,89,.12)"),
+    "good": (_GREEN, "rgba(52,199,89,.12)"),
+    "warning": (_AMBER, "rgba(255,149,0,.13)"),
+    "error": (_RED, "rgba(255,59,48,.11)"),
+    "danger": (_RED, "rgba(255,59,48,.11)"),
+    "info": (_BLUE, "rgba(0,122,255,.11)"),
+    "accent": (_BLUE, "rgba(0,122,255,.11)"),
+    "neutral": (_NEUTRAL, "rgba(110,110,115,.10)"),
+    "muted": (_NEUTRAL, "rgba(110,110,115,.10)"),
 }
 
 
@@ -76,133 +78,192 @@ def _style_for(status: str | None) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 _GLOBAL_CSS = """
 <style id="rd-theme">
-/* ---- Typography & layout rhythm ---------------------------------------- */
-html, body, [class*="css"] {
-  font-feature-settings: "kern" 1, "liga" 1;
+/* ===== Materials Research Assistant — Apple/Squarespace-inspired design system =====
+   Light neutral background, white cards, rounded corners, restrained accent, minimal
+   borders, clear type hierarchy. Tokens mirror .streamlit/config.toml. ===== */
+:root {
+  --rd-bg: #F5F5F7;
+  --rd-card: #FFFFFF;
+  --rd-text: #111111;
+  --rd-text2: #6E6E73;
+  --rd-border: #E5E5EA;
+  --rd-accent: #007AFF;
+  --rd-success: #34C759;
+  --rd-warning: #FF9500;
+  --rd-danger: #FF3B30;
+  --rd-radius: 16px;
+  --rd-radius-sm: 12px;
+  --rd-shadow: 0 1px 3px rgba(0,0,0,.04), 0 1px 2px rgba(0,0,0,.03);
+  --rd-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+             "Inter", "Helvetica Neue", Arial, sans-serif;
 }
-.block-container { padding-top: 2.4rem; padding-bottom: 3rem; max-width: 1280px; }
-[data-testid="stHeader"] { background: transparent; }
 
-/* ---- Hero header ------------------------------------------------------- */
+/* ---- Base canvas + typography ----------------------------------------- */
+html, body, [class*="css"], .stApp, [data-testid="stMarkdownContainer"] {
+  font-family: var(--rd-font);
+  font-feature-settings: "kern" 1, "liga" 1;
+  -webkit-font-smoothing: antialiased;
+}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background: var(--rd-bg); }
+.block-container { padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1180px; }
+[data-testid="stHeader"] { background: transparent; }
+h1, h2, h3 { letter-spacing: -.012em; color: var(--rd-text); }
+
+/* ---- Sidebar (clean white rail) --------------------------------------- */
+[data-testid="stSidebar"] { background: var(--rd-card); border-right: 1px solid var(--rd-border); }
+[data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
+/* Primary section nav: a clean vertical list of large targets. */
+[data-testid="stSidebar"] [role="radiogroup"] { gap: 2px; }
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  border-radius: 10px; padding: 7px 10px; margin: 0; transition: background .12s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: rgba(0,122,255,.06); }
+
+/* ---- Hero (a calm white card, not a loud gradient) -------------------- */
 .rd-hero {
-  border: 1px solid rgba(128,128,128,.22);
-  border-radius: 16px;
-  padding: 22px 26px;
-  margin-bottom: 8px;
-  background:
-    linear-gradient(135deg, rgba(47,111,176,.10), rgba(106,75,208,.06) 60%, transparent);
+  border: 1px solid var(--rd-border);
+  border-radius: var(--rd-radius);
+  padding: 26px 30px;
+  margin-bottom: 14px;
+  background: var(--rd-card);
+  box-shadow: var(--rd-shadow);
 }
 .rd-hero-eyebrow {
-  font-size: .72rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
-  opacity: .70; margin-bottom: 6px;
+  font-size: .70rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--rd-accent); margin-bottom: 8px;
 }
-.rd-hero-title { font-size: 1.7rem; font-weight: 700; line-height: 1.2; margin: 0; }
-.rd-hero-sub { font-size: 1rem; opacity: .80; margin-top: 6px; max-width: 70ch; }
-.rd-hero-chips { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.rd-hero-title { font-size: 2.0rem; font-weight: 700; line-height: 1.12; margin: 0;
+  letter-spacing: -.02em; color: var(--rd-text); }
+.rd-hero-sub { font-size: 1.02rem; color: var(--rd-text2); margin-top: 8px; max-width: 74ch;
+  line-height: 1.5; }
+.rd-hero-chips { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
 
-/* ---- Page header (per tab) -------------------------------------------- */
+/* ---- Page header (per section) ---------------------------------------- */
 .rd-page-eyebrow {
-  font-size: .70rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
-  opacity: .60;
+  font-size: .68rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--rd-accent);
 }
-.rd-page-title { font-size: 1.35rem; font-weight: 700; line-height: 1.2; margin: 2px 0 0 0; }
-.rd-page-sub { font-size: .95rem; opacity: .78; margin: 4px 0 2px 0; max-width: 76ch; }
+.rd-page-title { font-size: 1.5rem; font-weight: 700; line-height: 1.18; margin: 2px 0 0 0;
+  letter-spacing: -.015em; color: var(--rd-text); }
+.rd-page-sub { font-size: .96rem; color: var(--rd-text2); margin: 5px 0 2px 0; max-width: 78ch;
+  line-height: 1.5; }
 
 /* ---- Section heading --------------------------------------------------- */
-.rd-section {
-  display: flex; align-items: baseline; gap: 10px;
-  margin: 6px 0 2px 0;
-}
-.rd-section-title { font-size: 1.05rem; font-weight: 650; }
-.rd-section-sub { font-size: .85rem; opacity: .65; }
+.rd-section { display: flex; align-items: baseline; gap: 10px; margin: 8px 0 4px 0; }
+.rd-section-title { font-size: 1.02rem; font-weight: 650; color: var(--rd-text); }
+.rd-section-sub { font-size: .84rem; color: var(--rd-text2); }
 
 /* ---- Badges (status pills) -------------------------------------------- */
 .rd-badge {
-  display: inline-block; padding: 2px 10px; border-radius: 999px;
-  font-size: .76rem; font-weight: 650; letter-spacing: .01em; white-space: nowrap;
+  display: inline-block; padding: 3px 11px; border-radius: 999px;
+  font-size: .76rem; font-weight: 600; letter-spacing: .005em; white-space: nowrap;
   line-height: 1.5;
 }
 
 /* ---- Metric / status cards (HTML grid) -------------------------------- */
 .rd-card-grid {
-  display: grid; gap: 12px; margin: 6px 0 4px 0;
+  display: grid; gap: 12px; margin: 8px 0 4px 0;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 .rd-card {
-  border: 1px solid rgba(128,128,128,.20);
-  border-left-width: 4px;
-  border-radius: 12px;
-  padding: 12px 14px;
-  background: rgba(128,128,128,.05);
+  border: 1px solid var(--rd-border);
+  border-radius: var(--rd-radius-sm);
+  padding: 14px 16px;
+  background: var(--rd-card);
+  box-shadow: var(--rd-shadow);
 }
+.rd-card-accent { border-left: 4px solid var(--rd-border); }
 .rd-card-label {
-  font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-  opacity: .66;
+  font-size: .70rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--rd-text2);
 }
-.rd-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.25; margin-top: 2px; }
-.rd-card-caption { font-size: .76rem; opacity: .66; margin-top: 2px; }
+.rd-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.25; margin-top: 3px;
+  color: var(--rd-text); }
+.rd-card-caption { font-size: .76rem; color: var(--rd-text2); margin-top: 3px; }
 
-/* ---- Native st.metric -> card (upgrades existing call sites) ----------- */
+/* ---- Engine roadmap cards --------------------------------------------- */
+.rd-engine { border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
+  padding: 14px 16px; background: var(--rd-card); box-shadow: var(--rd-shadow); height: 100%; }
+.rd-engine-h { font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 7px; }
+.rd-dot { width: 9px; height: 9px; border-radius: 999px; display: inline-block; }
+.rd-engine-row { font-size: .9rem; color: var(--rd-text); padding: 3px 0; line-height: 1.4; }
+.rd-engine-sub { font-size: .78rem; color: var(--rd-text2); }
+
+/* ---- Native st.metric -> card ----------------------------------------- */
 [data-testid="stMetric"] {
-  border: 1px solid rgba(128,128,128,.20);
-  border-radius: 12px;
-  padding: 12px 14px;
-  background: rgba(128,128,128,.05);
+  border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
+  padding: 14px 16px; background: var(--rd-card); box-shadow: var(--rd-shadow);
 }
 [data-testid="stMetricLabel"] p {
-  font-size: .72rem !important; font-weight: 600; letter-spacing: .03em;
-  text-transform: uppercase; opacity: .68;
+  font-size: .70rem !important; font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; color: var(--rd-text2);
 }
 [data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 700; }
 
 /* ---- Callout panels ---------------------------------------------------- */
 .rd-panel {
-  border: 1px solid var(--rd-c);
-  border-left-width: 4px;
-  border-radius: 12px;
-  padding: 12px 16px; margin: 6px 0;
-  background: var(--rd-bg);
+  border: 1px solid var(--rd-c); border-left-width: 4px;
+  border-radius: var(--rd-radius-sm); padding: 13px 16px; margin: 6px 0;
+  background: var(--rd-bg-tint);
 }
-.rd-panel-title { font-weight: 650; margin-bottom: 2px; }
-.rd-panel-body { font-size: .9rem; opacity: .92; }
+.rd-panel-title { font-weight: 650; margin-bottom: 2px; color: var(--rd-text); }
+.rd-panel-body { font-size: .9rem; color: var(--rd-text); opacity: .92; }
 
 /* ---- Workflow stepper -------------------------------------------------- */
-.rd-steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 8px 0; }
+.rd-steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 8px 0; }
 .rd-step {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 5px 12px; border-radius: 999px; font-size: .82rem; font-weight: 550;
-  border: 1px solid rgba(128,128,128,.22); background: rgba(128,128,128,.05); opacity: .72;
+  border: 1px solid var(--rd-border); background: var(--rd-card); color: var(--rd-text2);
 }
 .rd-step .rd-step-n {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 999px; font-size: .70rem; font-weight: 700;
-  background: rgba(128,128,128,.22);
+  background: var(--rd-border); color: var(--rd-text);
 }
-.rd-step-done { opacity: .9; border-color: rgba(26,143,90,.45); }
-.rd-step-done .rd-step-n { background: rgba(26,143,90,.85); color: #fff; }
+.rd-step-done { border-color: rgba(52,199,89,.45); color: var(--rd-text); }
+.rd-step-done .rd-step-n { background: var(--rd-success); color: #fff; }
 .rd-step-current {
-  opacity: 1; border-color: rgba(47,111,176,.55); background: rgba(47,111,176,.12);
+  border-color: rgba(0,122,255,.55); background: rgba(0,122,255,.07); color: var(--rd-text);
   font-weight: 650;
 }
-.rd-step-current .rd-step-n { background: #2f6fb0; color: #fff; }
-.rd-step-sep { opacity: .35; font-size: .8rem; }
+.rd-step-current .rd-step-n { background: var(--rd-accent); color: #fff; }
+.rd-step-sep { color: var(--rd-text2); opacity: .5; font-size: .8rem; }
 
-/* ---- Tabs -------------------------------------------------------------- */
-.stTabs [data-baseweb="tab-list"] { gap: 4px; }
-.stTabs [data-baseweb="tab"] {
-  border-radius: 10px 10px 0 0; padding: 8px 16px; font-weight: 550;
+/* ---- Buttons (rounded, restrained) ------------------------------------ */
+.stButton > button, .stDownloadButton > button {
+  border-radius: 10px; border: 1px solid var(--rd-border); font-weight: 550;
+  transition: all .12s ease;
+}
+.stButton > button:hover { border-color: var(--rd-accent); color: var(--rd-accent); }
+.stButton > button[kind="primary"] {
+  background: var(--rd-accent); border-color: var(--rd-accent); color: #fff;
 }
 
-/* ---- Expanders --------------------------------------------------------- */
+/* ---- Chat bubbles ------------------------------------------------------ */
+[data-testid="stChatMessage"] {
+  background: var(--rd-card); border: 1px solid var(--rd-border);
+  border-radius: 14px; box-shadow: var(--rd-shadow); padding: 4px 6px;
+}
+[data-testid="stChatInput"] textarea { border-radius: 12px; }
+
+/* ---- Tabs (sub-navigation) -------------------------------------------- */
+.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--rd-border); }
+.stTabs [data-baseweb="tab"] { border-radius: 10px 10px 0 0; padding: 8px 16px; font-weight: 550; }
+.stTabs [aria-selected="true"] { color: var(--rd-accent); }
+
+/* ---- Expanders + bordered containers = white cards -------------------- */
 [data-testid="stExpander"] {
-  border: 1px solid rgba(128,128,128,.18); border-radius: 12px;
+  border: 1px solid var(--rd-border); border-radius: var(--rd-radius-sm);
+  background: var(--rd-card); box-shadow: var(--rd-shadow);
 }
-
-/* ---- Bordered containers (st.container(border=True)) ------------------- */
-[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 12px; }
-
-/* ---- Dividers a touch lighter ----------------------------------------- */
-hr { opacity: .45; }
+[data-testid="stVerticalBlockBorderWrapper"] {
+  border-radius: var(--rd-radius-sm); border-color: var(--rd-border) !important;
+  background: var(--rd-card);
+}
+hr { opacity: .5; border-color: var(--rd-border); }
+.rd-muted { color: var(--rd-text2); font-size: .85rem; }
 </style>
 """
 
@@ -295,8 +356,9 @@ def _card_html(label, value, caption=None, status=None) -> str:
     colour, _tint = _style_for(status)
     cap = (f'<div class="rd-card-caption">{_html.escape(str(caption))}</div>'
            if caption not in (None, "") else "")
+    cls = "rd-card rd-card-accent" if status else "rd-card"
     border = f"border-left-color:{colour};" if status else ""
-    return (f'<div class="rd-card" style="{border}">'
+    return (f'<div class="{cls}" style="{border}">'
             f'<div class="rd-card-label">{_html.escape(str(label))}</div>'
             f'<div class="rd-card-value">{_html.escape(str(value))}</div>'
             f'{cap}</div>')
@@ -318,11 +380,40 @@ def render_metric_cards(items: Iterable[dict]) -> None:
     st.markdown(f'<div class="rd-card-grid">{cards}</div>', unsafe_allow_html=True)
 
 
+def render_engine_cards(status: dict) -> None:
+    """Three engine-roadmap cards — Available now (green) / Planning support now (amber) /
+    Future (neutral) — from ``domains.engine_status()``. Presentation only.
+    """
+    def _card(header: str, dot: str, rows: list[str]) -> str:
+        body = "".join(f'<div class="rd-engine-row">{r}</div>' for r in rows)
+        return (f'<div class="rd-engine"><div class="rd-engine-h">'
+                f'<span class="rd-dot" style="background:{dot}"></span>{_html.escape(header)}</div>'
+                f'{body}</div>')
+
+    avail = [f'{_html.escape(e.get("capability", ""))} — '
+             f'<b>{_html.escape(str(e.get("engine", "")).upper())}</b>'
+             f'<div class="rd-engine-sub">{_html.escape(e.get("note", ""))}</div>'
+             for e in status.get("available_now", [])]
+    plan = [f'{_html.escape(e.get("capability", ""))}'
+            f'<div class="rd-engine-sub">planning &amp; data templates — '
+            f'{_html.escape(e.get("outcome", ""))}</div>'
+            for e in status.get("planning_now", [])]
+    future = [_html.escape(str(e)) for e in status.get("future", [])]
+    cols = "".join([
+        f'<div>{_card("Available now", "#34C759", avail)}</div>',
+        f'<div>{_card("Planning support now", "#FF9500", plan)}</div>',
+        f'<div>{_card("Future (modular)", "#8E8E93", future)}</div>',
+    ])
+    st.markdown('<div style="display:grid;gap:12px;'
+                f'grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">{cols}</div>',
+                unsafe_allow_html=True)
+
+
 def render_section_card(title: str, body_md: str, *, status: str | None = None) -> None:
     """A simple bordered text card (title + markdown body) for short reference blurbs."""
     colour, tint = _style_for(status or "neutral")
     st.markdown(
-        f'<div class="rd-panel" style="--rd-c:{colour};--rd-bg:{tint}">'
+        f'<div class="rd-panel" style="--rd-c:{colour};--rd-bg-tint:{tint}">'
         f'<div class="rd-panel-title">{_html.escape(title)}</div></div>',
         unsafe_allow_html=True,
     )
@@ -337,7 +428,7 @@ def render_warning_panel(title: str, message: str, *, level: str = "warning") ->
     """
     colour, tint = _style_for(level)
     st.markdown(
-        f'<div class="rd-panel" style="--rd-c:{colour};--rd-bg:{tint}">'
+        f'<div class="rd-panel" style="--rd-c:{colour};--rd-bg-tint:{tint}">'
         f'<div class="rd-panel-title">{_html.escape(title)}</div>'
         f'<div class="rd-panel-body">{_html.escape(message)}</div></div>',
         unsafe_allow_html=True,
@@ -381,3 +472,13 @@ def advanced_expander(title: str, *, expanded: bool = False):
     consistently across tabs. Returns the expander context manager.
     """
     return st.expander(f"⚙︎ {title}", expanded=expanded)
+
+
+def render_advanced_mode_note(tab_name: str) -> None:
+    """A small 'Advanced controls' banner shown above each technical workflow.
+
+    Frames the technical workflows as manual controls behind the Research Assistant, without
+    changing any of their content. Presentation only.
+    """
+    st.caption(f"🔧 **Advanced controls** · {tab_name} — full manual controls for this step. "
+               "Prefer the **Research Assistant** for a guided, conversational workflow.")
