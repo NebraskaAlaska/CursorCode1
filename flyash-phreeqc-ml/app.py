@@ -31,15 +31,15 @@ import streamlit as st  # noqa: E402
 
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
 
-# UI tab modules (extracted from this file — see docs/refactor_plan.md).
+# UI section + workflow modules (see docs/refactor_plan.md). The Research Assistant is the
+# main workspace; the technical workflows are grouped into the other three sections.
 from ui import (  # noqa: E402
     assistant_tab, simulate_tab, import_tab, validate_tab, match_tab,
-    compare_tab, export_tab,
+    compare_tab, export_tab, engine_settings,
 )
 from ui.state import MODEL_NAME, PRODUCT_NAME, PRODUCT_SUBTITLE, _rel  # noqa: E402
 
 from flyash_phreeqc_ml import run_manager  # noqa: E402
-from flyash_phreeqc_ml.ai import config as ai_config  # noqa: E402  (AI settings/status authority)
 
 
 
@@ -117,56 +117,9 @@ def _render_run_sidebar() -> str | None:
     if cfg.get("description"):
         st.sidebar.caption(f"📝 {cfg['description']}")
     st.sidebar.caption(f"⚠️ {run_manager.warning_for(cfg.get('run_type'))}")
-    st.sidebar.info("➡️ Use **Simulate** to plan, or **Compare Results** to validate against measured data.")
+    st.sidebar.info("➡️ Use the **Research Assistant** to plan + run, or **Data & Validation** "
+                    "to compare against measured data.")
     return selected
-
-
-def _render_ai_settings_panel() -> None:
-    """Sidebar 'AI settings' panel — status + provider/model selection.
-
-    Read-only with respect to the science: it shows whether the optional AI layer is
-    enabled and lets the user pick the provider/model used for *suggestions*. It never
-    affects mapping, residuals, validation status, or the comparison data, and it never
-    shows or accepts the API key (the key comes only from the environment or Streamlit
-    secrets — see :mod:`flyash_phreeqc_ml.ai.config`).
-    """
-    with st.sidebar.expander("🤖 AI settings", expanded=False):
-        # The base model from env / secrets / default, ignoring any prior UI override —
-        # so the picker defaults to it and a no-op selection never clobbers ANTHROPIC_MODEL.
-        ai_config.clear_runtime_overrides()
-        base_model = ai_config.resolve_config().model
-
-        provider = st.selectbox(
-            "Provider", list(ai_config.SUPPORTED_PROVIDERS), index=0,
-            key="ai_provider_choice", help="Only Anthropic is supported today.")
-
-        options = list(dict.fromkeys([base_model, *ai_config.SUGGESTED_MODELS]))
-        picked = st.selectbox(
-            "Model (suggested)", options, index=0, key="ai_model_pick",
-            help="Used for AI suggestions only. Overrides ANTHROPIC_MODEL for this session.")
-        custom = st.text_input(
-            "…or enter a model id", key="ai_model_custom",
-            help="Leave blank to use the selected model above.").strip()
-        effective_model = custom or picked
-
-        # Apply the choice for this process so the AI helpers + the status below use it.
-        ai_config.set_runtime_overrides(provider=provider, model=effective_model)
-        cfg = ai_config.resolve_config()
-
-        st.markdown(f"**Status:** {'🟢 enabled' if cfg.enabled else '⚪ disabled'}")
-        st.markdown(f"- Provider: `{cfg.provider}`")
-        st.markdown(f"- Model: `{cfg.model}`")
-        st.markdown(
-            f"- API key detected: **{'yes' if cfg.key_present else 'no'}**"
-            + (f" · {cfg.key_source}" if cfg.key_present else ""))
-        st.markdown(f"- SDK available: **{'yes' if cfg.sdk_available else 'no'}**")
-        st.caption(f"Role: {ai_config.AI_ROLE_LINE}.")
-        if not cfg.enabled:
-            st.caption(f"Disabled — {cfg.disabled_reason()}.")
-        st.caption(
-            "The API key is read only from the `ANTHROPIC_API_KEY` environment variable "
-            "or a Streamlit secret — it is never entered or shown here.")
-        st.warning(ai_config.AI_EXPERIMENTAL_WARNING)
 
 
 
@@ -525,58 +478,77 @@ def _render_ai_settings_panel() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Page — wide layout, run-management sidebar, and a tabbed dashboard
+# Page — assistant-first workspace with a simple four-section navigation.
+# Sections: Research Assistant (main) · Projects / Runs · Data & Validation · Engine Settings.
+# Every existing workflow is still reachable — the technical ones live in Data & Validation
+# and the Research Assistant's Advanced Mode; none was removed.
 # --------------------------------------------------------------------------- #
+SEC_ASSISTANT = "Research Assistant"
+SEC_PROJECTS = "Projects / Runs"
+SEC_DATA = "Data & Validation"
+SEC_ENGINES = "Engine Settings"
+SECTIONS = [SEC_ASSISTANT, SEC_PROJECTS, SEC_DATA, SEC_ENGINES]
+
 st.set_page_config(page_title="Materials Research Assistant",
                    layout="wide", page_icon="🔬")
 app_ui.inject_global_css()
 app_ui.render_hero(
     PRODUCT_NAME,
     PRODUCT_SUBTITLE,
-    eyebrow="Describe experiment → assistant asks what's missing → picks the right pathway → runs available simulations (after you confirm) → compares with measured data",
+    eyebrow="Broad materials research software · the assistant is the workspace",
     chips=[
         (f"Executable engine: leaching / geochemistry via {MODEL_NAME}", "info"),
         ("Planning support: composites · thermal · cementitious · battery · corrosion", "neutral"),
-        ("Modular — more engines can be added", "neutral"),
+        ("Class C fly ash is the first mature demo — not the whole product", "neutral"),
     ],
 )
-st.caption("💬 **Assistant** is the simple way in. The remaining tabs are **Advanced Mode** — "
-           "full manual controls for each step (you don't need them to use the assistant).")
 
-# Sidebar "save files" — selecting a run here drives every tab below.
+# Sidebar — run management, then the primary section navigation.
 SELECTED_RUN = _render_run_sidebar()
-
 st.sidebar.divider()
+st.sidebar.markdown("**Workspace**")
+SECTION = st.sidebar.radio("Workspace", SECTIONS, key="nav_section",
+                           label_visibility="collapsed")
 DEV_MODE = st.sidebar.checkbox(
     "🛠️ Developer explanation mode", value=False, key="dev_mode",
-    help="Show deeper chemistry/statistics explanations, mainly in the "
-         "Validate tab.",
-)
+    help="Show deeper chemistry/statistics explanations (mainly in Data & Validation).")
 
-_render_ai_settings_panel()
-
-(tab_assistant, tab_simulate, tab_import, tab_validate, tab_match, tab_compare,
- tab_export) = st.tabs([
-    "Assistant", "Advanced Simulate", "Import Data", "Validate", "Match", "Compare", "Export",
-])
-
-with tab_assistant:
+if SECTION == SEC_ASSISTANT:
     assistant_tab.render(SELECTED_RUN, DEV_MODE)
-with tab_simulate:
-    app_ui.render_advanced_mode_note("Advanced Simulate")
-    simulate_tab.render(SELECTED_RUN, DEV_MODE)
-with tab_import:
-    app_ui.render_advanced_mode_note("Import Data")
-    import_tab.render(SELECTED_RUN)
-with tab_validate:
-    app_ui.render_advanced_mode_note("Validate")
-    validate_tab.render(SELECTED_RUN, DEV_MODE)
-with tab_match:
-    app_ui.render_advanced_mode_note("Match")
-    match_tab.render(SELECTED_RUN)
-with tab_compare:
-    app_ui.render_advanced_mode_note("Compare")
-    compare_tab.render(SELECTED_RUN)
-with tab_export:
-    app_ui.render_advanced_mode_note("Export")
+    with st.expander("⚙︎ Advanced Mode — full manual simulation controls (optional)",
+                     expanded=False):
+        app_ui.render_advanced_mode_note("Advanced Simulate")
+        simulate_tab.render(SELECTED_RUN, DEV_MODE)
+
+elif SECTION == SEC_PROJECTS:
+    app_ui.render_page_header(
+        "Projects / Runs",
+        "Your saved runs and exports — measured-data runs and saved simulation runs, with "
+        "report export, audit trail, and the user guide.",
+        eyebrow="Runs · reports · provenance")
     export_tab.render(SELECTED_RUN)
+
+elif SECTION == SEC_DATA:
+    app_ui.render_page_header(
+        "Data & Validation",
+        "Import measured data, validate it, map it to model predictions, and compare — the "
+        "rigorous measured-vs-model workflow. Simulation outputs are not validation until "
+        "compared here.",
+        eyebrow="Import · Validate · Match · Compare")
+    sub_import, sub_validate, sub_match, sub_compare = st.tabs(
+        ["Import", "Validate", "Match", "Compare"])
+    with sub_import:
+        app_ui.render_advanced_mode_note("Import Data")
+        import_tab.render(SELECTED_RUN)
+    with sub_validate:
+        app_ui.render_advanced_mode_note("Validate")
+        validate_tab.render(SELECTED_RUN, DEV_MODE)
+    with sub_match:
+        app_ui.render_advanced_mode_note("Match")
+        match_tab.render(SELECTED_RUN)
+    with sub_compare:
+        app_ui.render_advanced_mode_note("Compare")
+        compare_tab.render(SELECTED_RUN)
+
+elif SECTION == SEC_ENGINES:
+    engine_settings.render(SELECTED_RUN)

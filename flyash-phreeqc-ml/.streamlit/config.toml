@@ -1,0 +1,11 @@
+# Materials Research Assistant — Apple/Squarespace-inspired light theme.
+# Presentation only: sets the base palette (a light neutral background, white cards/widgets,
+# a restrained accent). app_ui.inject_global_css() layers the card/typography refinements on
+# top. No secrets live here (the API key is read only from env / st.secrets at runtime).
+[theme]
+base = "light"
+primaryColor = "#007AFF"
+backgroundColor = "#F5F5F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#111111"
+font = "sans serif"

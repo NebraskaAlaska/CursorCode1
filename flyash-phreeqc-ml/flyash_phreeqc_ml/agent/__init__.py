@@ -25,6 +25,14 @@ Modules: :mod:`agent_state` (state + deterministic scenario merge), :mod:`agent_
 :mod:`agent_prompts` (system + grounded prompt), :mod:`tool_registry` (action → deterministic
 backend), :mod:`agent_policy` (the gate + deterministic planner), :mod:`agent_orchestrator`
 (the loop; the only module that touches AI). Import-safe — no Streamlit at module load.
+
+**LangGraph-compatible by design (no dependency added).** The pieces map onto a graph:
+``AgentState`` is the graph state, each action in the vocabulary is a node, :mod:`agent_policy`
+is the edge/condition function, and :mod:`tool_registry` is the node implementation. The engine
+map in :mod:`domains` is the plugin-engine registry (today ``leaching_geochemistry → PHREEQC``).
+The loop could be re-expressed as a LangGraph-style stateful orchestrator without changing the
+safety model (one action per turn, confirmation before execution, AI invents no chemistry and
+writes no input). See ``docs/ai_architecture.md``.
 """
 from __future__ import annotations
 

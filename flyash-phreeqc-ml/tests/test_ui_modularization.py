@@ -27,8 +27,10 @@ _REPO = Path(pkg.__file__).resolve().parent.parent
 _UI = _REPO / "ui"
 _SCI = Path(pkg.__file__).resolve().parent          # flyash_phreeqc_ml/
 
+# Render-exposing UI modules dispatched by app.py (the seven workflow modules + the
+# Engine Settings section). The Research Assistant (assistant_tab) is the main workspace.
 TAB_MODULES = ["assistant_tab", "simulate_tab", "import_tab", "validate_tab",
-               "match_tab", "compare_tab", "export_tab"]
+               "match_tab", "compare_tab", "export_tab", "engine_settings"]
 BASE_MODULES = ["state", "common", "formatters"]
 
 
@@ -101,9 +103,10 @@ def test_app_py_is_thin():
     code_lines = [ln for ln in src.splitlines()
                   if ln.strip() and not ln.lstrip().startswith("#")]
     assert len(code_lines) < 400, f"app.py has {len(code_lines)} code lines — keep it thin"
-    # The only top-level functions app.py keeps are the run-management sidebar + AI settings.
+    # The only top-level function app.py keeps is the run-management sidebar; the AI settings
+    # moved into the Engine Settings section, and section dispatch is inline.
     top_funcs = {n.name for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)}
-    assert top_funcs == {"_render_run_sidebar", "_render_ai_settings_panel"}, top_funcs
+    assert top_funcs == {"_render_run_sidebar"}, top_funcs
 
 
 def test_app_dispatches_to_ui_render():

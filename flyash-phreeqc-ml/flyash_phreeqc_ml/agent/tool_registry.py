@@ -142,8 +142,8 @@ def _tool_request_material_profile(state, args) -> ToolOutcome:
     return ToolOutcome(
         status="requested",
         summary=("A confirmed material composition is required before a meaningful run. "
-                 "Provide it in the Simulate tab's material manager (manual / paste / file / "
-                 "reviewed literature) and confirm it — composition is never invented."),
+                 "Provide it under **Advanced details → Material composition** (paste an oxide / "
+                 "element assay) and confirm it — composition is never invented."),
         warnings=["No usable material composition yet — predicted material totals would be ~0."])
 
 
@@ -297,7 +297,7 @@ def _tool_rank_results(state, args) -> ToolOutcome:
 def _tool_target_match(state, args) -> ToolOutcome:
     """Parse the desired target (interpretation only) and rank ANY already-executed results
     against it. The agent never supplies the inverse-search grid's numeric values — those are
-    user-reviewed ranges (and release fractions), chosen in the Simulate tab's Target-matching
+    user-reviewed ranges (and release fractions), chosen in the Advanced Mode Target-matching
     step, never invented by the model."""
     text = str((args or {}).get("target") or state.desired_outputs_text or "")
     spec = target_matching.parse_target_spec(text)
@@ -312,7 +312,7 @@ def _tool_target_match(state, args) -> ToolOutcome:
     elif state.has_result_table:
         tail = " Run results exist but none could be scored against this target yet."
     else:
-        tail = (" Choose the search ranges and run a sweep (Simulate tab) — then I can rank "
+        tail = (" Choose the search ranges and run a sweep (Advanced Mode) — then I can rank "
                 "candidates against this target. I won't invent the ranges or release fractions.")
     return ToolOutcome(
         status="target_built",

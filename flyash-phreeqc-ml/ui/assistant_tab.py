@@ -1,15 +1,16 @@
-"""Assistant tab — the Materials Research Assistant homepage (the simple way in).
+"""Research Assistant — the main workspace of the Materials Research Assistant.
 
-A chat with the materials research assistant (the agent layer in ``flyash_phreeqc_ml.agent``).
-Describe an experiment in plain language; the assistant asks for the missing details, picks the
-right modelling pathway, runs available simulations **only after you confirm**, and helps
-compare predictions with measured data. For domains without an executable engine yet it gives
-**planning + data-template** support — it never pretends to simulate.
+A clean, conversational, two-column page: the chat (history + input + actions) on the left, a
+card-based status side-panel on the right (experiment summary · domain / engine · missing
+details · current assumptions · next recommended action). Technical detail (scenario JSON,
+policy decision, generated PHREEQC input, database report, release model, raw result table,
+provenance trace) stays **hidden under expanders** so the default view is simple.
 
-This module is **UI only**: every decision/calculation happens in the agent layer (which calls
-the existing deterministic Simulate backend). It never runs PHREEQC itself, never writes input,
-and never affects mapping/residuals/validation. AI is opt-in + consent-gated; with no key the
-deterministic planner drives the same workflow. Technical detail is tucked under expanders.
+UI only: every decision/calculation happens in the agent layer (which calls the existing
+deterministic Simulate backend). It never runs PHREEQC itself, never writes input, and never
+affects mapping/residuals/validation. AI is opt-in + consent-gated; with no key the
+deterministic planner drives the same workflow. For domains without an executable engine it
+gives planning + data-template support — it never pretends to simulate.
 """
 from __future__ import annotations
 
@@ -28,22 +29,18 @@ from .common import _render_next_step
 _RELEASE_NONE = "No release (assay stays comment-only)"
 _RELEASE_GLOBAL = "Global % release (an assumption)"
 
-# Short example chips that seed the conversation (section 2).
+# Short example chips that seed the conversation.
 EXAMPLE_CHIPS = [
     "Estimate pH and calcium release from a Class C fly ash NaOH leaching experiment",
-    "Plan a fly ash + waste plastic composite compressive-strength test",
+    "I am mixing fly ash with waste plastic and want to predict compressive strength after 28 days",
     "Compare measured ICP data with PHREEQC predictions",
     "Create a data template for a new materials experiment",
 ]
 
-# The assistant flow in plain language (section 6 — compact, not a technical diagram).
+# The assistant flow in plain language (compact, not a technical diagram).
 ASSISTANT_FLOW = [
-    "Understand the experiment",
-    "Ask for missing details",
-    "Choose a supported engine",
-    "Build a reviewed plan",
-    "Ask before running",
-    "Explain the results",
+    "Understand the experiment", "Ask for missing details", "Choose a supported engine",
+    "Build a reviewed plan", "Ask before running", "Explain the results",
     "Recommend validation data",
 ]
 
@@ -83,38 +80,37 @@ def _send(state, message, *, run, consent, cfg) -> None:
 # --------------------------------------------------------------------------- #
 def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> None:
     app_ui.render_page_header(
-        "Materials Research Assistant",
+        "Research Assistant",
         "Describe a materials experiment in plain language. I'll ask for what's missing, pick "
         "the right modelling pathway, run available simulations after you confirm, and help "
         "compare predictions with measured data.",
-        eyebrow="The simple way in · technical controls live in the Advanced Mode tabs")
+        eyebrow="Describe → clarify → plan → confirm → run → explain → validate")
     _render_next_step(selected_run)
 
     cfg = ai_config.resolve_config()
     consent = _render_ai_status(cfg)
     state = _get_state(selected_run)
 
-    _render_examples(state, run=selected_run, consent=consent, cfg=cfg)
-    _render_chat_history(state)
-    _render_pending_and_confirm(selected_run, state, consent, cfg)
+    # Two-column workspace: chat on the left, status cards on the right.
+    col_main, col_side = st.columns([2, 1], gap="large")
 
+    with col_main:
+        _render_examples(state, run=selected_run, consent=consent, cfg=cfg)
+        _render_chat_history(state)
+        _render_pending_and_confirm(selected_run, state, consent, cfg)
+        _render_planning_support(selected_run, state, consent, cfg)
+        # Technical detail stays hidden by default (expanders).
+        _render_context_providers(selected_run, state)
+        _render_capabilities_and_flow()
+        _render_advanced(state, dev_mode)
+
+    with col_side:
+        _render_side_panel(state)
+
+    # The chat input docks to the bottom of the page (outside the columns by design).
     prompt = st.chat_input("Describe your experiment, answer a question, or say what to do next…")
     if prompt:
         _send(state, prompt, run=selected_run, consent=consent, cfg=cfg)
-
-    # The live status cards (section 2): summary · domain/engine · missing · next action.
-    _render_cards(state)
-    # Planning-only domains get useful next actions instead of a dead-end (section 4).
-    _render_planning_support(selected_run, state, consent, cfg)
-
-    # Context the assistant needs (composition / release / database).
-    _render_context_providers(selected_run, state)
-
-    # What this assistant can do + how it works (sections 5 + 6).
-    _render_capabilities_and_flow()
-
-    # Everything technical, tucked away (section 7).
-    _render_advanced(state, dev_mode)
 
 
 # --------------------------------------------------------------------------- #
@@ -122,14 +118,81 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
 # --------------------------------------------------------------------------- #
 def _render_ai_status(cfg) -> bool:
     if not cfg.enabled:
-        st.info("Running in **deterministic assistant mode** (no AI key detected). The assistant "
-                "still asks for missing details, plans, builds previews, and runs simulations on "
-                "your confirmation — just with rule-based phrasing. " + (cfg.disabled_reason() or ""))
+        st.caption("⚪ Deterministic assistant mode (no AI key) — still asks for missing details, "
+                   "plans, builds previews, and runs on your confirmation. Configure AI in "
+                   "**Engine Settings**.")
         return False
-    st.caption(f"AI assistant available (model `{cfg.model}`). Tick consent to let it phrase + "
-               "plan the conversation; the chemistry stays deterministic either way.")
-    return st.checkbox(orch.AGENT_CONSENT_LABEL, key="asst_consent",
-                       help=orch.AGENT_DATA_NOTICE)
+    return st.checkbox(f"🟢 Use AI to phrase + plan the conversation (model `{cfg.model}`)",
+                       key="asst_consent", help=orch.AGENT_DATA_NOTICE)
+
+
+# --------------------------------------------------------------------------- #
+# Side panel (cards)
+# --------------------------------------------------------------------------- #
+def _render_side_panel(state) -> None:
+    with st.container(border=True):
+        app_ui.section_header("Experiment summary")
+        summary = state.summary_card()
+        populated = {k: _fmt(v) for k, v in summary.items() if v not in (None, [], "")}
+        if populated:
+            st.table({"field": list(populated.keys()), "value": list(populated.values())})
+        else:
+            st.caption("Nothing captured yet — describe your experiment to begin.")
+
+    with st.container(border=True):
+        app_ui.section_header("Domain & engine")
+        dc = state.domain_card()
+        app_ui.render_status_badge(
+            f"{dc['domain_label']} — "
+            + ("PHREEQC engine" if dc["executable"] else "planning only"),
+            "exact" if dc["executable"] else "scenario-level only")
+        st.caption("Executable engine: leaching / geochemistry (PHREEQC). Other domains get "
+                   "planning + data-template support.")
+
+    with st.container(border=True):
+        app_ui.section_header("Missing details")
+        missing = state.missing_card()
+        if not missing:
+            st.caption("✅ All core fields are present.")
+        else:
+            for m in missing:
+                st.markdown(f"- **{m['label']}** ({m['severity']})")
+
+    with st.container(border=True):
+        app_ui.section_header("Current assumptions")
+        if state.assumptions:
+            for a in state.assumptions:
+                st.caption(f"• {a.field}: {a.reason}")
+        else:
+            st.caption("None yet.")
+
+    with st.container(border=True):
+        app_ui.section_header("Next recommended action")
+        st.markdown(_next_action_hint(state))
+
+
+def _next_action_hint(state) -> str:
+    if state.confirmation_required and state.pending_action is not None:
+        return "✅ Confirm in the chat to run, or ✋ change something."
+    if not domains.is_executable(state.domain) and state.domain != domains.UNKNOWN:
+        return "🧪 Planning-only domain — I can structure the plan or build a data template."
+    if state.missing_fields:
+        return "💬 Answer the question in the chat to complete the set-up."
+    if state.domain == domains.LEACHING_GEOCHEMISTRY and not state.composition_usable:
+        return "🧱 Provide a confirmed material composition (Advanced details) for a meaningful run."
+    if state.preview is not None and state.has_results:
+        return "📊 Ask me to *explain the results*, then compare with measured data."
+    if state.preview is not None:
+        return "▶️ Say *run it* — I'll ask you to confirm before anything executes."
+    return "💬 Tell me about your experiment to get started."
+
+
+def _fmt(value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) if value else "—"
+    return str(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -139,9 +202,8 @@ def _render_examples(state, *, run, consent, cfg) -> None:
     if state.history:                       # only show the starter chips before the chat begins
         return
     st.markdown("**What can I help with?** Try one of these, or just type below:")
-    cols = st.columns(2)
     for i, chip in enumerate(EXAMPLE_CHIPS):
-        if cols[i % 2].button(chip, key=f"asst_chip_{i}", use_container_width=True):
+        if st.button(chip, key=f"asst_chip_{i}", use_container_width=True):
             _send(state, chip, run=run, consent=consent, cfg=cfg)
 
 
@@ -170,68 +232,13 @@ def _render_pending_and_confirm(run, state, consent, cfg) -> None:
         f"Action **{state.pending_action.action_name}** is ready but will not run until you "
         "confirm. Nothing has executed.", level="warning")
     col1, col2 = st.columns(2)
-    if col1.button("✅ Yes, run it", key="asst_confirm_yes", use_container_width=True):
+    if col1.button("✅ Yes, run it", key="asst_confirm_yes", use_container_width=True,
+                   type="primary"):
         orch.confirm_pending_action(state)
         st.rerun()
     if col2.button("✋ No, change something", key="asst_confirm_no", use_container_width=True):
         orch.reject_pending_action(state)
         st.rerun()
-
-
-# --------------------------------------------------------------------------- #
-# Cards
-# --------------------------------------------------------------------------- #
-def _render_cards(state) -> None:
-    c1, c2 = st.columns(2)
-    with c1:
-        app_ui.section_header("Experiment so far")
-        summary = state.summary_card()
-        st.table({"field": list(summary.keys()),
-                  "value": [_fmt(v) for v in summary.values()]})
-    with c2:
-        app_ui.section_header("Domain & engine")
-        dc = state.domain_card()
-        app_ui.render_status_badge(
-            f"{dc['domain_label']} — "
-            + ("PHREEQC engine (runs after confirmation)" if dc["executable"]
-               else "planning only — no executable engine yet"),
-            "exact" if dc["executable"] else "scenario-level only")
-        st.caption(domains.ENGINE_NOTE)
-
-        app_ui.section_header("Still missing")
-        missing = state.missing_card()
-        if not missing:
-            st.success("All core fields are present.")
-        else:
-            for m in missing:
-                st.markdown(f"- **{m['label']}** ({m['severity']}) — {m['message']}")
-
-        app_ui.section_header("Next action")
-        st.markdown(_next_action_hint(state))
-
-
-def _next_action_hint(state) -> str:
-    if state.confirmation_required and state.pending_action is not None:
-        return "✅ Confirm above to run, or ✋ change something."
-    if not domains.is_executable(state.domain) and state.domain != domains.UNKNOWN:
-        return "🧪 Planning-only domain — I can structure the plan or build a data template below."
-    if state.missing_fields:
-        return "💬 Answer the question above so I can complete the set-up."
-    if state.domain == domains.LEACHING_GEOCHEMISTRY and not state.composition_usable:
-        return "🧱 Provide a confirmed material composition (below) so a run is meaningful."
-    if state.preview is not None and state.has_results:
-        return "📊 Ask me to *explain the results*, then compare them with measured data."
-    if state.preview is not None:
-        return "▶️ Say *run it* — I'll ask you to confirm before anything executes."
-    return "💬 Tell me about your experiment to get started."
-
-
-def _fmt(value) -> str:
-    if value is None:
-        return "—"
-    if isinstance(value, (list, tuple)):
-        return ", ".join(str(v) for v in value) if value else "—"
-    return str(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -241,40 +248,40 @@ def _render_planning_support(run, state, consent, cfg) -> None:
     if domains.is_executable(state.domain) or state.domain == domains.UNKNOWN:
         return
     support = domains.planning_support(state.domain)
-    app_ui.section_header(f"Planning support · {support['domain_label']}")
-    st.caption("No executable simulation engine exists for this domain yet — but I can help you "
-               "structure the experiment and build a dataset. (This is planning + data, not a "
-               "prediction.)")
-    st.markdown("**Suggested response variables to measure:** "
-                + ", ".join(support["response_variables"]))
-    st.markdown("**Inputs a future model would need:** " + ", ".join(support["input_variables"]))
-    st.caption(f"Future engine path: {support['future_engine']}.")
+    with st.container(border=True):
+        app_ui.section_header(f"Planning support · {support['domain_label']}")
+        st.caption("No executable simulation engine for this domain yet — but I can help you "
+                   "structure the experiment and build a dataset. (Planning + data, not a "
+                   "prediction.)")
+        st.markdown("**Suggested response variables:** " + ", ".join(support["response_variables"]))
+        st.markdown("**Inputs a future model would need:** " + ", ".join(support["input_variables"]))
+        st.caption(f"Future engine path: {support['future_engine']}.")
 
-    b1, b2, b3 = st.columns(3)
-    if b1.button("📝 Structure the plan", key="asst_plan_btn", use_container_width=True):
-        _send(state, "Please structure the experiment plan for this.", run=run,
-              consent=consent, cfg=cfg)
-    if b2.button("📋 Build data template", key="asst_tmpl_btn", use_container_width=True):
-        _send(state, "Please create a data template for this experiment.", run=run,
-              consent=consent, cfg=cfg)
-    if b3.button("🔎 Identify missing variables", key="asst_miss_btn", use_container_width=True):
-        _send(state, "What variables am I missing for this experiment?", run=run,
-              consent=consent, cfg=cfg)
+        b1, b2, b3 = st.columns(3)
+        if b1.button("📝 Structure the plan", key="asst_plan_btn", use_container_width=True):
+            _send(state, "Please structure the experiment plan for this.", run=run,
+                  consent=consent, cfg=cfg)
+        if b2.button("📋 Build data template", key="asst_tmpl_btn", use_container_width=True):
+            _send(state, "Please create a data template for this experiment.", run=run,
+                  consent=consent, cfg=cfg)
+        if b3.button("🔎 Missing variables", key="asst_miss_btn", use_container_width=True):
+            _send(state, "What variables am I missing for this experiment?", run=run,
+                  consent=consent, cfg=cfg)
 
-    cols, _labels = domains.data_template_columns(state.domain)
-    st.download_button(
-        "⬇️ Download data template (CSV header)", data=",".join(cols) + "\n",
-        file_name=f"{state.domain}_data_template.csv", mime="text/csv",
-        key="asst_tmpl_dl", use_container_width=True)
+        cols, _labels = domains.data_template_columns(state.domain)
+        st.download_button(
+            "⬇️ Download data template (CSV header)", data=",".join(cols) + "\n",
+            file_name=f"{state.domain}_data_template.csv", mime="text/csv",
+            key="asst_tmpl_dl", use_container_width=True)
 
 
 # --------------------------------------------------------------------------- #
-# Context providers (composition / release / database)
+# Context providers (composition / release / database) — under an expander
 # --------------------------------------------------------------------------- #
 def _render_context_providers(run: str | None, state) -> None:
+    needs = state.domain == domains.LEACHING_GEOCHEMISTRY and not state.composition_usable
     with app_ui.advanced_expander("Material composition, release model & database",
-                                  expanded=(state.domain == domains.LEACHING_GEOCHEMISTRY
-                                            and not state.composition_usable)):
+                                  expanded=needs):
         st.markdown("**Material composition** — a confirmed composition is required before a "
                     "meaningful run. Composition is never invented.")
         basis = st.selectbox("Composition basis", list(mp.KNOWN_BASES),
@@ -317,44 +324,28 @@ def _render_context_providers(run: str | None, state) -> None:
         st.divider()
         av = phreeqc_executor.check_availability()
         st.markdown(f"**PHREEQC engine:** {'✅ configured' if av.can_run else '⚠️ not configured'} "
-                    f"— {av.message}")
+                    f"— {av.message} (configure in **Engine Settings**).")
 
 
 # --------------------------------------------------------------------------- #
-# Capabilities (engine status) + the assistant flow
+# Capabilities (engine status) + the assistant flow — under expanders
 # --------------------------------------------------------------------------- #
 def _render_capabilities_and_flow() -> None:
-    with app_ui.advanced_expander("What this assistant can do (engines & capabilities)",
-                                  expanded=False):
-        status = domains.engine_status()
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**✅ Available now**")
-            for e in status["available_now"]:
-                st.markdown(f"- {e['capability']} → **{e['engine'].upper()}**")
-                st.caption(e["note"])
-        with c2:
-            st.markdown("**🧪 Planning support now**")
-            for e in status["planning_now"]:
-                st.markdown(f"- {e['capability']}")
-            st.caption("Structured plans + data templates (no executable engine yet).")
-        with c3:
-            st.markdown("**🔮 Future (modular)**")
-            for e in status["future"]:
-                st.markdown(f"- {e}")
+    with app_ui.advanced_expander("What this assistant can do (engines & capabilities)"):
+        app_ui.render_engine_cards(domains.engine_status())
 
-    with app_ui.advanced_expander("How the assistant works", expanded=False):
+    with app_ui.advanced_expander("How the assistant works"):
         st.markdown(" → ".join(f"**{i+1}. {s}**" for i, s in enumerate(ASSISTANT_FLOW)))
-        st.caption("The AI handles conversation, clarification, planning, and explanation. "
-                   "Every scientific calculation and the PHREEQC run are deterministic and "
-                   "happen only after you confirm — the AI never invents chemistry.")
+        st.caption("The AI handles conversation, clarification, planning, and explanation. Every "
+                   "scientific calculation and the PHREEQC run are deterministic and happen only "
+                   "after you confirm — the AI never invents chemistry.")
 
 
 # --------------------------------------------------------------------------- #
-# Advanced details (hidden complexity — section 7)
+# Advanced details (hidden complexity)
 # --------------------------------------------------------------------------- #
 def _render_advanced(state, dev_mode: bool) -> None:
-    with app_ui.advanced_expander("Advanced details (scenario, domain, policy, preview, results)"):
+    with app_ui.advanced_expander("Advanced details (scenario, policy, preview, results, provenance)"):
         st.markdown("**Extracted scenario (JSON)**")
         st.json(state.scenario.to_flat_dict())
 
@@ -364,9 +355,14 @@ def _render_advanced(state, dev_mode: bool) -> None:
 
         if state.provenance:
             last = state.provenance[-1]
-            st.markdown(f"**Last policy decision:** `{last.action_name}` → "
-                        f"`{last.policy_code}`"
+            st.markdown(f"**Policy decision (last):** `{last.action_name}` → `{last.policy_code}`"
                         + (f" — {last.policy_reason}" if last.policy_reason else ""))
+
+        rm = state.release_model
+        if rm is not None:
+            st.markdown(f"**Material release model:** `{getattr(rm, 'mode', '—')}`"
+                        + (f" (global {getattr(rm, 'global_fraction', None)})"
+                           if getattr(rm, 'global_fraction', None) is not None else ""))
 
         if state.assumptions or state.warnings:
             st.markdown("**Assumptions & scientific caveats**")
@@ -388,7 +384,7 @@ def _render_advanced(state, dev_mode: bool) -> None:
                         f"{getattr(rep, 'database_exists', False)})")
 
         if state.has_result_table:
-            st.markdown("**Result table** — *model estimates, not validated.*")
+            st.markdown("**Raw result table** — *model estimates, not validated.*")
             st.dataframe(state.result_table, use_container_width=True, height=240)
 
         if state.last_explanation:
@@ -396,7 +392,7 @@ def _render_advanced(state, dev_mode: bool) -> None:
             st.json(state.last_explanation)
 
         if state.provenance:
-            st.markdown("**Action / provenance trace**")
+            st.markdown("**Provenance / action trace**")
             st.dataframe(
                 [{"action": e.action_name, "policy": e.policy_code,
                   "confirm_required": e.confirmation_required, "confirmed": e.confirmed,

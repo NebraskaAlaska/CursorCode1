@@ -62,13 +62,18 @@ template), so for fly ash the validation workflow is **scaffolding awaiting data
 trained**. See **[Limitations](#limitations-read-this-before-presenting)** — it is short and
 important.
 
-## Assistant Mode (the homepage)
+## The Research Assistant (the main workspace)
 
-The **Assistant** tab is the homepage — a chat that turns the whole workflow into a conversation.
-It is an **AI-agent orchestration layer** (`flyash_phreeqc_ml/agent/`) wrapped around the *same*
-deterministic backend — the AI never does chemistry. The technical tabs (**Advanced Simulate ·
-Import Data · Validate · Match · Compare · Export**) are grouped as **Advanced Mode** — full manual
-controls you don't need to use the assistant.
+The **Research Assistant** is the product's main workspace — a clean, two-column chat that turns
+the whole workflow into a conversation: the chat (history + input + actions) on the left, a
+card-based status panel on the right (**experiment summary · domain / engine · missing details ·
+current assumptions · next recommended action**). Technical content (scenario JSON, policy
+decision, generated PHREEQC input, database report, material release model, raw result table,
+provenance trace) stays **hidden under expanders**, so the default view is simple and
+conversational. It is an **AI-agent orchestration layer** (`flyash_phreeqc_ml/agent/`) wrapped
+around the *same* deterministic backend — the AI never does chemistry. The manual simulation
+controls and the measured-data workflow live in the other sections (Advanced Mode / Data &
+Validation), so nothing technical competes with the assistant.
 
 - **The AI's role:** conversation, clarification (asking for the missing critical details),
   planning (choosing the modelling route), tool **orchestration** (proposing one action at a time),
@@ -142,10 +147,19 @@ optional (for importing `flyash_phreeqc_ml` from notebooks).
 streamlit run app.py
 ```
 
-The app opens on the **Assistant** homepage (the simple way in). A run-management **sidebar**
-(select/create a run; a **🤖 AI settings** panel; a **Developer explanation mode** toggle) drives a
-**seven-tab** layout — the **Assistant** plus six **Advanced Mode** tabs (full manual controls):
-**Assistant · Advanced Simulate · Import Data · Validate · Match · Compare · Export**.
+The app opens on the **Research Assistant** — the main workspace. A clean sidebar holds run
+management and a simple **four-section** navigation:
+
+| Section | What's there |
+| --- | --- |
+| **Research Assistant** | the conversational workspace (chat + status cards); manual simulation lives here behind an **Advanced Mode** expander |
+| **Projects / Runs** | saved runs, report export, audit trail, user guide |
+| **Data & Validation** | the measured-vs-model workflow as sub-tabs: **Import · Validate · Match · Compare** |
+| **Engine Settings** | engine roadmap, PHREEQC status, AI provider/model, future engine architecture |
+
+No technical tab competes with the assistant — the Research Assistant is the product, and every
+advanced workflow is still reachable (none was removed). The design is intentionally minimal
+(Apple/Squarespace-inspired: light neutral background, white cards, restrained accent).
 
 ## Configure AI safely (optional, off by default)
 
@@ -160,8 +174,9 @@ export ANTHROPIC_MODEL=...             # optional model override
 streamlit run app.py
 ```
 
-The sidebar **🤖 AI settings** panel shows status (enabled, provider, model, key-detected
-yes/no — **never the key**). AI is **suggestion / interpretation only**: it cannot change mapping,
+The **Engine Settings** section's **AI** panel shows status (enabled, provider, model,
+key-detected yes/no — **never the key**) and lets you pick the provider/model. AI is **suggestion /
+interpretation only**: it cannot change mapping,
 residuals, validation status, or the comparison, **cannot validate the science by itself**, and
 **never writes PHREEQC input or invents target values**. No key is hard-coded, shown, or logged.
 Full setup + precedence: [`docs/ai_configuration.md`](docs/ai_configuration.md).
@@ -314,11 +329,14 @@ Only `experiments/README.md` is tracked under `experiments/`.
 
 The app was modularized so it stays maintainable; the layering is enforced by tests.
 
-- **`app.py` is a thin entry point** (~160 code lines): page config, the run-management sidebar,
-  and the `st.tabs([...])` dispatch to `ui.<tab>.render(...)`. No tab logic lives here.
-- **`ui/` is the UI layer** — one module per tab (`ui/<tab>_tab.py`, each exposing `render`) plus
-  shared state (`ui/state.py`), shared render helpers (`ui/common.py`), and pure formatters
-  (`ui/formatters.py`). The `ui/` import graph is an acyclic DAG (tabs → state/common/formatters).
+- **`app.py` is a thin entry point** (~210 code lines): page config + hero, the run-management
+  sidebar + the four-section nav, and inline dispatch to `ui.<module>.render(...)`. No workflow
+  logic lives here.
+- **`ui/` is the UI layer** — one module per workflow/section (`ui/<name>_tab.py` + `ui/engine_settings.py`,
+  each exposing `render`) plus shared state (`ui/state.py`), shared render helpers (`ui/common.py`),
+  pure formatters (`ui/formatters.py`), and the presentation/design system (`app_ui.py`, with the
+  base palette in `.streamlit/config.toml`). The Research Assistant (`ui/assistant_tab.py`) is the
+  main workspace; the import graph is an acyclic DAG (workflows → state/common/formatters).
 - **`flyash_phreeqc_ml/simulation/` holds the scientific simulation logic** — scenario schema,
   rule parser, plan matrix, **source terms** (release model), **database compatibility** + **phase
   templates**, the deterministic **input builder**, the gated **executor** + **batch executor**,
@@ -379,22 +397,33 @@ A non-PHREEQC model supplies predictions through the documented **model-predicti
 (`docs/model_prediction_format.md`). The Data tab's **"Import model predictions (CSV)"** path
 ingests it, and `scenarios.build_scenario_manifest` consumes it exactly like PHREEQC output.
 
-## The seven tabs
+## Navigation — four sections
 
-- **Assistant** (homepage) — the Materials Research Assistant: a chat with example prompt chips,
-  an **engines & capabilities** panel (available now / planning support / future), and the live
-  status cards (experiment so far, domain/engine, still-missing, next action). It asks for missing
-  details, plans the route, and — only after you confirm — runs the deterministic tools and explains
-  the estimate. For planning-only domains it shows a **planning-support** panel (suggested response
-  variables + a downloadable data template + plan/missing-variable actions) instead of dead-ending.
-  Technical detail (scenario JSON, domain classification, policy decision, input preview, database
-  report, result table, provenance trace) is tucked under expanders. (See *Assistant Mode* and
-  `docs/assistant_agent.md`.) The remaining six tabs are **Advanced Mode**.
+The sidebar navigates four sections (the **Research Assistant** is the default workspace; every
+advanced workflow lives in one of the other three).
+
+### Research Assistant (the workspace)
+A chat with example prompt chips and a card-based status panel (experiment summary · domain /
+engine · missing details · current assumptions · next recommended action). It asks for missing
+details, plans the route, and — only after you confirm — runs the deterministic tools and explains
+the estimate. For planning-only domains it shows a **planning-support** panel (suggested response
+variables + a downloadable data template + plan/missing-variable actions) instead of dead-ending.
+Technical detail (scenario JSON, policy decision, input preview, database report, release model,
+result table, provenance trace) is tucked under expanders. The **Advanced Mode** expander holds the
+full manual simulation workflow:
+
 - **Advanced Simulate** — the forward-looking core (planning + gated execution): describe → AI/rule
   scenario → confirm → plan matrix → material profile → release model → database & phases → draft
   `.pqi` preview → **gated PHREEQC run + small sweep + plots** → ranking / refined sweep / target
   matching → save provenance. Plan generation runs nothing; execution is a separate confirmed step.
-- **Import Data** — run-type-specific entry: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet
+
+### Projects / Runs
+Saved runs, **report export**, the **audit trail**, and the in-app user guide.
+
+### Data & Validation
+The rigorous measured-vs-model workflow, as sub-tabs:
+
+- **Import** — run-type-specific entry: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet
   pick → fuzzy column mapping → unit conversion mg/L·ppm·ppb→mM → leachant/provenance → pre-save
   validation → confirm-gated save) and a special-case **Class C fly ash dissolution-workbook**
   parser; plus literature CSV upload, manual rows, row editing, and CSV/pipeline export.
@@ -407,9 +436,15 @@ ingests it, and `scenarios.build_scenario_manifest` consumes it exactly like PHR
 - **Compare** — run the pipeline, then read the **measured-vs-model comparison** (inclusion
   counts, residuals, systematic bias, the validity line; default replicate mean ± std), with the
   "workflow check, not final validation" warning unless mappings are exact, plus the grounded
-  assistant and the experimental surrogate (display-only).
-- **Export** — build a self-contained **results report**, download the audit trail, and read the
-  in-app user guide.
+  assistant and the experimental surrogate (display-only). **Simulation outputs are not validation
+  until compared here** against measured data.
+
+### Engine Settings
+The **engines & capabilities** roadmap (available now / planning support now / future), the
+**PHREEQC** executable/database status + how to configure it, the **AI** provider/model selector
+and status (never the key), and the **future plugin-engine architecture** note (a LangGraph-style
+orchestrator, RAG / ML / simulation / validation agents) — see
+[`docs/ai_architecture.md`](docs/ai_architecture.md).
 
 ## Experiment runs / save files
 

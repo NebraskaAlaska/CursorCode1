@@ -151,8 +151,8 @@ def deterministic_plan(state, user_message: str) -> A.AgentAction:
         return A.AgentAction(
             action_name=A.REQUEST_MATERIAL_PROFILE,
             assistant_message=("I have the experiment set-up. Next I need a confirmed material "
-                               "composition (I never invent one) — you can provide it in the "
-                               "Simulate tab's material manager and confirm it."),
+                               "composition (I never invent one) — you can provide it under "
+                               "**Advanced details → Material composition** and confirm it."),
             reasoning_summary="No usable material composition.", confidence=0.6)
     if state.release_model is None:
         return A.AgentAction(
