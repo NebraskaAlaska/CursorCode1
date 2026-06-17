@@ -1395,20 +1395,23 @@ def _render_exec_paths(result) -> None:
 
 
 def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
-    """Plan a simulation scenario from a plain-language description (planning layer only).
+    """Plan a simulation scenario from a plain-language description, then optionally run it.
 
     Flow: describe → desired outputs → parse (AI if consented, else rule-based) → review
     what was understood + missing/assumptions/warnings → edit/confirm → choose a strategy →
-    generate a plan matrix. **No deterministic simulation is run, no measured data is
-    touched, nothing becomes verified.**
+    generate a plan matrix → material profile → PHREEQC input preview → (gated, user-confirmed)
+    run + plots + ranking + refinement → save the run. **Generating the plan runs nothing;
+    PHREEQC runs only on an explicit confirmed step, no measured data is touched, and every
+    output is a simulation prediction — not validated against measured data.**
     """
-    st.subheader("Simulate — describe an experiment, plan a simulation")
+    st.subheader("Simulate — describe an experiment, plan and run a simulation")
     st.caption(
-        "This is the **planning layer**. It converts experiment descriptions into "
-        "structured scenarios and simulation matrices. It does **not** yet prove scientific "
-        "predictions until deterministic model execution and validation are performed. "
-        "Describe a batch reaction / leaching experiment below — **no deterministic "
-        "simulation (e.g. PHREEQC) is run here.**")
+        "Describe a batch reaction / leaching experiment; the tab converts it into a "
+        "structured scenario and a simulation matrix, then — on an explicit, user-confirmed "
+        "step (Step 9) — runs PHREEQC and plots the predicted outputs. **Generating the plan "
+        "runs nothing, and nothing runs automatically.** Every output here is a **simulation "
+        "prediction, not validated** against measured data — validation lives in the "
+        "**Compare Results** tab.")
 
     cfg = ai_config.resolve_config()
     if cfg.enabled:
@@ -1551,11 +1554,11 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
     if mtx is not None:
         st.success(sim_schema.PLAN_ONLY_LABEL)
         st.info(
-            "ℹ️ **Changing simulation-plan values does not update result graphs** (pH, "
-            "residuals, measured-vs-model) until a deterministic model is executed. The "
-            "Simulate tab produces a **plan table only** — it runs no model, writes no output "
-            "file, and draws no result graph. The pH/residual graphs in **Validate** and "
-            "**Compare Results** are driven by measured data + model results, not by this plan.")
+            "ℹ️ **Generating this plan runs nothing.** To run the model, use **Step 9 — Run "
+            "deterministic model** below (gated and user-confirmed). The **measured-vs-model** "
+            "pH / residual graphs in **Validate** and **Compare Results** are driven by "
+            "measured data + model results — **changing simulation-plan values never updates "
+            "them.**")
         st.dataframe(mtx, use_container_width=True, height=160, hide_index=True)
         st.download_button(
             "Download plan (CSV)", mtx.to_csv(index=False), file_name="simulation_plan.csv",
@@ -3939,9 +3942,10 @@ def _render_modes_panel() -> None:
     m1, m2, m3 = st.columns(3)
     m1.markdown(
         "**1 · Simulate**  \nDescribe an experiment and the variables you care about. AI "
-        "extracts a structured scenario, flags missing info and assumptions, and builds a "
-        "simulation plan/matrix.  \n_Planning layer — deterministic model execution is "
-        "future work._")
+        "extracts a structured scenario, flags missing info and assumptions, builds a "
+        "simulation plan/matrix, and — on an explicit, user-confirmed step — runs PHREEQC "
+        "and plots the predicted outputs.  \n_Outputs are simulation predictions, not "
+        "validated against measured data._")
     m2.markdown(
         "**2 · Validate**  \nCompare measured data against model predictions using "
         "transparent mapping status and residuals, with an honest validity status.  \n"
@@ -5345,7 +5349,9 @@ def _render_help_tab() -> None:
         "1. **Start** — create or open a run in the sidebar (a 'save file' for one "
         "experiment set) and read the three-mode overview + status.\n"
         "2. **Simulate** — describe an experiment in plain language → a structured scenario → "
-        "a simulation plan/matrix. _Planning layer — no deterministic model is run yet._\n"
+        "a simulation plan/matrix → optionally run PHREEQC (gated, user-confirmed) and "
+        "rank/refine the predictions. _Outputs are simulation predictions, not validated "
+        "against measured data._\n"
         "3. **Import Data** — add measured rows (lab), upload/enter literature rows, or add "
         "synthetic demo rows, depending on run type, and review unit conversions.\n"
         "4. **Validate** — measured-data overview, data-quality validation, and "
@@ -6112,7 +6118,7 @@ app_ui.render_hero(
     "structured scenario, clarifies assumptions, and plans a geochemical simulation — "
     "then, where you have measured data, validates and corrects the predictions against "
     "it. Three modes: Simulate, Validate, Learn & Improve.",
-    eyebrow="Describe experiment → AI scenario → simulation plan → (future) predicted variables + uncertainty → validate against measured data",
+    eyebrow="Describe experiment → AI scenario → simulation plan → run model → predicted variables → validate against measured data",
     chips=[
         ("Simulate · Validate · Learn", "info"),
         ("Transparent, auditable methods", "neutral"),

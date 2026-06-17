@@ -1,7 +1,9 @@
 """pH-graph provenance + Simulate-tab plan-only guarantees (UI-level static checks).
 
 These pin what the pH-graph audit established:
-* the Simulate tab draws NO result graph and runs nothing (plan-only);
+* the Simulate tab's orchestration function itself draws no graph and runs nothing directly
+  (deterministic execution + result plots live in dedicated, gated helper functions), and
+  it tells the user that changing plan values never updates the measured-vs-model graphs;
 * every static pH PNG carries a source/timestamp provenance label;
 * the live result figures are labelled "not affected by the Simulate tab";
 * the measured-vs-model pH scatter is gated on inclusion's plotted rows
@@ -35,13 +37,13 @@ def _func_src(name: str) -> str:
     raise AssertionError(f"{name} not found in app.py")
 
 
-def test_simulate_tab_draws_no_result_plot_and_runs_nothing():
+def test_simulate_tab_result_graphs_are_execution_gated_and_separate():
     s = _func_src("_render_simulate_tab")
     for forbidden in ("st.pyplot", "st.image", "savefig", "subprocess",
                       "phreeqc_runner", "build_input"):
         assert forbidden not in s, f"_render_simulate_tab must not reference {forbidden!r}"
-    # The explicit user-facing wording the audit added.
-    assert "does not update result graphs" in s
+    # The explicit user-facing wording: changing plan values never updates the result graphs.
+    assert "changing simulation-plan values never updates" in s
 
 
 def test_phreeqc_only_pH_figure_labelled_as_model_output():
