@@ -381,3 +381,13 @@ def advanced_expander(title: str, *, expanded: bool = False):
     consistently across tabs. Returns the expander context manager.
     """
     return st.expander(f"⚙︎ {title}", expanded=expanded)
+
+
+def render_advanced_mode_note(tab_name: str) -> None:
+    """A small 'Advanced Mode' banner shown above each technical tab.
+
+    Frames the technical tabs as manual controls behind the Assistant, without changing any
+    tab's content. Presentation only.
+    """
+    st.caption(f"🔧 **Advanced Mode** · {tab_name} — full manual controls for this step. "
+               "Prefer the **Assistant** tab for a guided, conversational workflow.")

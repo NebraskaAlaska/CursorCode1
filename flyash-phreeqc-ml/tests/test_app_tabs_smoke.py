@@ -1,4 +1,4 @@
-"""Smoke test for the seven-tab UI (Start / Simulate / Import Data / Validate / Match / Compare Results / Export).
+"""Smoke test for the seven-tab UI (Assistant / Advanced Simulate / Import Data / Validate / Match / Compare / Export).
 
 Level achieved: **Streamlit AppTest harness** — the full app script runs end-to-end, so
 every tab's render function executes in one pass (st.tabs renders all tab bodies). We
@@ -23,7 +23,8 @@ from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
-EXPECTED_TABS = ["Start", "Simulate", "Import Data", "Validate", "Match", "Compare Results", "Export"]
+EXPECTED_TABS = ["Assistant", "Advanced Simulate", "Import Data", "Validate", "Match",
+                 "Compare", "Export"]
 APP = "app.py"
 
 
@@ -64,9 +65,35 @@ def test_app_boots_no_run_selected():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert at.exception is None or len(at.exception) == 0
     assert [t.label for t in at.tabs] == EXPECTED_TABS
-    # The renovated platform identity renders: the Start tab's three-mode product panel.
+    # The Materials Research Assistant identity renders (broad, not a PHREEQC-only dashboard).
     text = " ".join(str(m.value) for m in at.markdown)
-    assert "Three ways to use this platform" in text
+    assert "Materials Research Assistant" in text
+    assert "What can I help with?" in text
+
+
+def _all_text(at) -> str:
+    """All markdown + caption text rendered (defensive about the AppTest element API)."""
+    blob = " ".join(str(m.value) for m in at.markdown)
+    for attr in ("caption", "text"):
+        try:
+            blob += " " + " ".join(str(e.value) for e in getattr(at, attr))
+        except Exception:
+            pass
+    return blob
+
+
+def test_identity_is_broad_not_fly_ash_only():
+    """The primary identity is a broad materials assistant; fly ash / PHREEQC are an example +
+    the first engine, not the whole product."""
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    text = " ".join(str(m.value) for m in at.markdown)
+    blob = _all_text(at)
+    assert "Materials Research Assistant" in text
+    # Broad framing present: planning support for non-leaching domains + modular engines.
+    assert "Planning support" in blob
+    assert "Advanced Mode" in blob
+    # PHREEQC is framed as the (first) engine, not the product identity.
+    assert "engine" in blob.lower()
 
 
 def _select_run(at, run):

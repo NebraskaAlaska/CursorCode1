@@ -1,29 +1,40 @@
-# flyash-phreeqc-ml — AI-Assisted Geochemical Simulation & Validation Platform
+# flyash-phreeqc-ml — Materials Research Assistant
 
-A working **research prototype**: describe a material-leaching / batch-reaction experiment in
-plain language, get a structured scenario and a reviewable simulation plan, **run a deterministic
-geochemical model (PHREEQC)** on the reviewed input, and — where you have measured data —
-**validate and correct** the model's predictions against it. The platform combines three things
-that are usually kept apart: **AI-assisted planning**, a **deterministic geochemistry engine**,
-and a **measured-data validation** workflow with full provenance.
+A working **research prototype**: a **chatbot-style materials research assistant**. Describe a
+materials experiment in plain language; the assistant asks for the missing details, identifies the
+right modelling pathway, **runs available simulations after you confirm**, and helps **compare
+predictions with measured data**. It combines three things usually kept apart: an **AI agent** that
+plans and explains, **deterministic simulation engines** that do the chemistry, and a
+**measured-data validation** workflow with full provenance.
+
+**PHREEQC is the first executable engine, not the whole app.** It runs **leaching / geochemistry
+(aqueous dissolution)** scenarios today. Other domains — polymer/composite mechanical testing,
+thermal treatment, cementitious binders, battery/corrosion materials — get **planning + data-template
+support** (structure the experiment, suggest response variables, build a dataset) and explicitly do
+**not** pretend to simulate. More engines (literature RAG, surrogate ML, atomistic, mechanical-property
+models) can be added modularly.
 
 > The package keeps the historical `flyash-phreeqc-ml` slug. **Class C fly ash (+ metakaolin)
 > alkali-activation modelled with PHREEQC and validated against experimental ICP** is the
-> current, best-developed module — the strongest workflow, not a hard limit (see
+> current, best-developed **example** — the strongest workflow, not the product's identity (see
 > *Supported datasets & models*).
 
 ## Current identity & what's strongest
 
-- **Identity:** an AI-assisted **geochemical / material-leaching simulation and validation**
-  platform, organized around three modes — **Simulate** (plan + run a model), **Validate /
-  Compare** (measured-vs-model, the rigorous part), and **Learn & Improve** (descriptive bias +
-  experimental, display-only ML overlays).
-- **Strongest validation module:** the **Class C fly ash + PHREEQC** workflow — measured ICP data
-  → mapping → residuals → mapping-status → one honest validity line. This is the part with the
-  most machinery and tests.
+- **Identity:** a broad **Materials Research Assistant** — a conversational front door (the
+  **Assistant** tab) over deterministic simulation + validation tooling. PHREEQC leaching is the
+  first executable engine; everything else is planning-only for now, by design.
+- **Strongest executable + validation workflow:** the **Class C fly ash + PHREEQC** leaching demo —
+  measured ICP data → mapping → residuals → mapping-status → one honest validity line. This is the
+  part with the most machinery and tests, and it is an *example of* the platform, not its whole scope.
 
 ## What the app can do today
 
+- **Talk to a research assistant (Assistant Mode — the default workflow)** — describe your
+  experiment conversationally; the assistant asks for the missing critical details, plans the
+  modelling route, and — **only after you explicitly confirm** — runs the deterministic tools and
+  explains the estimate and its limits. The AI handles conversation, clarification, planning, and
+  explanation; **all chemistry stays deterministic and user-confirmed** (see *Assistant Mode*).
 - **Plan a simulation from plain language** — AI (with consent) or a deterministic rule-based
   fallback extracts a structured scenario; **code, not the AI**, computes the missing-field and
   scientific caveats. You review, edit, and confirm before anything is built.
@@ -50,6 +61,49 @@ measured data. No real measured fly-ash release data exists in the repo yet (onl
 template), so for fly ash the validation workflow is **scaffolding awaiting data**, and **no ML is
 trained**. See **[Limitations](#limitations-read-this-before-presenting)** — it is short and
 important.
+
+## Assistant Mode (the homepage)
+
+The **Assistant** tab is the homepage — a chat that turns the whole workflow into a conversation.
+It is an **AI-agent orchestration layer** (`flyash_phreeqc_ml/agent/`) wrapped around the *same*
+deterministic backend — the AI never does chemistry. The technical tabs (**Advanced Simulate ·
+Import Data · Validate · Match · Compare · Export**) are grouped as **Advanced Mode** — full manual
+controls you don't need to use the assistant.
+
+- **The AI's role:** conversation, clarification (asking for the missing critical details),
+  planning (choosing the modelling route), tool **orchestration** (proposing one action at a time),
+  and **explanation** of results in plain language.
+- **The deterministic backend's role:** every scientific calculation and the PHREEQC execution —
+  scenario merge, the input-preview builder, the database/phase check, the gated executor, the
+  ranking / target-matching layers, and the run registry. These are the existing, tested modules.
+- **The policy layer:** a strict gate between *proposing* and *running*. **Execution and saving
+  always require your explicit confirmation** (the model proposing a run never runs it — it is
+  parked for a "Yes, run it" click or reply). PHREEQC is **blocked for non-leaching domains**, and
+  a run is **blocked when required fields are missing** or no confirmed material composition exists.
+- **Current executable engine:** PHREEQC, for **leaching / geochemical (aqueous dissolution)**
+  scenarios only.
+- **Unsupported domains are planning-only — and useful, not a dead-end.** For polymer/composite
+  strength, thermal treatment, mechanical testing, corrosion/durability, battery materials, and a
+  cementitious binder not framed as leaching, the assistant **does not pretend to simulate**. Instead
+  it offers to **structure the experiment**, **build a data template**, and **identify the missing
+  variables**, and it suggests the domain's **response variables** (e.g. for a composite: compressive
+  strength, flexural strength, density, water absorption, toughness) and the inputs a **future model**
+  would need — so you can build a dataset now. Future engines (literature RAG, surrogate ML,
+  atomistic, mechanical-property models) can be added modularly.
+- **Simulation is not validation.** Every estimate the assistant explains carries the standing
+  "model estimate under reviewed assumptions — not measured, not validated" caveat, and measured ICP
+  / pH data remain necessary to validate.
+- **AI is opt-in.** With no API key the **deterministic planner** drives the same conversation
+  (rule-based phrasing). The conversation is session-only; nothing AI-touched is saved without your
+  confirm-gated save, and a saved run stores the **transcript summary + action trace + confirmed
+  assumptions** — never the raw model response, secrets, or measured data. (Boundaries pinned by
+  `tests/test_ai_boundary.py`; behaviour by `tests/test_agent.py`. Details:
+  [`docs/assistant_agent.md`](docs/assistant_agent.md).)
+- **Future architecture.** The orchestration is intentionally a simple, auditable
+  *propose → policy-gate → confirm → deterministic tool* loop. It could be re-expressed with a
+  graph-based agent framework (e.g. a LangGraph-style state machine) without changing the safety
+  model — the policy gate, the confirmation requirement, and "AI never invents chemistry / never
+  writes PHREEQC input" would still be the contract.
 
 ## Simulate vs. Validate / Compare (the key distinction)
 
@@ -88,9 +142,10 @@ optional (for importing `flyash_phreeqc_ml` from notebooks).
 streamlit run app.py
 ```
 
-A wide, guided **seven-tab workflow** driven by a run-management **sidebar** (select/create a run;
-a **🤖 AI settings** panel; a **Developer explanation mode** toggle). Tabs, in order:
-**Start · Simulate · Import Data · Validate · Match · Compare Results · Export**.
+The app opens on the **Assistant** homepage (the simple way in). A run-management **sidebar**
+(select/create a run; a **🤖 AI settings** panel; a **Developer explanation mode** toggle) drives a
+**seven-tab** layout — the **Assistant** plus six **Advanced Mode** tabs (full manual controls):
+**Assistant · Advanced Simulate · Import Data · Validate · Match · Compare · Export**.
 
 ## Configure AI safely (optional, off by default)
 
@@ -176,7 +231,7 @@ PHREEQC)** require `PHREEQC_EXE` + `PHREEQC_DATABASE` configured.
 
 > Throughout the demo, the **test profile and release fractions are assumptions, not measured
 > truth**, and every model output is labelled a prediction — **not** validated. Validation needs
-> measured data and the **Compare Results** tab.
+> measured data and the **Compare** tab.
 
 ---
 
@@ -215,7 +270,7 @@ PHREEQC)** require `PHREEQC_EXE` + `PHREEQC_DATABASE` configured.
   Portlandite/Ettringite/C-S-H). High-pH fly-ash chemistry needs **CEMDATA18**.
 - **CEMDATA18 is not shipped** (not redistributable) — you supply it locally.
 - **Simulation outputs are not validated** until compared with measured / lab data in the
-  **Compare Results** tab. A near-zero residual only indicates agreement **if the mapping is
+  **Compare** tab. A near-zero residual only indicates agreement **if the mapping is
   scientifically valid**.
 - **Kinetic dissolution is future work** — the source term is an **equilibrium** model, not a
   rate model.
@@ -273,6 +328,14 @@ The app was modularized so it stays maintainable; the layering is enforced by te
   residuals, and validity, and never import the UI or AI.
 - **AI modules (`flyash_phreeqc_ml/ai/`) are suggestion-only** and **off the scientific result
   path** — they never compute mapping/residuals/validity and never write PHREEQC input.
+- **`flyash_phreeqc_ml/agent/` is the AI-agent orchestration layer** behind the Assistant tab.
+  It wraps an LLM around the deterministic Simulate backend: per turn the model **proposes one
+  structured action**, a **policy layer** gates it (execution/save require explicit confirmation;
+  PHREEQC is blocked for non-leaching domains and missing-composition runs), and a **tool registry**
+  runs the existing deterministic functions. Its pure modules (`agent_state` / `agent_actions` /
+  `agent_prompts` / `agent_policy` / `domains`) import no AI and no executor; only the orchestrator
+  touches AI; only the tool registry touches the executor; and **no scientific/result-path module
+  imports the agent**. With no key, a deterministic planner drives the same flow.
 - **Generated outputs stay under `outputs/`** (and `data/processed/`, `experiments/<run>/`), all
   gitignored. The scientific package never imports `ui`/`app` — the dependency arrow points one
   way: `app.py → ui/ → flyash_phreeqc_ml/`.
@@ -318,10 +381,16 @@ ingests it, and `scenarios.build_scenario_manifest` consumes it exactly like PHR
 
 ## The seven tabs
 
-- **Start** — the front door: a **three-mode panel** (Simulate / Validate / Learn & Improve), a
-  describe→simulate→validate→learn stepper, and the selected run's **validation-module status**
-  (data, mapping, comparison) with the standing "preliminary unless mappings are exact" caveat.
-- **Simulate** — the forward-looking core (planning + gated execution): describe → AI/rule
+- **Assistant** (homepage) — the Materials Research Assistant: a chat with example prompt chips,
+  an **engines & capabilities** panel (available now / planning support / future), and the live
+  status cards (experiment so far, domain/engine, still-missing, next action). It asks for missing
+  details, plans the route, and — only after you confirm — runs the deterministic tools and explains
+  the estimate. For planning-only domains it shows a **planning-support** panel (suggested response
+  variables + a downloadable data template + plan/missing-variable actions) instead of dead-ending.
+  Technical detail (scenario JSON, domain classification, policy decision, input preview, database
+  report, result table, provenance trace) is tucked under expanders. (See *Assistant Mode* and
+  `docs/assistant_agent.md`.) The remaining six tabs are **Advanced Mode**.
+- **Advanced Simulate** — the forward-looking core (planning + gated execution): describe → AI/rule
   scenario → confirm → plan matrix → material profile → release model → database & phases → draft
   `.pqi` preview → **gated PHREEQC run + small sweep + plots** → ranking / refined sweep / target
   matching → save provenance. Plan generation runs nothing; execution is a separate confirmed step.
@@ -335,7 +404,7 @@ ingests it, and `scenarios.build_scenario_manifest` consumes it exactly like PHR
   PHREEQC): a Scenario Explorer (with the sol1/sol2/sol3 = replicate/batch explanation and the
   OA/PF/GS cup-cover caveat), condition-level mapping with replicate inheritance, a collision
   check, and the **"conditions needing new simulations"** table.
-- **Compare Results** — run the pipeline, then read the **measured-vs-model comparison** (inclusion
+- **Compare** — run the pipeline, then read the **measured-vs-model comparison** (inclusion
   counts, residuals, systematic bias, the validity line; default replicate mean ± std), with the
   "workflow check, not final validation" warning unless mappings are exact, plus the grounded
   assistant and the experimental surrogate (display-only).

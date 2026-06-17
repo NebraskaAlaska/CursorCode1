@@ -33,9 +33,10 @@ import app_ui  # noqa: E402  (presentation-only UI helper layer)
 
 # UI tab modules (extracted from this file — see docs/refactor_plan.md).
 from ui import (  # noqa: E402
-    start_tab, simulate_tab, import_tab, validate_tab, match_tab, compare_tab, export_tab,
+    assistant_tab, simulate_tab, import_tab, validate_tab, match_tab,
+    compare_tab, export_tab,
 )
-from ui.state import MODEL_NAME, _rel  # noqa: E402
+from ui.state import MODEL_NAME, PRODUCT_NAME, PRODUCT_SUBTITLE, _rel  # noqa: E402
 
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml.ai import config as ai_config  # noqa: E402  (AI settings/status authority)
@@ -526,22 +527,21 @@ def _render_ai_settings_panel() -> None:
 # --------------------------------------------------------------------------- #
 # Page — wide layout, run-management sidebar, and a tabbed dashboard
 # --------------------------------------------------------------------------- #
-st.set_page_config(page_title="Geochemical Simulation & Validation Platform",
-                   layout="wide", page_icon="🧪")
+st.set_page_config(page_title="Materials Research Assistant",
+                   layout="wide", page_icon="🔬")
 app_ui.inject_global_css()
 app_ui.render_hero(
-    "AI-Assisted Geochemical Simulation & Validation Platform",
-    "Describe an experiment and the variables you care about; the platform extracts a "
-    "structured scenario, clarifies assumptions, and plans a geochemical simulation — "
-    "then, where you have measured data, validates and corrects the predictions against "
-    "it. Three modes: Simulate, Validate, Learn & Improve.",
-    eyebrow="Describe experiment → AI scenario → simulation plan → run model → predicted variables → validate against measured data",
+    PRODUCT_NAME,
+    PRODUCT_SUBTITLE,
+    eyebrow="Describe experiment → assistant asks what's missing → picks the right pathway → runs available simulations (after you confirm) → compares with measured data",
     chips=[
-        ("Simulate · Validate · Learn", "info"),
-        ("Transparent, auditable methods", "neutral"),
-        (f"Reference module: Class C fly ash + {MODEL_NAME}", "neutral"),
+        (f"Executable engine: leaching / geochemistry via {MODEL_NAME}", "info"),
+        ("Planning support: composites · thermal · cementitious · battery · corrosion", "neutral"),
+        ("Modular — more engines can be added", "neutral"),
     ],
 )
+st.caption("💬 **Assistant** is the simple way in. The remaining tabs are **Advanced Mode** — "
+           "full manual controls for each step (you don't need them to use the assistant).")
 
 # Sidebar "save files" — selecting a run here drives every tab below.
 SELECTED_RUN = _render_run_sidebar()
@@ -555,21 +555,28 @@ DEV_MODE = st.sidebar.checkbox(
 
 _render_ai_settings_panel()
 
-tab_start, tab_simulate, tab_import, tab_validate, tab_match, tab_compare, tab_export = st.tabs([
-    "Start", "Simulate", "Import Data", "Validate", "Match", "Compare Results", "Export",
+(tab_assistant, tab_simulate, tab_import, tab_validate, tab_match, tab_compare,
+ tab_export) = st.tabs([
+    "Assistant", "Advanced Simulate", "Import Data", "Validate", "Match", "Compare", "Export",
 ])
 
-with tab_start:
-    start_tab.render(SELECTED_RUN)
+with tab_assistant:
+    assistant_tab.render(SELECTED_RUN, DEV_MODE)
 with tab_simulate:
+    app_ui.render_advanced_mode_note("Advanced Simulate")
     simulate_tab.render(SELECTED_RUN, DEV_MODE)
 with tab_import:
+    app_ui.render_advanced_mode_note("Import Data")
     import_tab.render(SELECTED_RUN)
 with tab_validate:
+    app_ui.render_advanced_mode_note("Validate")
     validate_tab.render(SELECTED_RUN, DEV_MODE)
 with tab_match:
+    app_ui.render_advanced_mode_note("Match")
     match_tab.render(SELECTED_RUN)
 with tab_compare:
+    app_ui.render_advanced_mode_note("Compare")
     compare_tab.render(SELECTED_RUN)
 with tab_export:
+    app_ui.render_advanced_mode_note("Export")
     export_tab.render(SELECTED_RUN)

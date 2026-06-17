@@ -379,3 +379,73 @@ def test_result_path_does_not_import_target_matching():
     for mod in RESULT_PATH_MODULES:
         offenders = _mentions(_import_targets(mod), ("target_matching",))
         assert not offenders, f"{mod} imports target_matching: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# AI agent orchestration layer boundary — the LLM proposes; deterministic code runs
+# --------------------------------------------------------------------------- #
+# The agent's PURE modules (decision/data) must reach no AI and no execution code, so "can
+# this run?" never depends on importing PHREEQC. Only the orchestrator may import AI, and only
+# the tool registry may import the executor/builders — and the tool registry may import NO AI
+# (AI never writes input, never runs anything, never decides a composition/release fraction).
+AGENT_PURE_MODULES = [
+    "agent/agent_state.py", "agent/agent_actions.py", "agent/agent_prompts.py",
+    "agent/agent_policy.py", "agent/domains.py",
+]
+AGENT_TOOL_MODULE = "agent/tool_registry.py"
+_EXECUTOR_MARKERS = ("phreeqc_executor", "batch_executor", "phreeqc_runner", "subprocess")
+
+
+def _imports_ai(targets) -> list:
+    return _mentions(targets, AI_MARKERS) + [
+        t for t in targets if t in ("..ai", ".ai")
+        or t.startswith("..ai.") or t.startswith(".ai.")]
+
+
+def test_agent_pure_modules_import_no_ai_or_executor():
+    """State / actions / prompts / policy / domains are pure decision+data: no AI helper and no
+    PHREEQC executor/subprocess. (The merge legitimately reuses the rule parser + safety.)"""
+    for mod in AGENT_PURE_MODULES:
+        targets = _import_targets(mod)
+        offenders = _imports_ai(targets) + _mentions(targets, _EXECUTOR_MARKERS)
+        assert not offenders, f"{mod} imports AI/executor: {offenders}"
+
+
+def test_agent_tool_registry_imports_no_ai():
+    """The 'doing' layer may import the executor/builders, but NEVER an AI helper — AI does not
+    write PHREEQC input, run anything, or decide a composition/release fraction."""
+    offenders = _imports_ai(_import_targets(AGENT_TOOL_MODULE))
+    assert not offenders, f"{AGENT_TOOL_MODULE} imports AI: {offenders}"
+
+
+def test_agent_modules_do_not_import_result_path():
+    """No agent module imports the comparison/residual/mapping/validation code or the Match-tab
+    runner — the agent is off the scientific result path (it orchestrates the Simulate side)."""
+    forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                 "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                 "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+    for mod in AGENT_PURE_MODULES + [AGENT_TOOL_MODULE, "agent/agent_orchestrator.py",
+                                     "agent/__init__.py"]:
+        offenders = _mentions(_import_targets(mod), forbidden)
+        assert not offenders, f"{mod} imports result-path code: {offenders}"
+
+
+def test_result_path_does_not_import_agent():
+    """The scientific result path never imports the agent layer (the reverse direction)."""
+    for mod in RESULT_PATH_MODULES:
+        targets = _import_targets(mod)
+        offenders = _mentions(targets, ("agent_state", "agent_orchestrator", "agent_policy",
+                                        "tool_registry", "agent_actions")) + [
+            t for t in targets if t in ("..agent", ".agent")
+            or t.startswith("..agent.") or t.startswith(".agent.")]
+        assert not offenders, f"{mod} imports the agent layer: {offenders}"
+
+
+def test_planner_and_executor_do_not_import_agent():
+    """The planner + execution layers don't depend on the agent (the agent depends on them)."""
+    for mod in PLANNER_MODULES + [EXECUTOR_MODULE, BATCH_MODULE, REGISTRY_MODULE,
+                                  STRATEGY_MODULE, TARGET_MATCHING_MODULE, SOURCE_TERMS_MODULE]:
+        targets = _import_targets(mod)
+        offenders = [t for t in targets if t in ("..agent", ".agent")
+                     or t.startswith("..agent.") or t.startswith(".agent.")]
+        assert not offenders, f"{mod} imports the agent layer: {offenders}"

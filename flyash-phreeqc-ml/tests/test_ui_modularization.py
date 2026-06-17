@@ -27,8 +27,8 @@ _REPO = Path(pkg.__file__).resolve().parent.parent
 _UI = _REPO / "ui"
 _SCI = Path(pkg.__file__).resolve().parent          # flyash_phreeqc_ml/
 
-TAB_MODULES = ["start_tab", "simulate_tab", "import_tab", "validate_tab", "match_tab",
-               "compare_tab", "export_tab"]
+TAB_MODULES = ["assistant_tab", "simulate_tab", "import_tab", "validate_tab",
+               "match_tab", "compare_tab", "export_tab"]
 BASE_MODULES = ["state", "common", "formatters"]
 
 

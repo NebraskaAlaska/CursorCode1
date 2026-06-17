@@ -800,6 +800,63 @@ experiment — **not** a blind replacement for the chemistry.
   removed "Audit/Help" tab). `docs/refactor_plan.md` extended with the science / AI-suggestion-only / `outputs/`
   layering.
 
+- **AI agent orchestration layer — the Assistant tab** (AI plans/clarifies/explains; deterministic code +
+  user confirmation do everything scientific). New `flyash_phreeqc_ml/agent/` package turns the manual
+  Simulate flow into a conversation: **conversation state → LLM proposes ONE structured action → policy
+  check → explicit user confirmation (for execution/save) → deterministic tool runs → updated state →
+  reply**. Modules: `agent_state.py` (state machine + a deterministic, **correction-aware merge** of a
+  natural reply — only fields the reply explicitly states, later corrections win, no fabricated
+  temperature; provenance trace), `agent_actions.py` (the 19-action vocab + `AgentAction` + `parse_action`
+  that **strips `FORBIDDEN_ARGUMENT_KEYS`** like `phreeqc_input_text`/`composition`/`release_fraction`/`ph` +
+  per-action `ACTION_SPECS` metadata: risk / confirmation / allowed-domains / preconditions), `domains.py`
+  (rule-based **domain classification** + the engine map `{leaching_geochemistry → PHREEQC}` only +
+  per-domain **planning support**), `agent_prompts.py` (system prompt forbidding invented chemistry + a
+  **grounded** per-turn prompt showing the deterministic state), `tool_registry.py` (binds each action to an
+  **existing** deterministic backend fn — builder / executor / batch / matrix / strategy / target-matching /
+  run-registry — **imports no AI**), `agent_policy.py` (the gate + the deterministic fallback planner —
+  **imports no AI, no executor**), `agent_orchestrator.py` (the loop; the **only** module that touches AI,
+  via the key-safe client mirroring `scenario_parser`). **Safety invariants:** the LLM only *proposes* —
+  execution/save are **parked** and run only via `confirm_pending_action` (the UI's "Yes, run it" button or
+  an unambiguous affirmative reply; the model can't propose+confirm in one turn); **PHREEQC is blocked for
+  non-leaching domains** (the domain gate runs first, so `confirmed=True` can't bypass it) and **for
+  missing-composition runs**; **AI never writes PHREEQC input** (the deterministic builder templates it from
+  the scenario; injected text is stripped); **numbers come from tools, not the model**; simulation ≠
+  validation (every result carries the not-validated caveat). With no API key a **deterministic planner**
+  drives the same flow. Provenance: `run_registry.build_run_record` gained an additive `agent_provenance`
+  dict (transcript summary + action trace + confirmed assumptions + not-validated label) — **never raw model
+  responses, secrets, or measured data**; mirrors the `refinement`/`target_match` additive pattern, no
+  scientific field changed. UI: `ui/assistant_tab.py` (chat + cards + confirm buttons + advanced expanders;
+  consent-gated). Docs `docs/assistant_agent.md`; behaviour pinned by `tests/test_agent.py`, boundaries by
+  `tests/test_ai_boundary.py` (agent pure modules import no AI/executor; tool registry imports no AI; no
+  result-path module imports the agent). **The agent is off the scientific result path** — it orchestrates
+  the Simulate side only.
+
+- **Materials Research Assistant UI redesign** (presentation + agent planning-only responses; **no
+  scientific / PHREEQC / result-path change**). Reframed the app from a PHREEQC validation dashboard into a
+  broad, chatbot-first **Materials Research Assistant** with PHREEQC as the *first* executable engine.
+  Hero/identity → "Materials Research Assistant" (`ui/state.PRODUCT_NAME`/`PRODUCT_SUBTITLE`); chips frame
+  the executable engine (leaching/geochemistry via PHREEQC) + planning-support domains + "modular — more
+  engines can be added". **Tabs reduced 8 → 7** — the **Start** tab was removed (its overview folded into the
+  Assistant homepage; `ui/start_tab.py` deleted) and the rest grouped as **Advanced Mode**:
+  `Assistant · Advanced Simulate · Import Data · Validate · Match · Compare · Export` (`Simulate`→`Advanced
+  Simulate`, `Compare Results`→`Compare`; each advanced tab gets an `app_ui.render_advanced_mode_note`
+  caption). The **Assistant homepage** (`ui/assistant_tab.py` rewritten) adds example **prompt chips**, four
+  live cards (Experiment so far · Domain & engine · Still missing · **Next action**), an **engines &
+  capabilities** panel (available now / planning support now / future, from `domains.engine_status`), a
+  compact **7-step flow**, and a **planning-support panel** for unsupported domains; technical detail
+  (scenario JSON, domain classification, policy decision, input preview, database report, result table,
+  provenance trace) is under expanders. **Better unsupported-domain behaviour** (the only agent logic change,
+  message/metadata only): `domains.PLANNING_DOMAIN_INFO` / `planning_support` / `data_template_columns` +
+  `FUTURE_ENGINES`; `planning_only_message` now offers to **structure the plan / build a data template /
+  identify missing variables**, suggests the domain's **response variables** (e.g. composite: compressive /
+  flexural strength, density, water absorption, toughness) and the inputs a **future model** needs, and the
+  data template becomes a **domain-aware data-collection template** (`_tool_create_validation_template`) —
+  **never a fake simulation**. Verified by a 2-lens adversarial review (unsupported-cannot-simulate /
+  result-path-untouched, both pass, 0 bugs) + `tests/test_app_tabs_smoke.py` (broad-identity, 7-tab) and
+  `tests/test_agent.py` (planning actions, domain-aware template, PHREEQC-only-for-leaching). README +
+  `docs/assistant_agent.md` updated (broad identity, PHREEQC = first engine, planning-only domains, future
+  LangGraph-style orchestration note).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -1324,18 +1381,32 @@ modules together and own all file I/O paths.
   representative sample + top-N scored candidates, each with `score_breakdown`, for the row-detail
   view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
-- **`app.py`** (repo root) is now a **thin entry point** (~160 code lines): the `sys.path` bootstrap, the
+- **`flyash_phreeqc_ml/agent/`** — the **AI agent orchestration layer** behind the Assistant tab (off the
+  scientific result path). Wraps an LLM around the deterministic Simulate backend: per turn the model
+  **proposes one structured action**, `agent_policy` **gates** it (execution/save require explicit
+  confirmation; PHREEQC blocked for non-leaching / missing-composition), and `tool_registry` runs the
+  **existing** deterministic functions. Pure modules (`agent_state` / `agent_actions` / `agent_prompts` /
+  `agent_policy` / `domains`) import no AI and no executor; only `agent_orchestrator` touches AI; only
+  `tool_registry` touches the executor; **no scientific/result-path module imports the agent**. `domains.py`
+  also owns the planning-support metadata for non-executable domains. With no key a deterministic planner
+  drives the same flow. See the two **agent / Materials-Research-Assistant** completed-phase bullets above;
+  docs `docs/assistant_agent.md`; boundaries pinned by `tests/test_ai_boundary.py`.
+
+- **`app.py`** (repo root) is now a **thin entry point** (~170 code lines): the `sys.path` bootstrap, the
   run-management **sidebar** (`_render_run_sidebar` + `_render_ai_settings_panel` — the only render functions
   it keeps), page config + hero, and the `st.tabs([...])` **dispatch** to `ui.<tab>.render(...)`. **All tab
   rendering moved verbatim into the `ui/` package** (see the *UI modularization* completed-phase bullet +
   `docs/refactor_plan.md`): one module per tab (`ui/<tab>_tab.py`, each exposing `render`) plus shared
-  `ui/state.py` / `ui/common.py` / `ui/formatters.py`. The app is presented as an *AI-assisted geochemical
-  simulation & validation platform*: a **guided seven-tab workflow** — **Start · Simulate · Import Data ·
-  Validate · Match · Compare Results · Export** — with the sidebar driving every tab. The Start tab opens with
-  a **three-mode product panel** (Simulate / Validate / Learn & Improve); **Simulate** is the forward-looking
-  core (NL → scenario → plan → material/release/database → input preview → **gated PHREEQC run + small sweep +
-  plots → ranking / target matching → saved provenance** — plan generation runs nothing, execution is a
-  separate confirmed step, and every output is a *prediction, not validated*); the measured-vs-model mapping +
+  `ui/state.py` / `ui/common.py` / `ui/formatters.py`. The app is presented as a **Materials Research
+  Assistant**: the **Assistant** tab is the chatbot homepage (the simple way in), and the remaining tabs are
+  grouped as **Advanced Mode**. The **seven-tab workflow** — **Assistant · Advanced Simulate · Import Data ·
+  Validate · Match · Compare · Export** — is driven by the sidebar. **Assistant** is the conversational front
+  door (describe → ask missing → plan → confirm → run available simulation → explain → recommend validation
+  data; planning-only domains get plan + data-template support, never a fake run). **Advanced Simulate** is
+  the forward-looking core (NL → scenario → plan → material/release/database → input preview → **gated PHREEQC
+  run + small sweep + plots → ranking / target matching → saved provenance** — plan generation runs nothing,
+  execution is a separate confirmed step, and every output is a *prediction, not validated*); the
+  measured-vs-model mapping +
   comparison is the **Validation module** (the current strongest workflow). Every tab carries a one-line header
   + a **➡️ Next step** hint and a specific empty state. **The numbered list below predates the Simulate
   execution arc, the identity renovation, the Prompt-20 reorg, AND the UI modularization — it documents the
