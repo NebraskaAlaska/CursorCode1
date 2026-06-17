@@ -48,6 +48,32 @@ all ui modules ──▶ flyash_phreeqc_ml/**   (science; never imports ui)
   reached by exactly one tab lives in that tab; a helper reached by ≥ 2 tabs (or the sidebar)
   is shared (`ui.state` / `ui.common`). This guarantees the DAG above with no cycles.
 
+## Beyond the UI: simulation logic, the result path, AI, and outputs
+
+The `flyash_phreeqc_ml/` package is the science, organized so the UI only *calls* it:
+
+- **`flyash_phreeqc_ml/simulation/`** holds the **scientific simulation logic** — scenario schema,
+  rule parser, plan matrix, **source terms** (release model), **database compatibility** + **phase
+  templates**, the deterministic **input builder**, the gated **executor** + **batch executor**,
+  **strategy** (ranking) + **target matching**, and the **run registry**. PHREEQC input generation
+  and execution live here, not in the UI.
+- **The validation / result-path modules stay separate** — `compare/` (residuals + inclusion /
+  validity), `scenarios`, `replicates`, `mapping_table`, `mass_balance`, `attribution`, `viz/`.
+  These compute mapping, residuals, and the validity status. They import **no UI and no AI**.
+- **AI modules (`flyash_phreeqc_ml/ai/`) are suggestion-only and off the result path.** They
+  propose interpretations (import mapping, scenario extraction, literature retrieval, Q&A) but
+  never compute mapping/residuals/validity and **never write PHREEQC input**. This boundary is
+  pinned by `tests/test_ai_boundary.py` (an AST import scan: the result-path + simulation modules
+  import no AI/executor; the AI is never on the scientific path).
+- **Generated outputs stay under `outputs/`** (`outputs/simulations/` for the execution workspace,
+  `outputs/simulation_runs/` for saved provenance bundles, `outputs/tables/`, `outputs/figures/`),
+  plus `data/processed/` and `experiments/<run>/` — all gitignored and re-creatable. No module
+  writes generated artifacts into `data/raw/` or the source tree; the executor and run registry
+  enforce a safe-workspace check.
+
+So the full dependency arrow is one-way: **`app.py` → `ui/` → `flyash_phreeqc_ml/`**, with AI a
+suggestion-only side input and generated artifacts confined to `outputs/`.
+
 ## How to add a new UI section safely
 
 1. **Put rendering in the right tab module.** Add helper + render functions to the relevant
