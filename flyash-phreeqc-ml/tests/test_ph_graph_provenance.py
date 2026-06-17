@@ -9,8 +9,9 @@ These pin what the pH-graph audit established:
 * the measured-vs-model pH scatter is gated on inclusion's plotted rows
   (rows with a measured value AND a model prediction AND a valid mapping).
 
-`app.py` is a Streamlit *script* (it calls st.set_page_config at import, so it can't be
-imported as a module); we scan its source via the AST instead. The scientific result-path
+The UI layer is `app.py` (a Streamlit *script* — it calls st.set_page_config at import, so it
+can't be imported as a module) plus the extracted `ui/` tab modules (see
+docs/refactor_plan.md). We scan their source via the AST instead. The scientific result-path
 boundary is covered separately by tests/test_ai_boundary.py and tests/test_inclusion.py.
 """
 from __future__ import annotations
@@ -20,21 +21,25 @@ from pathlib import Path
 
 import flyash_phreeqc_ml as pkg
 
-APP = Path(pkg.__file__).resolve().parent.parent / "app.py"
+_REPO = Path(pkg.__file__).resolve().parent.parent
+APP = _REPO / "app.py"
+# The render functions moved out of app.py into ui/<tab>_tab.py; scan the whole UI layer.
+UI_FILES = [APP] + sorted((_REPO / "ui").glob("*.py"))
 
 
 def _src() -> str:
-    return APP.read_text(encoding="utf-8")
+    return "\n".join(p.read_text(encoding="utf-8") for p in UI_FILES)
 
 
 def _func_src(name: str) -> str:
-    src = _src()
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            seg = ast.get_source_segment(src, node)
-            if seg:
-                return seg
-    raise AssertionError(f"{name} not found in app.py")
+    for p in UI_FILES:
+        src = p.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                seg = ast.get_source_segment(src, node)
+                if seg:
+                    return seg
+    raise AssertionError(f"{name} not found in the UI layer (app.py + ui/)")
 
 
 def test_simulate_tab_result_graphs_are_execution_gated_and_separate():
