@@ -685,6 +685,121 @@ experiment — **not** a blind replacement for the chemistry.
   are **untouched**. Docs in `docs/simulation_planner.md`; covered by `tests/test_phreeqc_input_builder.py`;
   boundaries (no execution, no AI import, not on the result path) pinned by `tests/test_ai_boundary.py`.
 
+- **Material profile / composition manager (Simulate Step 7)** (Simulate-only helper, no chemistry on
+  the result path). `flyash_phreeqc_ml/materials/` (new package: `profile_schema.py` + `profile_validation.py`)
+  lets a user **provide / review / confirm** a material's bulk composition four ways (manual oxide/element
+  table, paste `species value`, upload `.csv`/`.xlsx`, or consent-gated **Literature (AI)** that proposes
+  *unverified* values only). Composition can be **oxide wt% / element wt% / mg·kg⁻¹ / mol·kg⁻¹** → all
+  converted to element wt% (oxides via gravimetric factors, e.g. CaO → Ca×0.715) and validated. A profile is
+  **draft until confirmed**; a literature-sourced one is `literature_unverified` (needs a second
+  acknowledgement). **Only a confirmed profile feeds the input preview** (composition is never invented);
+  it exposes a `usable_assay` interface the preview builder duck-types. Session-only (writes nothing), off
+  the result path. Docs `docs/material_profiles.md`; covered by `tests/test_material_profile.py`; boundary in
+  `tests/test_ai_boundary.py` (materials manager imports no science/planner; result path + planner import no
+  materials manager).
+- **Material release / source terms (Simulate Step 7b)** (deterministic source-term templating, no result
+  path). `flyash_phreeqc_ml/simulation/source_terms.py` (new) converts a confirmed profile + a **user-chosen,
+  reviewable release model** into PHREEQC source-term blocks: `MODE_NONE` (default — assay stays comment-only,
+  **nothing dissolves**, warns predicted totals ≈ 0), `MODE_GLOBAL` (one fraction), per-element fractions,
+  `MODE_LITERATURE` (sourced — **blocked until confirmed**), `MODE_MEASURED_LIQUID` (measured concentrations as
+  input). Released elements are added as **oxides via a `REACTION` block** (charge-safe) with the `SOLUTION`'s
+  `-water` set to the liquid volume → the real L/S (validated against real PHREEQC 3.8.6). It **never invents a
+  fraction, never defaults to 100%**; release fractions are **USER ASSUMPTIONS**, not measured truth, and this
+  is an **equilibrium** source term (kinetics are future work). Pure (imports only `materials.profile_schema`);
+  no AI, no executor. Docs `docs/material_release.md`; tests `tests/test_source_terms.py` (incl. an optional
+  real-PHREEQC test); boundary in `tests/test_ai_boundary.py`.
+- **Database compatibility + candidate phase templates (Simulate Step 7c)** (pure text inspection, no result
+  path). `flyash_phreeqc_ml/simulation/database_compatibility.py` + `phase_templates.py` (new) inspect the
+  *configured* thermodynamic database: `build_report(expected_phases=…)` detects the family (phreeqc / llnl /
+  wateq / cemdata / unknown, from name + header) and reports **which template phases it actually defines**, so
+  the input builder adds **only available phases** to `EQUILIBRIUM_PHASES` and lists the rest as
+  `# SKIPPED (NOT added)` comments + warnings — **never invents a phase**. `phase_present` uses a
+  whitespace/EOL anchor (`Calcite` ≠ `Cal`; phases ending in `)` like `SiO2(a)` match). Small reviewed
+  templates: aqueous-only (default) / fly-ash cementitious / red mud / generic. The Match-tab runner's CEMDATA
+  gate (`phreeqc_runner.is_cemdata_compatible` / `database_defines_phases`) now **delegates** here, so its
+  integration test **skips** on `phreeqc.dat` instead of failing. Pure; no AI/executor/result-path. Docs
+  `docs/database_compatibility.md`; tests `tests/test_database_compatibility.py` (tiny fake `.dat` in tmp — no
+  real DB committed); boundary in `tests/test_ai_boundary.py`.
+- **Safe PHREEQC execution (Simulate Step 9)** (gated; off every result path). `flyash_phreeqc_ml/simulation/phreeqc_executor.py`
+  (new) makes the reviewed `.pqi` runnable: `check_availability()` / `execute_preview(preview)` / `parse_outputs(result)`,
+  **structured + never-crashing** (statuses `not_run` / `success` / `failed` / `phreeqc_missing` / `timeout`;
+  parse status separate). It runs the **user-supplied PHREEQC CLI** (`PHREEQC_EXE` + `PHREEQC_DATABASE` from the
+  environment; default 120 s timeout via `PHREEQC_TIMEOUT_S`), parses pH / pe / element totals (mM) / saturation
+  indices, and **writes only to a safe workspace** `outputs/simulations/` (an `assert_safe_workspace` guard
+  forbids `data/raw`, `data/processed`, and the source tree). It runs **only on an explicit confirmed click** —
+  never automatically — and is **off the result path** (no AI, no comparison/mapping module). Outputs are
+  **simulation results, not validated predictions**. Docs `docs/phreeqc_execution.md`; tests
+  `tests/test_phreeqc_executor.py` (real run mocked; one optional integration test); boundary in
+  `tests/test_ai_boundary.py`. *(Verified end-to-end against a from-source PHREEQC 3.8.6 build with `phreeqc.dat`.)*
+- **Small-sweep batch execution + Simulate plots (Simulate Step 9)** (prototype-scale orchestration, off the
+  result path). `flyash_phreeqc_ml/simulation/batch_executor.py` (new) runs a confirmed simulation matrix
+  scenario-by-scenario: `run_batch(previews, max_scenarios=DEFAULT_MAX_SCENARIOS=20, on_progress=…)` (capped at
+  20 — excess **dropped with a flag, never silently**; one failed scenario never stops the batch),
+  `build_result_table` (one row per scenario: status / pH / pe / `<El>_mM` / key SIs / runtime / warnings),
+  `detect_sweep_axis` + `sweep_plot_frame` (plot-ready `(x,y)` for pH/element vs the swept parameter). Imports
+  only the safe executor + pandas. The Simulate tab draws **pH-vs-sweep** + **element-vs-sweep** plots only
+  because executed results exist. Tests `tests/test_batch_executor.py`; boundary in `tests/test_ai_boundary.py`.
+- **Simulation run registry + provenance (Simulate save)** (provenance store, off the result path).
+  `flyash_phreeqc_ml/simulation/run_registry.py` (new) saves a whole Simulate execution with its full
+  provenance chain — experiment text → parsed scenario → assumptions → material profile → generated input →
+  executable/database **paths** → output files → parser status → warnings. `build_run_record(...)` +
+  `SimulationRunRegistry` (`save_run` / `list_runs` / `load_run` / `export_zip` → `outputs/simulation_runs/<id>/`
+  with `run_metadata.json` + CSVs + copied `.pqi` inputs). Every record is labelled a **simulation run, not
+  validated**; it **stores no secrets** (no API key, not the raw AI response) and never writes to `data/raw`,
+  `data/processed`, or a validation CSV. The record carries optional `refinement` (Prompt: refined sweep) and
+  `target_match` (inverse search) provenance blocks. Docs `docs/simulation_runs.md`; tests
+  `tests/test_run_registry.py`; boundary in `tests/test_ai_boundary.py`.
+- **Simulation strategy / ranking + refined sweep (Simulate)** (deterministic optimisation over EXECUTED
+  outputs, off the result path). `flyash_phreeqc_ml/simulation/strategy.py` (new) lets a user say what to
+  optimise, then **ranks already-executed** results (it **runs nothing**): `parse_objective(text)` (rule-based —
+  maximize/minimize/target-pH/avoid-pH/selectivity/minimize-reagent/weighted), `rank_results(table, objective)`
+  (per-metric [0,1] score → weighted rank, missing-metric warnings, tradeoff notes, driving metric), and
+  `suggest_refined_sweep` / `refined_sweep_plan` (a cautious, **physical**, **capped** next sweep — extend
+  lower/upper, refine internal, narrow failures — plan-only). Ranking is *"over model predictions, not
+  validation"*. Imports only `re`/`dataclasses`/`pandas` (no executor / AI / result path). Docs
+  `docs/simulation_strategy.md`; tests `tests/test_strategy.py`; boundary in `tests/test_ai_boundary.py`.
+- **Target matching / inverse simulation search (Simulate Step 10)** (deterministic inverse search, off the
+  result path). `flyash_phreeqc_ml/simulation/target_matching.py` (new) works **backwards from a desired
+  result**: `parse_target_spec(text)` (deterministic — pH **range** / target **value** / **maximize** /
+  **minimize** / hard **constraint**, combinable, e.g. *"maximise Si while keeping Fe below 0.1 mM"*),
+  `build_search_grid(scenario, params, max_scenarios=20)` (Cartesian over leachant concentration × **release
+  fraction**, **capped at 20**, excess dropped with a flag), and `score_results(spec, table)` (objective metrics
+  each scored [0,1]; **constraints gate feasibility**; ranked **feasible-first then by score**; a metric whose
+  column is absent is **warned, never fabricated**; returns the best candidate + per-row breakdown). A match is
+  **inverse search over model predictions, not validation** (depends entirely on the chosen ranges; release
+  fractions stay assumptions). Pure (imports only stdlib + pandas — **no executor / AI / result path**;
+  execution happens via the batch executor on an explicit UI click). Saved via
+  `run_registry.build_run_record(..., target_match=provenance)`. Simulate **Step 10** UI (`_render_target_matching`
+  + editor / per-candidate previews / gated run / ranked table / best / breakdown / own save). Docs
+  `docs/target_matching.md`; tests `tests/test_target_matching.py`; boundary in `tests/test_ai_boundary.py`.
+  *(Verified end-to-end against real PHREEQC 3.8.6.)*
+- **UI modularization — `app.py` → `ui/` package** (presentation/structure only; **behaviour byte-identical**).
+  `app.py` was ~6,656 lines (the whole seven-tab Streamlit workflow + ~165 helper/render functions). It is now a
+  **thin entry point** (~160 code lines: the `sys.path` bootstrap, the run-management **sidebar**, page config +
+  hero, and the `st.tabs([...])` dispatch to `ui.<tab>.render(...)`). The render functions moved **verbatim**
+  into a `ui/` package: one module per tab (`ui/start_tab.py` / `simulate_tab.py` / `import_tab.py` /
+  `validate_tab.py` / `match_tab.py` / `compare_tab.py` / `export_tab.py`, each keeping its original
+  `_render_<tab>_tab` function and exposing it as `render`), plus shared `ui/state.py` (constants, paths, cached
+  readers), `ui/common.py` (shared render helpers), and the existing `ui/formatters.py`. The partition was
+  computed by **reachability** from the seven tab roots (helper used by one tab → that tab; by ≥2 tabs/sidebar →
+  state/common), giving an **acyclic DAG** (tabs → state/common/formatters; science never imports `ui`).
+  **Verified behaviour-preserving:** every function body + constant byte-identical, all 101 session-state/widget
+  keys + 162 widget labels identical, pyflakes-clean (no undefined names), all tabs render via AppTest. Docs
+  `docs/refactor_plan.md` (UI architecture + how to add a UI section safely); boundaries pinned by
+  `tests/test_ui_modularization.py`; the source-scan test `tests/test_ph_graph_provenance.py` now scans the
+  `ui/` layer. **No scientific/PHREEQC/result-path logic changed.**
+- **README + architecture docs demo-readiness pass** (docs only; no code/science change). The README was
+  rewritten as a presentable research-prototype doc — identity, current capabilities, **what it cannot yet
+  claim**, a **Simulate-vs-Validate/Compare** distinction, install / launch, **AI / PHREEQC / CEMDATA18**
+  configuration, a **5-minute demo**, a **professor-facing** section, an explicit **Limitations** section
+  (release fractions are assumptions; database controls phases; `phreeqc.dat` weak for cementitious; CEMDATA18
+  not shipped; outputs not validated until compared; kinetics + large-scale search are future work), **data
+  safety + generated-output folders**, and an **architecture** note. Fixed stale claims (Simulate now has
+  **gated execution**, not "never runs PHREEQC"; the `CO2_condition` cup-cover vocabulary `OA/PF/GS +
+  atm_CO2/low_CO2/no_CO2`, not legacy `open/sealed`; Calculation Verification lives in **Validate**, not a
+  removed "Audit/Help" tab). `docs/refactor_plan.md` extended with the science / AI-suggestion-only / `outputs/`
+  layering.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -893,20 +1008,34 @@ modules together and own all file I/O paths.
   + `tests/test_ai_client.py`; the AI-off-the-result-path boundary by `tests/test_ai_boundary.py`. Docs:
   `docs/ai_configuration.md`.
 
-- **`simulation/` (NL simulation planner) + `ai/scenario_parser.py`** — a **planning layer only** (no
-  PHREEQC execution; off every result path). `scenario_schema.py` (scenario dataclasses + flat
-  serialization + the plan-only caveat constants `PLAN_ONLY_LABEL`/`NON_PREDICTION_NOTE`; the machine
-  status value is `matrix.STATUS_PLAN_ONLY="plan_only"`, decoupled from the label), `safety.py`
-  (**deterministic** missing-field + scientific-warning analysis — caveats from code, not the AI),
-  `rule_parser.py` (non-AI regex extractor), `matrix.py` (`build_simulation_matrix(scenario, ranges=…)` →
-  a `status='plan_only'` plan table; range-ready), and `phreeqc_input_builder.py` (**deterministic** draft
-  `.pqi` preview from a confirmed scenario/matrix row — water/NaOH/HCl templates, status precedence, never
-  runs PHREEQC, writes no files, never invents composition; Simulate Step 7). `ai/scenario_parser.py`
-  extracts a scenario via the key-safe AI client (strict-JSON, validated; invalid → controlled error) and
-  **falls back to `rule_parser`** when AI is off. Drives the **Simulate** tab. **Never runs PHREEQC, never
-  overwrites data, never becomes verified data; AI never writes PHREEQC input** — boundaries pinned by
-  `tests/test_ai_boundary.py`. Covered by `tests/test_scenario_parser.py` + `tests/test_simulation_matrix.py`
-  + `tests/test_phreeqc_input_builder.py`. Docs: `docs/simulation_planner.md`.
+- **`simulation/` (Simulate planning + gated execution) + `ai/scenario_parser.py` + `materials/`** — the
+  forward-looking core. **Planning is off every result path; execution is gated + off every result path.**
+  *Planning:* `scenario_schema.py` (scenario dataclasses + flat serialization + the plan-only caveat constants
+  `PLAN_ONLY_LABEL`/`NON_PREDICTION_NOTE`; the machine status value is `matrix.STATUS_PLAN_ONLY="plan_only"`),
+  `safety.py` (**deterministic** missing-field + scientific-warning analysis — caveats from code, not the AI),
+  `rule_parser.py` (non-AI regex extractor), `matrix.py` (`build_simulation_matrix(scenario, ranges=…)` → a
+  `status='plan_only'` plan table), and `phreeqc_input_builder.py` (**deterministic** draft `.pqi` from a
+  confirmed scenario — water/NaOH/HCl templates + an optional material source term + only-available phases;
+  never runs PHREEQC, writes no files, never invents composition; Steps 7–8). `ai/scenario_parser.py` extracts a
+  scenario via the key-safe AI client (strict-JSON; invalid → controlled error) and **falls back to
+  `rule_parser`** when AI is off; **AI never writes PHREEQC input**. *Material side:* `materials/` (composition
+  manager — provide/review/**confirm** a profile; only a confirmed `usable_assay` feeds the preview; Step 7) and
+  `source_terms.py` (release model → REACTION-block source term; release fractions are **user assumptions**;
+  Step 7b). *Database side:* `database_compatibility.py` + `phase_templates.py` (only **available** phases added;
+  Step 7c). *Execution (gated, explicit click only):* `phreeqc_executor.py` (`check_availability` /
+  `execute_preview` / `parse_outputs`; runs the user-supplied CLI into the safe `outputs/simulations/`
+  workspace), `batch_executor.py` (small **capped** sweep + plot-ready frames; Step 9). *Reasoning over executed
+  outputs:* `strategy.py` (ranking + refined sweep) and `target_matching.py` (inverse search; Step 10) — both
+  **rank/score model predictions, never validate**. *Provenance:* `run_registry.py` (saves a run +
+  `refinement`/`target_match` blocks to `outputs/simulation_runs/`). **Nothing here runs automatically, none
+  overwrites data or becomes verified data, and none imports a comparison/residual/mapping module** — every
+  boundary (no AI on the result path, no executor in the pure modules, science never on the UI path) is pinned by
+  `tests/test_ai_boundary.py`. Each module has its own completed-phase bullet above; per-module docs live in
+  `docs/simulation_planner.md` · `material_profiles.md` · `material_release.md` · `database_compatibility.md` ·
+  `phreeqc_execution.md` · `simulation_strategy.md` · `target_matching.md` · `simulation_runs.md`, covered by the
+  matching `tests/test_*` files. **Real PHREEQC is not installed by default**, so the run paths are gated +
+  mock-tested (with one optional integration test each); the arc was verified end-to-end against a from-source
+  PHREEQC 3.8.6 build.
 
 - **`report.py` builds the offline review bundle.** `build_report(run_name)` composes the existing
   layers (provenance, inclusion, traces, bias, **element recovery**, conversions, audit) into a
@@ -1195,19 +1324,23 @@ modules together and own all file I/O paths.
   representative sample + top-N scored candidates, each with `score_breakdown`, for the row-detail
   view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
-- **`app.py`** (repo root) is a thin **Streamlit GUI** over the scripts. After the **identity
-  renovation** it is presented as an *AI-assisted geochemical simulation & validation platform*: a
-  wide-layout **guided seven-tab workflow** — **Start · Simulate · Import Data · Validate · Match ·
-  Compare Results · Export** — driven by a run-management **sidebar** (run selector + create-run expander;
-  current run name/type/folder/source; a run-type warning; a **🤖 AI settings** panel; a "use **Simulate**
-  to plan / **Compare Results** to validate" reminder; and a **Developer explanation mode** toggle). The
-  Start tab opens with a **three-mode product panel** (Simulate / Validate / Learn & Improve); **Simulate**
-  is the forward-looking planning core (NL → scenario → plan matrix, **planning-only**, no PHREEQC run);
-  the measured-vs-model mapping + comparison is the **Validation module** (the current strongest workflow).
-  Every tab carries a one-line header + a **➡️ Next step** hint and a specific empty state. **The numbered
-  list below predates the Simulate addition + the identity renovation (and the Prompt-20 reorg) — it
-  documents the underlying render functions, not the current tab names/order; see the completed-phase
-  bullets above (AI config layer / NL simulation planner / identity renovation) for the current layout:**
+- **`app.py`** (repo root) is now a **thin entry point** (~160 code lines): the `sys.path` bootstrap, the
+  run-management **sidebar** (`_render_run_sidebar` + `_render_ai_settings_panel` — the only render functions
+  it keeps), page config + hero, and the `st.tabs([...])` **dispatch** to `ui.<tab>.render(...)`. **All tab
+  rendering moved verbatim into the `ui/` package** (see the *UI modularization* completed-phase bullet +
+  `docs/refactor_plan.md`): one module per tab (`ui/<tab>_tab.py`, each exposing `render`) plus shared
+  `ui/state.py` / `ui/common.py` / `ui/formatters.py`. The app is presented as an *AI-assisted geochemical
+  simulation & validation platform*: a **guided seven-tab workflow** — **Start · Simulate · Import Data ·
+  Validate · Match · Compare Results · Export** — with the sidebar driving every tab. The Start tab opens with
+  a **three-mode product panel** (Simulate / Validate / Learn & Improve); **Simulate** is the forward-looking
+  core (NL → scenario → plan → material/release/database → input preview → **gated PHREEQC run + small sweep +
+  plots → ranking / target matching → saved provenance** — plan generation runs nothing, execution is a
+  separate confirmed step, and every output is a *prediction, not validated*); the measured-vs-model mapping +
+  comparison is the **Validation module** (the current strongest workflow). Every tab carries a one-line header
+  + a **➡️ Next step** hint and a specific empty state. **The numbered list below predates the Simulate
+  execution arc, the identity renovation, the Prompt-20 reorg, AND the UI modularization — it documents the
+  underlying render functions (now living in `ui/<tab>_tab.py`, not `app.py`), not the current tab names/order;
+  see the completed-phase bullets above for the current layout:**
   1. **Start** (`_render_overview`) — project status cards + selected-run summary (run type, data
      rows, mapped samples, unique PHREEQC rows used), a one-line **data-quality status**, what's
      missing, a **recommended next action** (no-data / no-mapping / coarse-mapping / workflow-not-run
@@ -1276,9 +1409,13 @@ modules together and own all file I/O paths.
   `residual_Fe` can be entirely NaN. Step 05 prints an explicit WARNING when Fe is *measured* but
   PHREEQC has no Fe prediction — this is "unavailable", not "PHREEQC predicts zero Fe". The scenario
   manifest follows the same rule: a missing molality column → NaN prediction, never zero.
-- **The app ingests, it does not plan.** The Streamlit app's purpose is ingest → verify → map →
-  run → interpret. Experiment-plan generation (`scripts/06_generate_experiment_plan.py`) was removed
-  from the UI; the script still exists and is runnable from the CLI, but no button surfaces it.
+- **The app does not generate experiment *run sheets* (but it does plan + run simulations).**
+  Experiment-**plan**-sheet generation (`scripts/06_generate_experiment_plan.py` — the bench run sheet) was
+  removed from the UI; the script still exists CLI-only, no button surfaces it. The app's data-validation
+  purpose remains ingest → verify → map → run → interpret. Separately, the **Simulate** tab *does* plan **and**
+  (on a gated, confirmed click) run a **simulation** — these are different things: a *bench experiment plan*
+  (06, CLI-only) vs. a *PHREEQC simulation* (Simulate, in-app). The Simulate forward arc is the current
+  development focus.
 - **Scenario metadata is inferred conservatively.** `scenarios.infer_metadata_from_filename` only
   reads tokens it is sure of (`L-S_<n>`, `atmCO2`/`lowCO2`/`noCO2`); everything else (notably
   `NaOH_M`, never in these filenames) stays `unknown` rather than being guessed. The mapping
