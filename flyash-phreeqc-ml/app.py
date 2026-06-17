@@ -78,6 +78,7 @@ from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: 
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
+from flyash_phreeqc_ml.simulation import source_terms as sim_source_terms  # noqa: E402  (release model)
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402  (gated deterministic execution)
 from flyash_phreeqc_ml.simulation import batch_executor  # noqa: E402  (small-sweep execution)
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
@@ -667,14 +668,116 @@ def _material_profile_literature(scenario, store: dict) -> None:
         st.rerun()
 
 
-def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> None:
+def _render_release_model_section(scenario, material_profile):
+    """Step 7b — choose a conservative, reviewable material **release model** (source term).
+
+    Returns a ``source_terms.DissolutionModel``. Default is **no release** — composition stays
+    comment-only and no material elements enter the simulation. Nothing here runs PHREEQC.
+    """
+    st.markdown("#### Step 7b — Material release model (dissolution source term)")
+    st.caption(
+        "A confirmed material profile gives the **bulk** assay; PHREEQC needs to know how much "
+        "**dissolves**. Choose a conservative, reviewable release model. **Default: no release** — "
+        "the assay stays comment-only. Release fractions are **assumptions, not measured truth**, "
+        "and the whole material is never silently dissolved.")
+
+    if material_profile is None or not getattr(material_profile, "is_usable", False):
+        st.info("Confirm a material profile in **Step 7** to enable a release model. Without one, "
+                "**no material elements enter the simulation** (predicted Ca/Si/Al/Fe ≈ 0).")
+        return sim_source_terms.no_release()
+
+    elements = sorted(material_profile.element_assays().keys())
+    mode = st.radio(
+        "Release model", [
+            "No material release (default)",
+            "Global release fraction",
+            "Per-element release fractions",
+            "Measured liquid composition (input, not prediction)",
+        ], key="sim_release_mode",
+        help="No release is the safe default. A release fraction is the assumed % of each element "
+             "that dissolves into the liquid. Measured-liquid uses your measured concentrations "
+             "as input (not a prediction).")
+
+    model = sim_source_terms.no_release()
+    if mode.startswith("Global"):
+        pct = st.number_input("Release fraction — % of each element that dissolves", 0.0, 100.0,
+                              1.0, 0.5, key="sim_release_global",
+                              help="e.g. 1% is a conservative starting assumption; 100% (full "
+                                   "dissolution) is usually unrealistic.")
+        allow = st.checkbox("Allow > 100% (nonphysical — releases more than is present)",
+                            key="sim_release_over")
+        model = sim_source_terms.global_release(pct / 100.0, allow_over_unity=allow)
+    elif mode.startswith("Per-element"):
+        default_pct = st.number_input("Default release fraction (%) for elements not overridden",
+                                      0.0, 100.0, 1.0, 0.5, key="sim_release_default")
+        seed = pd.DataFrame({"element": elements, "release_%": [default_pct] * len(elements)})
+        edited = st.data_editor(seed, hide_index=True, use_container_width=True,
+                                key="sim_release_table", height=min(320, 60 + 30 * len(elements)))
+        per = {}
+        for row in edited.to_dict("records"):
+            v = sim_schema.as_float(row.get("release_%"))
+            if v is not None:
+                per[str(row.get("element"))] = v / 100.0
+        model = sim_source_terms.global_release(default_pct / 100.0, per_element=per)
+    elif mode.startswith("Measured"):
+        st.caption("These are **measured input**, not a prediction. Enter measured dissolved "
+                   "concentrations (mM); leave blank to omit.")
+        seed = pd.DataFrame({"element": elements, "measured_mM": [None] * len(elements)})
+        edited = st.data_editor(seed, hide_index=True, use_container_width=True,
+                                key="sim_release_measured", height=min(320, 60 + 30 * len(elements)))
+        meas = {}
+        for row in edited.to_dict("records"):
+            v = sim_schema.as_float(row.get("measured_mM"))
+            if v is not None:
+                meas[str(row.get("element"))] = v
+        model = sim_source_terms.measured_liquid(meas)
+
+    # Live preview of the computed source terms (no PHREEQC run)
+    result = sim_source_terms.compute_source_terms(
+        model, material_profile=material_profile, solid_mass_g=scenario.material.solid_mass_g,
+        liquid_volume_mL=scenario.leachant.liquid_volume_mL)
+    if result.status == sim_source_terms.STATUS_RELEASE_INCLUDED:
+        st.success("✓ The input preview **will include** material source terms (a REACTION block).")
+        df = pd.DataFrame([
+            {"element": r.element, "release %": round(r.fraction * 100, 4),
+             "released mol": float(f"{r.moles_released:.4g}"),
+             "conc (mM)": (round(r.concentration_mM, 4) if r.concentration_mM is not None else None)}
+            for r in result.released])
+        st.dataframe(df, hide_index=True, use_container_width=True,
+                     height=min(300, 60 + 30 * len(df)))
+    elif result.status == sim_source_terms.STATUS_MEASURED_LIQUID:
+        st.success("✓ The input preview will create the solution from your **measured** "
+                   "concentrations (labelled measured input, not prediction).")
+    else:
+        st.caption("No material source terms will be added.")
+    for w in result.warnings:
+        st.warning(w.message)
+    if result.assumptions:
+        with st.expander("Source-term assumptions"):
+            for a in result.assumptions:
+                st.caption("• " + a)
+    return model
+
+
+def _release_model_key(model):
+    """A hashable identity for a DissolutionModel, to invalidate cached previews on change."""
+    if model is None:
+        return None
+    return (getattr(model, "mode", None), getattr(model, "global_fraction", None),
+            tuple(sorted((getattr(model, "per_element", {}) or {}).items())),
+            tuple(sorted((getattr(model, "measured_liquid_mM", {}) or {}).items())),
+            getattr(model, "allow_over_unity", False), getattr(model, "confirmed", False))
+
+
+def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
+                                  dissolution_model=None) -> None:
     """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
 
     No PHREEQC is run, no file is written to a run folder, and AI does not write the input
     (the LLM only extracted the scenario; this `.pqi` text is templated by deterministic code
     in `simulation/phreeqc_input_builder.py`). ``material_profile`` is the user-confirmed
-    composition (or ``None`` → composition is not included and the preview stays
-    `needs_material_composition`).
+    composition and ``dissolution_model`` the user-chosen release model (or ``None`` → the
+    composition stays comment-only and no material elements enter the system).
     """
     st.markdown("#### Step 8 — PHREEQC input preview (draft)")
     st.caption(
@@ -696,14 +799,17 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None) -> No
     else:
         st.caption(f"Material profile **{material_profile.display_name}** is selected but **not "
                    "confirmed** — confirm it in Step 7 to include its composition.")
-    # Stale-preview guard: rebuild if the selected profile changed since the last build.
-    if st.session_state.get("sim_previews_mpid", mpid) != mpid:
+    # Stale-preview guard: rebuild if the profile OR the release model changed.
+    cache_key = (mpid, _release_model_key(dissolution_model))
+    if st.session_state.get("sim_previews_key", cache_key) != cache_key:
         st.session_state.pop("sim_previews", None)
 
     if st.button("Generate PHREEQC input preview", key="sim_pqi_btn"):
         with st.spinner("Templating PHREEQC input…"):
             st.session_state["sim_previews"] = phreeqc_input_builder.build_previews_for_matrix(
-                scenario, matrix, material_profile=material_profile)
+                scenario, matrix, material_profile=material_profile,
+                dissolution_model=dissolution_model)
+        st.session_state["sim_previews_key"] = cache_key
         st.session_state["sim_previews_mpid"] = mpid
     previews = st.session_state.get("sim_previews")
     if not previews:
@@ -1570,8 +1676,12 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         st.divider()
         selected_profile = _render_material_profile_section(st.session_state.get("sim_scenario"))
         st.divider()
+        release_model = _render_release_model_section(st.session_state.get("sim_scenario"),
+                                                      selected_profile)
+        st.divider()
         _render_phreeqc_input_preview(st.session_state.get("sim_scenario"), mtx,
-                                      material_profile=selected_profile)
+                                      material_profile=selected_profile,
+                                      dissolution_model=release_model)
         st.divider()
         _render_run_deterministic_model(st.session_state.get("sim_previews"), mtx)
 

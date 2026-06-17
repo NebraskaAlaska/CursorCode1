@@ -31,6 +31,11 @@ cannot represent the elements the solid releases. Rather than fill in plausible-
 (which would produce a confident-looking but fictional result), the preview stays
 `needs_material_composition` until you supply a real, confirmed composition.
 
+> **Composition alone is still not enough.** A confirmed profile gives the *bulk* assay; PHREEQC
+> also needs to know *how much dissolves*. That is the **material release model** (Step 7b) — see
+> [`material_release.md`](material_release.md). Until you choose a release model, the assay stays
+> comment-only and no material elements enter the simulation.
+
 ## Accepted composition formats
 
 | Basis | What the numbers mean | Conversion to element wt % |
