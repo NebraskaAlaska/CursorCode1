@@ -212,6 +212,14 @@ _LEACHING_RE = re.compile(
     r"speciat\w*|geochem\w*|pore\s*solution|aqueous|solubility|precipitat\w*|"
     r"icp|naoh|koh|hcl|acid\b|alkal\w*|ph\b|molarit\w*|mol/l|liquid|solution)\b", re.I)
 
+# Strong aqueous cues = the leaching cues EXCEPT a bare "pH". A bare pH is a weak signal: a
+# cementitious/geopolymer *strength* study may mention pore-solution pH without wanting an
+# aqueous-chemistry simulation, so pH alone must not route a strength study to PHREEQC.
+_STRONG_AQUEOUS_RE = re.compile(
+    r"\b(leach\w*|leachate|dissolv\w*|dissolution|extract\w*|release|releas\w*|"
+    r"speciat\w*|geochem\w*|pore\s*solution|aqueous|solubility|precipitat\w*|"
+    r"icp|naoh|koh|hcl|acid\b|alkal\w*|molarit\w*|mol/l|liquid|solution)\b", re.I)
+
 _MECHANICAL_RE = re.compile(
     r"\b(compressive|flexural|tensile|strength|young'?s modulus|stiffness|"
     r"hardness|fracture|toughness|impact strength|fatigue|creep|elong\w*|"
@@ -279,6 +287,13 @@ def classify(text: str, *, hint: str | None = None) -> str:
         return THERMAL_TREATMENT
     if _CORROSION_RE.search(s) and not leaching:
         return CORROSION_DURABILITY
+
+    # 1b) A cementitious / geopolymer STRENGTH study whose only aqueous cue is a bare "pH" is
+    # planning-only (cementitious_binder), NOT executable leaching — pore-solution pH alone must
+    # not route a strength study to PHREEQC. A real aqueous/leaching cue (below) still wins.
+    if (not _STRONG_AQUEOUS_RE.search(s) and _CEMENT_RE.search(s)
+            and _MECHANICAL_RE.search(s)):
+        return CEMENTITIOUS_BINDER
 
     # 2) Leaching / geochemistry framing → the executable domain (material-agnostic).
     if leaching:

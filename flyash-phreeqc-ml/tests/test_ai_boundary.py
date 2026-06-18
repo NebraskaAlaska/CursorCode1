@@ -396,6 +396,7 @@ AGENT_PURE_MODULES = [
 ]
 AGENT_TOOL_MODULE = "agent/tool_registry.py"
 AGENT_NLU_MODULE = "agent/nlu_extractor.py"
+AGENT_COUNCIL_MODULE = "agent/agent_council.py"
 _EXECUTOR_MARKERS = ("phreeqc_executor", "batch_executor", "phreeqc_runner", "subprocess")
 
 
@@ -428,13 +429,21 @@ def test_nlu_extractor_imports_no_executor():
     assert not offenders, f"{AGENT_NLU_MODULE} imports an executor: {offenders}"
 
 
+def test_agent_council_imports_no_executor_or_tool_registry():
+    """The council is ADVISORY: it may import the AI client (like the orchestrator / NLU), but it
+    runs nothing and chooses no action — it imports no executor and no tool registry."""
+    targets = _import_targets(AGENT_COUNCIL_MODULE)
+    offenders = _mentions(targets, _EXECUTOR_MARKERS + ("tool_registry",))
+    assert not offenders, f"{AGENT_COUNCIL_MODULE} imports executor/tool_registry: {offenders}"
+
+
 def test_agent_modules_do_not_import_result_path():
     """No agent module imports the comparison/residual/mapping/validation code or the Match-tab
     runner — the agent is off the scientific result path (it orchestrates the Simulate side)."""
     forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
                  "attribution", "mass_balance", "report", "surrogate", "residual_model",
                  "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
-    for mod in AGENT_PURE_MODULES + [AGENT_TOOL_MODULE, AGENT_NLU_MODULE,
+    for mod in AGENT_PURE_MODULES + [AGENT_TOOL_MODULE, AGENT_NLU_MODULE, AGENT_COUNCIL_MODULE,
                                      "agent/agent_orchestrator.py", "agent/__init__.py"]:
         offenders = _mentions(_import_targets(mod), forbidden)
         assert not offenders, f"{mod} imports result-path code: {offenders}"

@@ -91,6 +91,21 @@ Validation), so nothing technical competes with the assistant.
   notes that free-text robustness is more limited. The AI extracts + clarifies; **deterministic code
   validates, normalizes, and calculates** — and never extracts a composition, release fraction, measured
   value, or validation status.
+- **An AI council — an advisory panel, not just one parser.** After each turn, an optional
+  **Council Review** (five roles — *Experiment Understanding · Domain & Engine Router · Scientific
+  Critic · Experiment Design Advisor · Results & Validation Critic*) gives a short synthesized
+  recommendation (what we understood · domain/engine decision · scientific concerns · missing
+  information · recommended next step), with the role detail under *"Show council reasoning."* The
+  council is **purely advisory**: it **never runs a tool, never decides the action** (the
+  orchestrator + confirmation gate do), and **never fabricates** a composition, release fraction,
+  measured value, pH/strength result, or validation status. Its **scientific warnings and
+  engine-status are code-generated** — the AI can enrich the prose but can never weaken a caveat.
+  With AI off it shows a **deterministic** review (*"AI council unavailable; using deterministic
+  review."*). It also surfaces the nuances — a calcination temperature is kept separate from the
+  leach temperature, out-of-scope elements (e.g. Ni/Co/Mn) are flagged as not handled by the
+  current engine, a geopolymer-strength study is planning-only (PHREEQC only as optional
+  pore-solution support), and unsafe asks ("run everything automatically", "validate my result")
+  are explicitly refused.
 - **The deterministic backend's role:** every scientific calculation and the PHREEQC execution —
   scenario merge, the input-preview builder, the database/phase check, the gated executor, the
   ranking / target-matching layers, and the run registry. These are the existing, tested modules.

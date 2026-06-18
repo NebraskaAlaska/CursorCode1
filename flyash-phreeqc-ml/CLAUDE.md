@@ -965,6 +965,41 @@ experiment — **not** a blind replacement for the chemistry.
   automatically" never auto-executes, ambiguous-acid asked, limited-note-once, no-raw-text-in-card). Docs
   `docs/assistant_agent.md`; README updated.
 
+- **Agent Council v1 — an advisory review layer** (council adds a five-role review; **no scientific / PHREEQC
+  input / execution / source-term / database / ranking / validation logic change** — the council is advisory,
+  off the result path, runs nothing, decides nothing). New **`flyash_phreeqc_ml/agent/agent_council.py`** makes
+  the assistant feel like a *team of research advisors*: after the orchestrator understands a message and chooses
+  an action, `run_council` produces five `RoleAssessment`s (**Experiment Understanding · Domain & Engine Router ·
+  Scientific Critic · Experiment Design Advisor · Results & Validation Critic** — each `short_assessment` /
+  `concerns` / `missing_information` / `recommended_next_action` / `confidence` / `blocking_issues`) + one
+  `CouncilReview` synthesis (`understood_scenario` / `likely_domain` / `executable_engine_status` /
+  `planning_or_execution_status` / `key_missing_details` / `assumptions_to_confirm` / `scientific_warnings` /
+  `recommended_next_user_question` / `safe_next_action`). **Safety by construction:** it imports **no executor
+  and no tool registry** (it can't run anything), it **never decides the action** (`safe_next_action` merely
+  *mirrors* the orchestrator's choice; `respond(council=True)` runs it **after** the action is chosen and never
+  changes it), and the **canonical synthesis fields** (engine status, `scientific_warnings`, missing details,
+  safe action) are **code-generated** from the existing domain/safety/missing-field validators — the AI council
+  (one grounded call) enriches only the **role prose + understood-scenario + the single next question**, merged
+  onto the deterministic baseline so it can **never weaken a caveat**. **AI off / failed → deterministic** review
+  (`DETERMINISTIC_NOTE`). It **rejects unsafe asks** ("run everything automatically", "assume data", "validate
+  my result" → `UNSAFE_REJECTION` + a Validation-Critic blocking issue). Provenance stores only the **derived**
+  `to_safe_dict()` (no raw model text); `agent_state.last_council` is duck-typed `object` so `agent_state` stays
+  AI-free. **UI:** a **Council Review** card in `ui/assistant_tab.py` (synthesis up top; the five roles under
+  *"Show council reasoning"*; no raw JSON; a consent-gated toggle). **Shipped alongside, five live-eval robustness
+  fixes** (no scientific calc change): **(A)** thermal-pretreatment-then-leach keeps the calcination temperature
+  out of the leach `temperature_C` (`nlu_extractor.is_thermal_pretreatment_then_leach` / `pretreatment_temperature`,
+  150 °C threshold) and asks for the leach temp/solution; **(B)** `domains.classify` routes a binder/geopolymer
+  **strength** study whose only aqueous cue is a bare pH to **cementitious_binder** (planning-only), not executable
+  leaching (`_STRONG_AQUEOUS_RE`); **(C)** out-of-scope elements (Ni/Co/Mn/…) are captured as
+  `unsupported_elements` (`nlu_extractor.detect_unsupported_elements`, cluster heuristic) + warned, never dropped;
+  **(D)** a bare "fly ash" stays generic (class unknown), never silently Class C (prompt + the council asks C vs
+  F); **(E)** the clarifying questions are capped at ≤3 (prompt + `_first_question`). `agent_prompts` gained the
+  `understanding` fields `pretreatment_temperature_C` / `unsupported_elements` + the D/E/A/B/C rules. The third
+  AI-touching agent module (with orchestrator + nlu_extractor); all three import no executor / no result path
+  (pinned by `tests/test_ai_boundary.py`). Covered by `tests/test_agent_council.py` (five roles, synthesis,
+  no-raw-response, leaching/plastic/thermal-leach/geopolymer/unsupported/safety/question-cap, AI-merge-keeps-
+  canonical) + `tests/test_nlu_extractor.py` (A/C/D). Docs `docs/assistant_agent.md`; README updated.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -1498,13 +1533,19 @@ modules together and own all file I/O paths.
   `ai/scenario_parser`): one grounded call returns a structured `understanding` block **and** the action, then
   deterministic code **validates/normalizes** it (typo+unit normalization, canonicalization, impossible-value
   rejection, assumption flagging, change/conflict detection) — falling back to a robust rule-based parse with no
-  key. Pure modules (`agent_state` / `agent_actions` / `agent_prompts` / `agent_policy` / `domains`) import no AI
-  and no executor; the **two AI-touching modules are `agent_orchestrator` + `nlu_extractor`** (both still import
-  no executor); only `tool_registry` touches the executor; **no scientific/result-path module imports the agent**.
-  `agent_state.apply_delta` is the pure correction-aware merge; `domains.py` owns the planning-support metadata
-  for non-executable domains. With no key a deterministic parser + planner drives the same flow. See the
-  **agent / Materials-Research-Assistant / Robust NLU** completed-phase bullets above; docs
-  `docs/assistant_agent.md`; boundaries pinned by `tests/test_ai_boundary.py`.
+  key. **`agent_council.py`** (new — see the *Agent Council v1* bullet) is the advisory review layer: after the
+  orchestrator chooses an action, `run_council` produces five role assessments + one synthesis (deterministic
+  baseline + an optional AI enrichment merged so the canonical engine-status / scientific-warnings / safe-action
+  stay code-generated) — it **runs nothing, decides nothing** (imports no executor and no tool registry;
+  `safe_next_action` only mirrors the orchestrator). Pure modules (`agent_state` / `agent_actions` /
+  `agent_prompts` / `agent_policy` / `domains`) import no AI and no executor; the **three AI-touching modules are
+  `agent_orchestrator` + `nlu_extractor` + `agent_council`** (all three import no executor); only `tool_registry`
+  touches the executor; **no scientific/result-path module imports the agent**. `agent_state.apply_delta` is the
+  pure correction-aware merge; `agent_state.last_council` is a duck-typed `object` (so `agent_state` stays
+  AI-free); `domains.py` owns the planning-support metadata for non-executable domains. With no key a
+  deterministic parser + planner + council drives the same flow. See the **agent / Materials-Research-Assistant /
+  Robust NLU / Agent Council** completed-phase bullets above; docs `docs/assistant_agent.md`; boundaries pinned by
+  `tests/test_ai_boundary.py`.
 
 - **`app.py`** (repo root) is a **thin entry point** (~210 code lines): the `sys.path` bootstrap, the
   run-management **sidebar** (`_render_run_sidebar` — now the **only** top-level render function) + the

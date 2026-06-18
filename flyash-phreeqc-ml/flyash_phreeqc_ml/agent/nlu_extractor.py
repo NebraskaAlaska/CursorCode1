@@ -283,6 +283,79 @@ def extract_elements(text: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Multi-step (thermal pretreatment → leach) detection (robustness fix A)
+# --------------------------------------------------------------------------- #
+_THERMAL_CUE_RE = re.compile(
+    r"\b(calcin\w*|thermal|heat\w*|roast\w*|sinter\w*|pyroly\w*|fir(?:e|ed|ing)|furnace|"
+    r"kiln|anneal\w*)\b", re.I)
+_LEACH_CUE_RE = re.compile(r"\b(leach\w*|dissolv\w*|leachate)\b", re.I)
+_TEMP_FIND_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:°\s*|deg(?:rees?)?\s*)?[cC]\b")
+# A temperature at/above this is a thermal-treatment temperature, not an aqueous-leach temperature.
+_PRETREAT_TEMP_MIN_C = 150.0
+
+
+def pretreatment_temperature(text: str):
+    """The highest temperature ≥150 °C in the text (a calcination/thermal-treatment temp), else None."""
+    hot = [float(m) for m in _TEMP_FIND_RE.findall(str(text or "")) if float(m) >= _PRETREAT_TEMP_MIN_C]
+    return max(hot) if hot else None
+
+
+def is_thermal_pretreatment_then_leach(text: str) -> bool:
+    """True when the text describes a thermal pretreatment (≥150 °C) *and* a subsequent leach.
+
+    For such a workflow the high temperature is the calcination temperature; the aqueous-leach
+    temperature is a *separate* (usually unstated) quantity, so the high temp must not be stored
+    as the leach ``temperature_C``.
+    """
+    s = str(text or "")
+    return bool(_THERMAL_CUE_RE.search(s) and _LEACH_CUE_RE.search(s)
+                and pretreatment_temperature(s) is not None)
+
+
+# --------------------------------------------------------------------------- #
+# Out-of-scope elements (recognised by name/symbol but NOT in the engine's set) — fix C
+# --------------------------------------------------------------------------- #
+# Common metals a user may ask about that the current PHREEQC leaching element set
+# (Ca/Si/Al/Fe/Na/K/Sc/REE) does not handle. Captured + surfaced, never silently dropped.
+_UNSUPPORTED_BY_NAME = {
+    "nickel": "Ni", "cobalt": "Co", "manganese": "Mn", "lithium": "Li", "copper": "Cu",
+    "zinc": "Zn", "lead": "Pb", "chromium": "Cr", "cadmium": "Cd", "molybdenum": "Mo",
+    "tungsten": "W", "magnesium": "Mg", "titanium": "Ti", "vanadium": "V",
+}
+_UNSUPPORTED_SYMBOLS = ("Ni", "Co", "Mn", "Li", "Cu", "Zn", "Pb", "Cr", "Cd", "Mo", "Mg", "Ti", "V")
+# Lowercase element-like tokens used to detect a "cluster" (so 'ni co mn' is read as elements but
+# a stray 'co' word is not).
+_ELEMENT_CLUSTER_TOKENS = {s.lower() for s in _UNSUPPORTED_SYMBOLS + _ELEMENT_MULTI + ("K",)}
+
+
+def detect_unsupported_elements(text: str) -> list:
+    """Element symbols the user requested that are outside the engine's element set.
+
+    Full names ("nickel") are always matched; an UPPERCASE symbol ("Ni") anywhere; a lowercase
+    symbol ("ni") only inside a cluster of ≥2 adjacent element-like tokens (so "ni co mn" is
+    caught, an incidental "co" word is not).
+    """
+    s = str(text or "")
+    low = s.lower()
+    found: list = []
+    for name, sym in _UNSUPPORTED_BY_NAME.items():
+        if re.search(r"\b" + name + r"\b", low) and sym not in found:
+            found.append(sym)
+    for sym in _UNSUPPORTED_SYMBOLS:
+        if re.search(r"\b" + sym + r"\b", s) and sym not in found:        # uppercase, case-sensitive
+            found.append(sym)
+    tokens = re.findall(r"[A-Za-z]+", s)
+    for i, tok in enumerate(tokens):
+        sym = tok.capitalize()
+        if sym in _UNSUPPORTED_SYMBOLS and sym not in found:
+            prev_el = i > 0 and tokens[i - 1].lower() in _ELEMENT_CLUSTER_TOKENS
+            next_el = i < len(tokens) - 1 and tokens[i + 1].lower() in _ELEMENT_CLUSTER_TOKENS
+            if prev_el or next_el:
+                found.append(sym)
+    return found
+
+
+# --------------------------------------------------------------------------- #
 # Numeric validation / schema repair
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -340,6 +413,12 @@ class ExtractionResult:
     domain_hint: str | None = None
     action: object = None                                # an AgentAction (AI path) or None
     assistant_message: str = ""                          # the model's conversational lead (AI)
+    # A calcination / thermal-pretreatment temperature is NOT the aqueous-leach temperature; it
+    # is captured here so it never lands in the scenario's leach temperature_C.
+    pretreatment_temperature_C: float | None = None
+    # Elements the user asked about that are outside the engine's set (Ca/Si/Al/Fe/Na/K/Sc/REE);
+    # captured + surfaced, never silently dropped.
+    unsupported_elements: list = field(default_factory=list)
 
     @property
     def has_understanding(self) -> bool:
@@ -545,11 +624,18 @@ def repair_understanding(understanding: dict, *, current_flat: dict) -> Extracti
     confidence = max(0.0, min(1.0, S.as_float(u.get("confidence")) or 0.0)) or _rule_confidence(delta)
     domain_hint = domains._hint_domain(u.get("domain_hint"))
     changes = compute_changes(delta, current_flat)
+    # Out-of-scope elements + a calcination temperature the model flagged (fixes A + C). These are
+    # NOT scenario fields, so they ride on the result, not the delta (extract() also backstops them).
+    pretreat = S.as_float(u.get("pretreatment_temperature_C"))
+    target = delta.get("target_elements") or []
+    unsupported = [str(e).strip().capitalize() for e in S.as_str_list(u.get("unsupported_elements"))
+                   if str(e).strip() and str(e).strip().capitalize() not in target]
     return ExtractionResult(
         delta=delta, changes=changes, assumption_specs=assumption_specs,
         drop_assumption_fields=drop_fields, ambiguous_fields=ambiguous, rejected=rejected,
         normalizations=notes, confidence=confidence, source=SRC_AI, used_ai=True,
-        domain_hint=domain_hint)
+        domain_hint=domain_hint, pretreatment_temperature_C=pretreat,
+        unsupported_elements=unsupported)
 
 
 # --------------------------------------------------------------------------- #
@@ -605,21 +691,44 @@ def extract(message: str, *, state, client=None, model=None, use_ai: bool = True
     current_flat = state.scenario.to_flat_dict()
     ai_on = (client is not None) or ai_config.is_enabled()
 
+    result = None
     if use_ai and ai_on:
-        res = _extract_with_ai(message, state, client=client, model=model,
-                               current_flat=current_flat)
-        if res is not None:
-            return res
-        # AI was on but the call/parse failed → deterministic fallback, clearly degraded.
-        fb = _deterministic_delta(message, current_flat)
-        fb.source = SRC_RULE_FALLBACK
-        fb.limited_without_ai = True
-        fb.ai_error = "AI extraction was unavailable for this message — used the rule parser."
-        return fb
+        result = _extract_with_ai(message, state, client=client, model=model,
+                                  current_flat=current_flat)
+        if result is None:
+            # AI was on but the call/parse failed → deterministic fallback, clearly degraded.
+            result = _deterministic_delta(message, current_flat)
+            result.source = SRC_RULE_FALLBACK
+            result.limited_without_ai = True
+            result.ai_error = "AI extraction was unavailable for this message — used the rule parser."
+    if result is None:
+        result = _deterministic_delta(message, current_flat)
+        result.limited_without_ai = not ai_on
 
-    res = _deterministic_delta(message, current_flat)
-    res.limited_without_ai = not ai_on
-    return res
+    return _separate_multistep_and_capture_unsupported(message, result)
+
+
+def _separate_multistep_and_capture_unsupported(message: str, result: ExtractionResult):
+    """Post-process both paths: keep a calcination temperature out of the leach ``temperature_C``
+    (fix A), and capture out-of-scope elements (fix C). Defensive for the AI path too."""
+    # A: a thermal-pretreatment temperature is NOT the aqueous-leach temperature.
+    if is_thermal_pretreatment_then_leach(message):
+        result.pretreatment_temperature_C = (result.pretreatment_temperature_C
+                                             or pretreatment_temperature(message))
+        leach_t = result.delta.get("temperature_C")
+        if leach_t is not None and leach_t >= _PRETREAT_TEMP_MIN_C:
+            result.delta.pop("temperature_C", None)
+            result.assumption_specs = [a for a in result.assumption_specs
+                                       if a[0] != "temperature_C"]
+            result.changes = [c for c in result.changes if c.get("field") != "temperature_C"]
+            if "temperature_C" not in result.ambiguous_fields:
+                result.ambiguous_fields.append("temperature_C")   # ask for the LEACH temperature
+    # C: out-of-scope elements (e.g. Ni / Co / Mn) — capture, never silently drop.
+    unsupported = detect_unsupported_elements(message)
+    if unsupported:
+        result.unsupported_elements = list(dict.fromkeys(
+            list(result.unsupported_elements) + unsupported))
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -668,6 +777,8 @@ def build_understanding_card(state, extraction: ExtractionResult) -> dict:
         "assumptions": assumptions,
         "ambiguous": list(extraction.ambiguous_fields),
         "rejected": list(extraction.rejected),
+        "pretreatment_temperature_C": extraction.pretreatment_temperature_C,
+        "unsupported_elements": list(extraction.unsupported_elements),
         "changes": list(extraction.changes),
         "normalizations": list(extraction.normalizations),
         "confidence": round(float(extraction.confidence or 0.0), 2),

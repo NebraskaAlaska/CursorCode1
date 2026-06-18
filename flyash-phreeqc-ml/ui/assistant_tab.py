@@ -76,7 +76,8 @@ def _release_model(run: str | None):
 
 def _send(state, message, *, run, consent, cfg) -> None:
     """Send a message to the assistant (chip or chat input) and rerun."""
-    orch.respond(state, message, use_ai=bool(consent and cfg.enabled),
+    council_on = bool(st.session_state.get("asst_council", True))
+    orch.respond(state, message, use_ai=bool(consent and cfg.enabled), council=council_on,
                  material_profile=_material_profile(run), release_model=_release_model(run),
                  database_path=config.PHREEQC_DATABASE_PATH)
     st.rerun()
@@ -96,6 +97,11 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
 
     cfg = ai_config.resolve_config()
     consent = _render_ai_status(cfg)
+    st.checkbox("🧑‍🔬 Council review (advisory panel of five research advisors)", value=True,
+                key="asst_council",
+                help="Five advisor roles review each step — advisory only; it never runs anything "
+                     "and never decides the action. Uses AI when enabled + consented, else a "
+                     "deterministic review.")
     state = _get_state(selected_run)
 
     # Two-column workspace: chat on the left, status cards on the right.
@@ -105,6 +111,7 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
         _render_examples(state, run=selected_run, consent=consent, cfg=cfg)
         _render_chat_history(state)
         _render_understanding(selected_run, state)
+        _render_council(state)
         _render_pending_and_confirm(selected_run, state, consent, cfg)
         _render_planning_support(selected_run, state, consent, cfg)
         # Technical detail stays hidden by default (expanders).
@@ -374,6 +381,58 @@ def _render_correction_editor(run, state) -> None:
                 st.rerun()
             else:
                 st.info("No changes detected.")
+
+
+# --------------------------------------------------------------------------- #
+# Council Review card (advisory panel; synthesis up top, roles under an expander)
+# --------------------------------------------------------------------------- #
+def _render_council(state) -> None:
+    """Render the advisory Council Review: synthesized recommendation up top, the five role
+    perspectives hidden under 'Show council reasoning'. No raw LLM JSON, never an action."""
+    review = state.last_council
+    if review is None:
+        return
+    with st.container(border=True):
+        app_ui.section_header("🧑‍🔬 Council Review")
+        st.caption("An advisory panel of five research advisors — it reviews the plan but never "
+                   "runs anything and never decides the next action.")
+        if getattr(review, "note", ""):
+            st.caption(f"ℹ️ {review.note}")
+
+        st.markdown(f"**What we understood:** {review.understood_scenario or '—'}")
+        st.markdown(f"**Domain / engine:** {review.likely_domain} — "
+                    f"{review.executable_engine_status}")
+        if review.planning_or_execution_status:
+            st.caption(review.planning_or_execution_status)
+
+        if review.scientific_warnings:
+            st.markdown("**Scientific concerns:**")
+            for w in review.scientific_warnings[:6]:
+                st.caption(f"⚠️ {w}")
+        if review.unsupported_elements:
+            st.caption("Out-of-scope elements (not handled by the current engine): "
+                       + ", ".join(review.unsupported_elements))
+        if review.pretreatment_temperature_C is not None:
+            st.caption(f"Thermal pretreatment ~{review.pretreatment_temperature_C:g} °C is "
+                       "planning-only (not the leach temperature, not simulated).")
+        if review.key_missing_details:
+            st.markdown("**Missing information:** " + ", ".join(review.key_missing_details))
+        if review.recommended_next_user_question:
+            st.markdown(f"**Recommended next step:** {review.recommended_next_user_question}")
+
+        with app_ui.advanced_expander("Show council reasoning"):
+            for r in review.roles:
+                st.markdown(f"**{r.role_name}** · confidence {float(r.confidence or 0):.0%}")
+                if r.short_assessment:
+                    st.caption(r.short_assessment)
+                if r.concerns:
+                    st.caption("Concerns: " + "; ".join(r.concerns))
+                if r.missing_information:
+                    st.caption("Missing: " + ", ".join(r.missing_information))
+                if r.recommended_next_action:
+                    st.caption("→ " + r.recommended_next_action)
+                if r.blocking_issues:
+                    st.caption("⛔ " + "; ".join(r.blocking_issues))
 
 
 def _render_pending_and_confirm(run, state, consent, cfg) -> None:

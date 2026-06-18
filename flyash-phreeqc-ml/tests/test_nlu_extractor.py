@@ -233,6 +233,36 @@ def test_compute_changes_detects_corrections():
     assert nx.compute_changes({"target_elements": ["Ca", "Si", "Al"]}, current) == []
 
 
+def test_thermal_then_leach_separates_temperature():
+    """A calcination temperature is captured as a pretreatment temp, NOT the leach temperature_C."""
+    r = _extract("thermal treat bauxite residue in air 900 C then leach it")
+    assert r.delta.get("temperature_C") is None                 # 900 is NOT the leach temp
+    assert r.pretreatment_temperature_C == 900.0
+    assert "temperature_C" in r.ambiguous_fields                 # asks for the leach temperature
+    # A genuinely heated leach (below the calcination threshold) keeps its leach temperature.
+    r2 = _extract("leach 2 g fly ash in 10 mL NaOH heated to 80 C")
+    assert r2.delta.get("temperature_C") == 80.0
+    assert r2.pretreatment_temperature_C is None
+
+
+def test_unsupported_elements_captured_not_dropped():
+    r = _extract("battery cathode powder heated and leached for ni co mn")
+    assert set(["Ni", "Co", "Mn"]).issubset(set(r.unsupported_elements))
+    # The out-of-scope symbols are NOT silently promoted into the supported target_elements set.
+    assert not (set(["Ni", "Co", "Mn"]) & set(r.delta.get("target_elements") or []))
+    # A stray "co" word is not read as cobalt; a real cluster is.
+    assert nx.detect_unsupported_elements("the company co-located the samples") == []
+    assert "Cu" in nx.detect_unsupported_elements("recover ni co mn cu from the leachate")
+
+
+def test_bare_fly_ash_is_not_assumed_class_c():
+    """Deterministic extraction keeps a bare 'fly ash' generic (class unknown) — never Class C."""
+    r = _extract("leach 2 g fly ash in 10 mL 0.5 M NaOH")
+    assert r.delta.get("material_name") == "fly ash"            # not "Class C fly ash"
+    # An explicit class is honored.
+    assert _extract("leach class c fly ash in NaOH").delta.get("material_name") == "Class C fly ash"
+
+
 def test_build_understanding_card_shape():
     s = agent_state.AgentState()
     r = nx.extract("leach 2 g fly ash in 10 mL 0.5 M NaOH at 25 C, want Ca and pH", state=s)

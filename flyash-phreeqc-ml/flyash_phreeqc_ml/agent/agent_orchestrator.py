@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 
 from . import agent_actions as A
-from . import agent_policy, agent_state, domains, nlu_extractor, tool_registry
+from . import agent_council, agent_policy, agent_state, domains, nlu_extractor, tool_registry
 
 # Per-session consent notice (same spirit as the other AI features).
 AGENT_DATA_NOTICE = (
@@ -81,6 +81,7 @@ class AgentTurnResult:
     executed: bool = False
     awaiting_confirmation: bool = False
     used_ai: bool = False
+    council: object = None                 # an advisory CouncilReview (when council=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +115,7 @@ def attach_context(state, *, material_profile=None, release_model=None, database
 # The main turn
 # --------------------------------------------------------------------------- #
 def respond(state, user_message, *, client=None, model=None, use_ai: bool = True,
-            material_profile=None, release_model=None, database_path=None,
+            council: bool = False, material_profile=None, release_model=None, database_path=None,
             phase_template=None) -> AgentTurnResult:
     """Process one user message and return an :class:`AgentTurnResult` (never raises).
 
@@ -122,6 +123,8 @@ def respond(state, user_message, *, client=None, model=None, use_ai: bool = True
     via :func:`confirm_pending_action`. Safe/preview actions run immediately once allowed.
     ``use_ai=False`` forces the deterministic planner even when a key is present (the UI passes
     this to honour the per-session "data leaves the machine" consent — no consent → no AI call).
+    ``council=True`` additionally runs the **advisory** council (see :mod:`agent_council`) after
+    the orchestrator has chosen its action — the council never changes the action.
     """
     message = str(user_message or "").strip()
     attach_context(state, material_profile=material_profile, release_model=release_model,
@@ -138,13 +141,14 @@ def respond(state, user_message, *, client=None, model=None, use_ai: bool = True
             note = "Okay — I won't run that. Tell me what to change."
             # fall through to process the edit, prepending the note.
             return _process_turn(state, message, client=client, model=model, use_ai=use_ai,
-                                 lead_note=note)
+                                 council=council, lead_note=note)
         # ambiguous reply while parked → process normally (may invalidate the parked action)
 
-    return _process_turn(state, message, client=client, model=model, use_ai=use_ai)
+    return _process_turn(state, message, client=client, model=model, use_ai=use_ai,
+                         council=council)
 
 
-def _process_turn(state, message, *, client, model, use_ai: bool = True,
+def _process_turn(state, message, *, client, model, use_ai: bool = True, council: bool = False,
                   lead_note: str = "") -> AgentTurnResult:
     # Accumulate context, then UNDERSTAND the (possibly messy) message: one AI call returns the
     # structured understanding AND the proposed next action; with no AI a robust rule-based parse
@@ -232,13 +236,23 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True,
     state.confirmation_required = awaiting
     # The "I understood this as…" card (plain dict the UI renders; reflects the merged scenario).
     state.last_understanding = nlu_extractor.build_understanding_card(state, extraction)
+
+    # Advisory council review — runs AFTER the orchestrator has chosen its action; it never
+    # changes the action (it only mirrors it as `safe_next_action`). Off by default.
+    review = None
+    if council:
+        review = agent_council.run_council(state, action=action, client=client, model=model,
+                                           use_ai=use_ai)
+        state.last_council = review
+
     state.add_assistant_message(assistant_msg, reasoning_summary=action.reasoning_summary)
     _record(state, message, applied, action, decision, outcome,
             confirmation_required=awaiting, confirmed=confirmed_flag)
 
     return AgentTurnResult(
         state=state, assistant_message=assistant_msg, action=action, policy=decision,
-        tool_outcome=outcome, executed=executed, awaiting_confirmation=awaiting, used_ai=used_ai)
+        tool_outcome=outcome, executed=executed, awaiting_confirmation=awaiting, used_ai=used_ai,
+        council=review)
 
 
 # --------------------------------------------------------------------------- #
