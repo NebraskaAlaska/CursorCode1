@@ -105,7 +105,11 @@ def _tool_update_scenario(state, args) -> ToolOutcome:
 
 def _tool_classify_domain(state, args) -> ToolOutcome:
     hint = (args or {}).get("domain")
-    state.domain = domains.classify(state.experiment_text, hint=hint)
+    # The orchestrator already classified on NORMALIZED text and set state.domain; preserve it
+    # rather than re-deriving from the raw (typo-laden) experiment_text, which can regress a
+    # correct domain to `unknown`. Only (re)classify here when no domain is known yet.
+    if not getattr(state, "domain", None) or state.domain == domains.UNKNOWN:
+        state.domain = domains.classify(state.experiment_text, hint=hint)
     state.engine = domains.engine_for(state.domain)
     executable = domains.is_executable(state.domain)
     state.phase = (agent_state.PLANNING if executable
