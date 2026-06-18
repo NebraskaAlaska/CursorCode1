@@ -32,7 +32,8 @@ _SCI = Path(pkg.__file__).resolve().parent          # flyash_phreeqc_ml/
 # workspace; Workspace = simulate_tab; Data & Validation = import/validate/match/compare;
 # Projects = export_tab.
 TAB_MODULES = ["assistant_tab", "simulate_tab", "import_tab", "validate_tab",
-               "match_tab", "compare_tab", "export_tab", "results", "engine_library", "settings"]
+               "match_tab", "compare_tab", "export_tab", "results", "engine_library", "settings",
+               "evidence_library", "prediction_models"]
 BASE_MODULES = ["state", "common", "formatters"]
 
 

@@ -116,6 +116,35 @@ The UI shows a **Council Review** card (synthesis up top; the five roles under *
 reasoning"*; no raw JSON). When a run is saved, only the **derived** council fields (`to_safe_dict`)
 are stored in provenance — never a raw model response.
 
+## Planning-only domains → literature + evidence (not a fake prediction)
+
+For a domain with **no validated engine yet** (composite strength, thermal, durability…), the
+assistant's planning-only response says plainly it **cannot run a validated model yet** and offers to
+**search reliable scholarly literature** and **build an evidence / training dataset** (alongside the
+existing structure-the-plan / data-template / missing-variables offers). That search + extraction +
+curation happens in the **Evidence Library** (`flyash_phreeqc_ml/literature/`), which uses **official
+scholarly APIs** (never Google Scholar scraping), keeps every value's **source + confidence**, never
+fabricates, and is **off the scientific result path** — it builds a dataset the **Prediction Models**
+ML surrogate engine can learn from; it does not predict strength itself. See
+[`docs/literature_agent.md`](literature_agent.md).
+
+### When a trained ML surrogate exists → offer the experimental estimate
+
+Once enough evidence/lab rows are **approved** and a model is **trained in Prediction Models**
+(`flyash_phreeqc_ml/ml_models/`), the assistant additionally *offers* that surrogate for a
+mechanical-property prompt: an **experimental (not validated)** estimate with an uncertainty range,
+in the **Prediction Models** section. Hard rules:
+
+* **PHREEQC is never the strength engine** — the domain gate still routes a strength prompt to
+  `polymer_composite` and blocks PHREEQC; the ML surrogate is a *separate* prediction engine.
+* **The LLM never produces the number.** A scikit-learn model does; the assistant only routes and
+  offers. With **no** trained model it offers literature / data-building instead, never a fabricated
+  prediction.
+* The "is a model available?" check is a **read-only registry query in the UI**, passed to
+  `orchestrator.respond(..., ml_model_available=…)` — the agent imports nothing from `ml_models`.
+
+See [`docs/ml_surrogate_engine.md`](ml_surrogate_engine.md).
+
 ## The safety rules (enforced by the policy + tests)
 
 1. **Execution / save always require explicit confirmation.** When the model proposes a run/save,

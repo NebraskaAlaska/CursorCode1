@@ -21,7 +21,7 @@ AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
 APP = "app.py"
 SECTIONS = ["Assistant", "Workspace", "Results", "Data & Validation", "Projects",
-            "Engine Library", "Settings"]
+            "Evidence Library", "Prediction Models", "Engine Library", "Settings"]
 DATA_SUBTABS = ["Import", "Validate", "Match", "Compare"]
 
 

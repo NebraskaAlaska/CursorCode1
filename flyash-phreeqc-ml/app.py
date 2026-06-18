@@ -35,7 +35,8 @@ import app_ui  # noqa: E402  (presentation-only UI helper layer)
 # workspace; the technical workflows are grouped into the other sections.
 from ui import (  # noqa: E402
     assistant_tab, simulate_tab, import_tab, validate_tab, match_tab,
-    compare_tab, export_tab, results, engine_library, settings,
+    compare_tab, export_tab, results, engine_library, settings, evidence_library,
+    prediction_models,
 )
 from ui.state import MODEL_NAME, PRODUCT_NAME, PRODUCT_SUBTITLE, _rel  # noqa: E402
 
@@ -488,10 +489,12 @@ SEC_WORKSPACE = "Workspace"
 SEC_RESULTS = "Results"
 SEC_DATA = "Data & Validation"
 SEC_PROJECTS = "Projects"
+SEC_EVIDENCE = "Evidence Library"
+SEC_PREDICTION = "Prediction Models"
 SEC_ENGINES = "Engine Library"
 SEC_SETTINGS = "Settings"
-SECTIONS = [SEC_ASSISTANT, SEC_WORKSPACE, SEC_RESULTS, SEC_DATA, SEC_PROJECTS, SEC_ENGINES,
-            SEC_SETTINGS]
+SECTIONS = [SEC_ASSISTANT, SEC_WORKSPACE, SEC_RESULTS, SEC_DATA, SEC_PROJECTS, SEC_EVIDENCE,
+            SEC_PREDICTION, SEC_ENGINES, SEC_SETTINGS]
 
 st.set_page_config(page_title="Materials Research Assistant",
                    layout="wide", page_icon="🔬")
@@ -559,6 +562,12 @@ elif SECTION == SEC_PROJECTS:
         "report export, audit trail, and the user guide.",
         eyebrow="Runs · reports · provenance")
     export_tab.render(SELECTED_RUN)
+
+elif SECTION == SEC_EVIDENCE:
+    evidence_library.render(SELECTED_RUN, DEV_MODE)
+
+elif SECTION == SEC_PREDICTION:
+    prediction_models.render(SELECTED_RUN, DEV_MODE)
 
 elif SECTION == SEC_ENGINES:
     engine_library.render(SELECTED_RUN)

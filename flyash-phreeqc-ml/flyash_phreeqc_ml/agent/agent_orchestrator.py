@@ -116,7 +116,7 @@ def attach_context(state, *, material_profile=None, release_model=None, database
 # --------------------------------------------------------------------------- #
 def respond(state, user_message, *, client=None, model=None, use_ai: bool = True,
             council: bool = False, material_profile=None, release_model=None, database_path=None,
-            phase_template=None) -> AgentTurnResult:
+            phase_template=None, ml_model_available: bool = False) -> AgentTurnResult:
     """Process one user message and return an :class:`AgentTurnResult` (never raises).
 
     Execution/save actions are **never** run here — they are parked for explicit confirmation
@@ -125,6 +125,9 @@ def respond(state, user_message, *, client=None, model=None, use_ai: bool = True
     this to honour the per-session "data leaves the machine" consent — no consent → no AI call).
     ``council=True`` additionally runs the **advisory** council (see :mod:`agent_council`) after
     the orchestrator has chosen its action — the council never changes the action.
+    ``ml_model_available`` is a UI-computed flag (does a trained ML surrogate exist for this run?);
+    when True and the domain supports the surrogate, the reply offers an **experimental** estimate
+    via Prediction Models — it never runs the model and never produces a number itself.
     """
     message = str(user_message or "").strip()
     attach_context(state, material_profile=material_profile, release_model=release_model,
@@ -141,15 +144,16 @@ def respond(state, user_message, *, client=None, model=None, use_ai: bool = True
             note = "Okay — I won't run that. Tell me what to change."
             # fall through to process the edit, prepending the note.
             return _process_turn(state, message, client=client, model=model, use_ai=use_ai,
-                                 council=council, lead_note=note)
+                                 council=council, lead_note=note,
+                                 ml_model_available=ml_model_available)
         # ambiguous reply while parked → process normally (may invalidate the parked action)
 
     return _process_turn(state, message, client=client, model=model, use_ai=use_ai,
-                         council=council)
+                         council=council, ml_model_available=ml_model_available)
 
 
 def _process_turn(state, message, *, client, model, use_ai: bool = True, council: bool = False,
-                  lead_note: str = "") -> AgentTurnResult:
+                  lead_note: str = "", ml_model_available: bool = False) -> AgentTurnResult:
     # Accumulate context, then UNDERSTAND the (possibly messy) message: one AI call returns the
     # structured understanding AND the proposed next action; with no AI a robust rule-based parse
     # is used. The understanding is validated/normalized in nlu_extractor before anything applies.
@@ -207,7 +211,8 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
     if decision.blocked:
         # Build a clear, honest block message (planning-only domains get the standing message).
         if decision.code == agent_policy.BLOCK_DOMAIN:
-            block_msg = domains.planning_only_message(state.domain)
+            block_msg = domains.planning_only_message(
+                state.domain, ml_model_available=ml_model_available)
         else:
             block_msg = f"I can't do that yet — {decision.reason}"
         assistant_msg = _join(lead_note, _llm_lead(action), change_note, block_msg, clarify_note,
@@ -232,6 +237,15 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
         # An EXPLAIN/results turn always carries the not-validated caveat.
         if action.action_name == A.EXPLAIN_RESULTS:
             assistant_msg = _ensure_not_validated(assistant_msg)
+
+    # When a trained ML surrogate exists for a planning-only mechanical domain, offer it (once) —
+    # regardless of which action ran. The offer points at Prediction Models; the assistant itself
+    # never runs the model or produces a strength number.
+    if (ml_model_available and not domains.is_executable(state.domain)
+            and domains.supports_ml_surrogate(state.domain)):
+        offer = domains.ml_surrogate_offer(state.domain)
+        if offer and domains.ML_SURROGATE_MARKER not in assistant_msg:
+            assistant_msg = _join(assistant_msg, offer)
 
     state.confirmation_required = awaiting
     # The "I understood this as…" card (plain dict the UI renders; reflects the merged scenario).

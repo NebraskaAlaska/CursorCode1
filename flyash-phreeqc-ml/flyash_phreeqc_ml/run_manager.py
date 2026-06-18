@@ -280,6 +280,18 @@ def incompleteness_model_dir(run_name: str) -> Path:
     return path
 
 
+def model_registry_dir(run_name: str) -> Path:
+    """Where this run's trained **prediction models** (ML surrogate engine) + cards live.
+
+    Gitignored run output (under ``experiments/<run>/outputs/``). Holds the composite /
+    mechanical-property surrogate models and their training datasets — never measured data and
+    never a committed artifact.
+    """
+    path = run_outputs_dir(run_name) / "model_registry"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_exists(run_name: str) -> bool:
     return run_config_path(run_name).exists()
 

@@ -17,11 +17,12 @@ from __future__ import annotations
 import streamlit as st
 
 import app_ui
-from flyash_phreeqc_ml import config
+from flyash_phreeqc_ml import config, run_manager
 from flyash_phreeqc_ml.agent import agent_orchestrator as orch
 from flyash_phreeqc_ml.agent import agent_state, domains, nlu_extractor
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.materials import profile_schema as mp
+from flyash_phreeqc_ml.ml_models import model_registry as ml_registry
 from flyash_phreeqc_ml.simulation import phreeqc_executor, source_terms
 from flyash_phreeqc_ml.simulation import scenario_schema as S
 
@@ -74,12 +75,27 @@ def _release_model(run: str | None):
     return st.session_state.get(f"asst_release__{run or '_none_'}")
 
 
+def _ml_model_available(run: str | None) -> bool:
+    """True if a trained ML surrogate (mechanical-property) model exists for this run.
+
+    Read-only + defensive — used so the assistant can *offer* the surrogate. It never trains,
+    runs, or produces a number; that all lives in the Prediction Models section."""
+    if not run:
+        return False
+    try:                                                # path is side-effect-free (no mkdir here)
+        base = run_manager.run_outputs_dir(run) / "model_registry"
+        return ml_registry.has_strength_model(base)
+    except Exception:                                   # noqa: BLE001 - availability check, never crash
+        return False
+
+
 def _send(state, message, *, run, consent, cfg) -> None:
     """Send a message to the assistant (chip or chat input) and rerun."""
     council_on = bool(st.session_state.get("asst_council", True))
     orch.respond(state, message, use_ai=bool(consent and cfg.enabled), council=council_on,
                  material_profile=_material_profile(run), release_model=_release_model(run),
-                 database_path=config.PHREEQC_DATABASE_PATH)
+                 database_path=config.PHREEQC_DATABASE_PATH,
+                 ml_model_available=_ml_model_available(run))
     st.rerun()
 
 
