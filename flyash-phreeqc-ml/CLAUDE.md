@@ -1139,8 +1139,15 @@ experiment — **not** a blind replacement for the chemistry.
   run PHREEQC; **Render / Fly.io / Cloud Run** with Docker for full PHREEQC), how colleagues access it
   (one HTTPS URL + add access control — the app has no built-in login), **who pays** (the server-side
   key owner; AI is opt-in), secret handling, and smoke tests. A Settings caption points to the guide.
-  **The image could not be built in the dev environment** (no Docker daemon); the files are
-  syntax-validated, and the PHREEQC source URL is a documented build `ARG` to verify on first build.
+  **PHREEQC source version** is a build `ARG` defaulting to the verified **`3.8.6-17100`** (USGS),
+  and the download uses **`curl -fSL --retry`** + a `tar tzf` archive-validity guard so a wrong/404
+  URL **fails the build loudly** (the original `wget -q` swallowed the error). **Verified with a real
+  build + run** (Docker 29.5): the image builds, the PHREEQC **3.8.6 self-test passes inside the
+  image**, the container boots (**HTTP 200**), Settings shows **PHREEQC ready + AI key detected**
+  (booleans only — the key is never logged), the in-container **PHREEQC smoke test passes**, and a
+  leaching prompt reaches **preview → parks for confirmation → executes PHREEQC server-side**
+  (pH ≈ 13.48) with **no automatic execution**. (`docs/deployment.md` carries the exact URL + the
+  override instructions if USGS bumps the version.)
 
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
