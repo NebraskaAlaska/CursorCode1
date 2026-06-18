@@ -11,11 +11,10 @@
 # docs/deployment.md describes an optional multi-stage slim build once you can test it.
 FROM python:3.12-slim
 
-# PHREEQC source version. Verify/override the URL from the USGS download page if needed:
-#   https://www.usgs.gov/software/phreeqc-version-3
-# (The project verified 3.8.6 from source; 3.7.3 is the widely-mirrored default here. Override
-#  with `--build-arg PHREEQC_VERSION=...` to match your verified version.)
-ARG PHREEQC_VERSION=3.7.3-15968
+# PHREEQC source version (the project's verified version). If USGS bumps it, find the current
+# Linux source tarball at https://www.usgs.gov/software/phreeqc-version-3 and override with
+# `--build-arg PHREEQC_VERSION=...` (or a full `--build-arg PHREEQC_URL=...`).
+ARG PHREEQC_VERSION=3.8.6-17100
 ARG PHREEQC_URL=https://water.usgs.gov/water-resources/software/PHREEQC/phreeqc-${PHREEQC_VERSION}.tar.gz
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -26,9 +25,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        build-essential gfortran wget ca-certificates libgomp1; \
+        build-essential gfortran curl ca-certificates libgomp1; \
     cd /tmp; \
-    wget -q "${PHREEQC_URL}" -O phreeqc.tar.gz; \
+    echo "Downloading PHREEQC source: ${PHREEQC_URL}"; \
+    # -f: fail (non-zero) + show the HTTP status on a 4xx/5xx instead of saving an error page;
+    # -S: show errors; -L: follow redirects; --retry: ride out transient hiccups.
+    curl -fSL --retry 3 --retry-delay 2 -o phreeqc.tar.gz "${PHREEQC_URL}"; \
+    # Guard: a soft "200 OK" error page (or truncated file) is not a gzip tarball — fail clearly.
+    if ! tar tzf phreeqc.tar.gz >/dev/null 2>&1; then \
+        echo "ERROR: ${PHREEQC_URL} did not return a valid PHREEQC source tarball."; \
+        echo "       Find the current Linux source at https://www.usgs.gov/software/phreeqc-version-3"; \
+        echo "       and rebuild with --build-arg PHREEQC_URL=<url> (or --build-arg PHREEQC_VERSION=<ver>)."; \
+        exit 1; \
+    fi; \
     tar xzf phreeqc.tar.gz; \
     cd phreeqc-*/; \
     ./configure --prefix=/usr/local; \

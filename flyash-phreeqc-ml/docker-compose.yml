@@ -11,7 +11,7 @@ services:
     build:
       context: .
       # args:
-      #   PHREEQC_VERSION: "3.7.3-15968"   # override to match your verified PHREEQC version
+      #   PHREEQC_VERSION: "3.8.6-17100"   # override to match a different PHREEQC version
     ports:
       - "8501:8501"
     environment:

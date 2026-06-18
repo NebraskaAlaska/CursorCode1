@@ -68,14 +68,18 @@ and sets **no secret**.
 ```bash
 # from the flyash-phreeqc-ml/ directory
 docker build -t mra .
-# Optional: pin/override the PHREEQC source version (verify the URL on the USGS page):
-#   docker build --build-arg PHREEQC_VERSION=3.7.3-15968 -t mra .
+# Optional: pin/override the PHREEQC source version (find the URL on the USGS page):
+#   docker build --build-arg PHREEQC_VERSION=3.8.6-17100 -t mra .
 ```
 
-> **PHREEQC version note.** The default `PHREEQC_VERSION` points at a widely-mirrored USGS source
-> tarball. If the URL 404s (USGS reorganises occasionally) or you want the project's verified
-> **3.8.6**, find the current source tarball at
-> <https://www.usgs.gov/software/phreeqc-version-3> and pass it via `--build-arg PHREEQC_URL=...`.
+The default builds **PHREEQC 3.8.6** from the official USGS source:
+`https://water.usgs.gov/water-resources/software/PHREEQC/phreeqc-3.8.6-17100.tar.gz`.
+
+> **PHREEQC version note.** The download step fails the build **clearly** on an HTTP error or a
+> non-tarball response (it uses `curl -fSL` and validates the archive). If USGS bumps the version
+> and the URL 404s, find the current Linux source tarball at
+> <https://www.usgs.gov/software/phreeqc-version-3> and pass it via
+> `--build-arg PHREEQC_VERSION=<ver>` (or a full `--build-arg PHREEQC_URL=<url>`).
 
 ### Run locally
 
