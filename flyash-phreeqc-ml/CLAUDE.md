@@ -1079,6 +1079,69 @@ experiment — **not** a blind replacement for the chemistry.
   lazy — graceful install message without it); trained models/datasets are gitignored run outputs. Docs
   `docs/ml_surrogate_engine.md`; README + `docs/assistant_agent.md` + `docs/literature_agent.md` updated.
 
+- **End-to-end product acceptance pass** (verification only, no code change). The platform was run as a
+  full acceptance test from a user's perspective and **passed**: `compileall` clean, `pytest` **890
+  passed / 3 skipped**, the Streamlit app **boots (HTTP 200)**, and all six workflows behaved correctly
+  and safely on the **deterministic (AI-off) path** — Assistant→PHREEQC (messy prompt fully parsed,
+  temp 25 °C flagged assumed, council shown, asks for composition, run **parks** for confirmation,
+  PHREEQC-unavailable fails gracefully as *simulation not validation*); plastic-strength routes
+  planning-only (no PHREEQC, no fabricated MPa); Evidence Library uses official APIs only (no Scholar
+  scraper), honest no-network path, provenance required, no raw response stored; ML demo labelled
+  synthetic/not-validated with interval + OOD warning; unapproved rows excluded from real training;
+  validation separation holds (`residual = measured − predicted`, no-mapping → NaN, `valid` only with
+  exact mapping). **Live AI was not exercised in this run** (deterministic path tested to avoid sending
+  data / storing responses; the live-AI NLU was validated separately in the earlier 20-prompt eval, and
+  the full real-PHREEQC arc against 3.8.6 was verified earlier). **Known follow-up polish (UX only, not
+  blocking):** the Assistant page is visually dense; the Council Review may want a collapsed / default-off
+  mode; material-composition entry should be surfaced better (it's buried in an Advanced expander); the
+  **Evidence Library → Prediction Models** (curate → approve → train) flow should be signposted in-line;
+  and the PHREEQC setup/demo path should be made easier for a reviewer (no real run without a
+  user-supplied CLI + CEMDATA18).
+
+- **Settings live-AI enable toggle (persistent, capability-gated)** (UI/UX + AI-config plumbing;
+  **no scientific / PHREEQC / result-path change**). Adds a clear **Settings → "Enable live AI
+  assistant"** master switch so a user with a detected key can turn live AI on from the UI — the
+  enable control previously **did not exist in Settings** (the only switch was a consent checkbox
+  buried in the Assistant tab, and the "disabled" caption misreported a missing-SDK as "no AI key").
+  `ai/config.live_ai_active(cfg, toggle_on)` is the pure, key-free gate (*capable* = key + SDK
+  present, **AND** the toggle on); a stale toggle never overrides a lost key/SDK. Settings shows a
+  4-card status panel (**API key · AI SDK · Live AI · model/provider**, all key-free) + the toggle
+  (operable only when capable, with the missing-key / missing-SDK reason). The Assistant uses live AI
+  **only** when the toggle is on, shows the per-turn outcome ("last response used live AI: yes/no") +
+  a debug-safe booleans panel (never the key). **Persistence fix:** the choice is stored in a
+  **plain** session key (`ui.state.LIVE_AI_KEY`), never the toggle's widget key — Streamlit's
+  widget-state GC drops a widget-keyed value the moment the widget stops rendering (on navigation),
+  which previously **reset AI to off after the first prompt submission**; the toggle now uses its own
+  `LIVE_AI_WIDGET_KEY` and syncs into the plain key on change, so it survives navigation + reruns. An
+  **AI call failure** falls back deterministically for that one turn with a visible warning
+  (`agent_orchestrator.AI_FALLBACK_NOTE`; `agent_state.last_used_ai` / `last_ai_fell_back`) and
+  **never disables the toggle** (only Settings can). Covered by `tests/test_ai_config.py`
+  (`live_ai_active`) + `tests/test_ai_settings_ui.py` (AppTest: toggle visible/operable when key
+  detected, disabled + explained without a key, **persists across navigation + submission**,
+  `use_ai=True` only when on, AI-failure one-turn fallback keeps the toggle on, no key value
+  rendered). The key is read only from env / `st.secrets` and is never shown or logged.
+
+- **Docker-based hosted deployment** (ops/docs; **no scientific / PHREEQC / result-path change**).
+  Makes the app deployable so colleagues use it from a browser with **no local install, no PHREEQC,
+  no key**, and PHREEQC running **server-side**. New `Dockerfile` (single-stage, for reliability)
+  **builds the USGS PHREEQC CLI from source** (version a build `ARG`), ships the open `phreeqc.dat`
+  (CEMDATA18 is **not redistributable** → mounted, never baked in), **self-tests PHREEQC at build
+  time** (the build fails loudly if it can't run), installs `requirements.txt`, runs as a non-root
+  user, and serves Streamlit on `$PORT`. **Secrets are never baked in** — `ANTHROPIC_API_KEY` is a
+  **runtime** secret (`-e` / a platform secret manager); the Dockerfile sets only the non-secret
+  `PHREEQC_EXE` / `PHREEQC_DATABASE` / `PHREEQC_TIMEOUT_S`. `docker-entrypoint.sh` logs a debug-safe
+  startup status (booleans + non-secret paths, **never the key**) and honours `$PORT`.
+  `.dockerignore` ships **source only** (excludes `.env` / `secrets.toml`, `data/raw` confidential
+  research data, and all generated outputs); `docker-compose.yml` is a local-run helper that reads
+  the key from the shell / a gitignored `.env`; `.gitignore` now ignores `.env` / `*.env` /
+  `.streamlit/secrets.toml`. `docs/deployment.md` documents local-vs-hosted, the env-var contract,
+  build/run + the CEMDATA18 mount, a platform comparison (Streamlit Community Cloud is AI-only / can't
+  run PHREEQC; **Render / Fly.io / Cloud Run** with Docker for full PHREEQC), how colleagues access it
+  (one HTTPS URL + add access control — the app has no built-in login), **who pays** (the server-side
+  key owner; AI is opt-in), secret handling, and smoke tests. A Settings caption points to the guide.
+  **The image could not be built in the dev environment** (no Docker daemon); the files are
+  syntax-validated, and the PHREEQC source URL is a documented build `ARG` to verify on first build.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

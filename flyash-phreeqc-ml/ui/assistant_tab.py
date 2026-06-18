@@ -27,6 +27,7 @@ from flyash_phreeqc_ml.simulation import phreeqc_executor, source_terms
 from flyash_phreeqc_ml.simulation import scenario_schema as S
 
 from .common import _render_next_step
+from .state import LIVE_AI_KEY
 
 _RELEASE_NONE = "No release (assay stays comment-only)"
 _RELEASE_GLOBAL = "Global % release (an assumption)"
@@ -112,13 +113,13 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
     _render_next_step(selected_run)
 
     cfg = ai_config.resolve_config()
-    consent = _render_ai_status(cfg)
+    state = _get_state(selected_run)
+    consent = _render_ai_status(cfg, state)
     st.checkbox("🧑‍🔬 Council review (advisory panel of five research advisors)", value=True,
                 key="asst_council",
                 help="Five advisor roles review each step — advisory only; it never runs anything "
                      "and never decides the action. Uses AI when enabled + consented, else a "
                      "deterministic review.")
-    state = _get_state(selected_run)
 
     # Two-column workspace: chat on the left, status cards on the right.
     col_main, col_side = st.columns([2, 1], gap="large")
@@ -147,14 +148,43 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
 # --------------------------------------------------------------------------- #
 # AI status + consent
 # --------------------------------------------------------------------------- #
-def _render_ai_status(cfg) -> bool:
-    if not cfg.enabled:
-        st.caption("⚪ Deterministic assistant mode (no AI key) — still asks for missing details, "
-                   "plans, builds previews, and runs on your confirmation. Configure AI in "
+def _render_ai_status(cfg, state) -> bool:
+    """Whether the assistant should use live AI this turn — driven by the **Settings** toggle.
+
+    True only when AI is *capable* (key + SDK present) AND the user turned on **Enable live AI
+    assistant** in Settings (a persistent flag that survives reruns + navigation). Off → the
+    deterministic planner runs (it still asks for missing details, plans, builds previews, and runs
+    on your confirmation)."""
+    live_on = ai_config.live_ai_active(cfg, bool(st.session_state.get(LIVE_AI_KEY, False)))
+    if live_on:
+        st.caption(f"🟢 Live AI on (model `{cfg.model}`) — phrasing + planning only; nothing runs "
+                   "or saves without your confirmation. Manage it in **Settings**.")
+    elif cfg.enabled:
+        st.caption("⚪ Live AI is **off** — using the deterministic planner. Turn on **Enable live "
+                   "AI assistant** in **Settings** for AI phrasing/planning.")
+    else:
+        st.caption(f"⚪ Deterministic assistant mode — {cfg.disabled_reason()}. Configure AI in "
                    "**Settings**.")
-        return False
-    return st.checkbox(f"🟢 Use AI to phrase + plan the conversation (model `{cfg.model}`)",
-                       key="asst_consent", help=orch.AGENT_DATA_NOTICE)
+
+    # Per-turn AI outcome (never silent on a failure; the toggle is never changed by it).
+    last = getattr(state, "last_used_ai", None)
+    if getattr(state, "last_ai_fell_back", False):
+        st.caption("ℹ️ Last response: live AI was unavailable → deterministic fallback for that "
+                   "turn (your AI toggle is unchanged).")
+    elif last is not None:
+        st.caption(f"ℹ️ Last response used live AI: **{'yes' if last else 'no'}**.")
+
+    # Debug-safe status — booleans only, never the key value.
+    with app_ui.advanced_expander("AI status (debug-safe — no key shown)"):
+        st.write({
+            "key_detected": bool(cfg.key_present),
+            "sdk_available": bool(cfg.sdk_available),
+            "live_ai_enabled": bool(live_on),
+            "requested_use_ai": bool(live_on),
+            "last_response_used_ai": getattr(state, "last_used_ai", None),
+            "last_ai_fell_back": bool(getattr(state, "last_ai_fell_back", False)),
+        })
+    return live_on
 
 
 # --------------------------------------------------------------------------- #

@@ -280,3 +280,13 @@ def resolve_config(*, provider: str | None = None, model: str | None = None) -> 
 def is_enabled(*, provider: str | None = None, model: str | None = None) -> bool:
     """True when a key + the ``anthropic`` SDK are available."""
     return resolve_config(provider=provider, model=model).enabled
+
+
+def live_ai_active(config: AIConfig, toggle_on: bool) -> bool:
+    """Whether **live** AI may actually run this turn.
+
+    Two conditions, both required: the configuration is *capable* (``config.enabled`` — a key and
+    the SDK are present) **and** the user has explicitly turned on the live-AI switch
+    (``toggle_on``, the Settings toggle). A stale ``toggle_on`` never overrides a lost capability,
+    so a removed key / SDK disables AI even if the toggle was left on. Pure + key-free."""
+    return bool(getattr(config, "enabled", False) and toggle_on)

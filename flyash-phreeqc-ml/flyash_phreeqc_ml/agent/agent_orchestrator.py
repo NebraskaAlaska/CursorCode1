@@ -37,6 +37,13 @@ AGENT_DATA_NOTICE = (
 AGENT_CONSENT_LABEL = (
     "I understand and allow sending my conversation to the API to plan the experiment.")
 
+# Shown for the single turn where live AI was requested but the call/parse failed. It is a
+# per-turn fallback notice — it NEVER turns off the user's AI toggle (only the Settings switch
+# can do that), and AI is retried on the next message.
+AI_FALLBACK_NOTE = (
+    "⚠️ Live AI was unavailable for this message, so I used the deterministic parser for this "
+    "turn. Your **Enable live AI** setting is unchanged — I'll try AI again on the next message.")
+
 # Scenario fields whose change invalidates a previously-built input preview.
 _PREVIEW_INVALIDATING = {
     "solid_mass_g", "liquid_volume_mL", "leachant_type", "leachant_concentration_M",
@@ -197,8 +204,19 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
     # one-time gentle "less robust without AI" note.
     change_note = _changes_note(extraction)
     clarify_note = _clarify_note(extraction)
+
+    # Live AI requested + on but the call/parse failed → a one-turn fallback. Record the per-turn
+    # AI status for the UI; a failure NEVER changes the user's AI toggle (only Settings can).
+    ai_fell_back = extraction.source == nlu_extractor.SRC_RULE_FALLBACK
+    state.last_used_ai = bool(used_ai)
+    state.last_ai_fell_back = ai_fell_back
+    fallback_note = AI_FALLBACK_NOTE if ai_fell_back else ""
+
+    # The once-only "AI is off / limited" nudge — only when AI is genuinely off, not on a failure
+    # (a failure gets its own per-turn note above so it is never silent).
     limited_note = ""
-    if extraction.limited_without_ai and not state.nlu_notice_shown and applied:
+    if (extraction.limited_without_ai and not ai_fell_back
+            and not state.nlu_notice_shown and applied):
         limited_note = nlu_extractor.LIMITED_WITHOUT_AI_NOTE
         state.nlu_notice_shown = True
 
@@ -237,6 +255,11 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
         # An EXPLAIN/results turn always carries the not-validated caveat.
         if action.action_name == A.EXPLAIN_RESULTS:
             assistant_msg = _ensure_not_validated(assistant_msg)
+
+    # Never hide an AI failure: when live AI was requested but fell back this turn, say so (the
+    # toggle is untouched — AI is retried next message).
+    if fallback_note and fallback_note not in assistant_msg:
+        assistant_msg = _join(assistant_msg, fallback_note)
 
     # When a trained ML surrogate exists for a planning-only mechanical domain, offer it (once) —
     # regardless of which action ran. The offer points at Prediction Models; the assistant itself

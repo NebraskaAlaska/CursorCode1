@@ -16,6 +16,7 @@ import streamlit as st
 import app_ui
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.simulation import phreeqc_executor
+from ui import state
 
 
 def _short_path(path) -> str:
@@ -26,8 +27,12 @@ def _short_path(path) -> str:
 
 
 def _render_ai_settings() -> None:
-    """AI provider/model selector + status. Never shows the key. Sets a process-level runtime
-    override (``ai_config.set_runtime_overrides``) that persists across reruns and every section."""
+    """AI provider/model selector + status + the master **Enable live AI assistant** toggle.
+
+    Never shows the key. Sets a process-level runtime override (``ai_config.set_runtime_overrides``)
+    that persists across reruns; the toggle writes a session flag (``state.LIVE_AI_KEY``) the
+    Assistant reads. Live AI runs only when both the configuration is *capable* (key + SDK) and the
+    user turns the toggle on (``ai_config.live_ai_active``)."""
     app_ui.section_header("AI assistant",
                           "conversation / planning / explanation — never the chemistry")
     ai_config.clear_runtime_overrides()
@@ -44,22 +49,60 @@ def _render_ai_settings() -> None:
     ai_config.set_runtime_overrides(provider=provider, model=(custom or picked))
     cfg = ai_config.resolve_config()
 
+    # Capability (key + SDK) vs. the user's master switch. ``cfg.enabled`` is exactly
+    # "key present AND SDK present"; the toggle is only operable when that holds.
+    #
+    # The choice is persisted in a PLAIN session key (``state.LIVE_AI_KEY``) that the Assistant
+    # reads. It must NOT be the toggle's own widget key: a widget-keyed value is dropped by
+    # Streamlit the moment the widget stops rendering (i.e. as soon as you leave Settings), which
+    # would silently reset live AI on the next rerun. So the toggle uses its own widget key and
+    # syncs into the plain key on change; the plain key survives navigation + prompt submission.
+    st.session_state.setdefault(state.LIVE_AI_KEY, False)
+    if state.LIVE_AI_WIDGET_KEY not in st.session_state:        # re-seed after widget GC
+        st.session_state[state.LIVE_AI_WIDGET_KEY] = bool(st.session_state[state.LIVE_AI_KEY])
+    toggle_on = bool(st.session_state[state.LIVE_AI_KEY])
+    live_on = ai_config.live_ai_active(cfg, toggle_on)
+
+    # Status card: API key · AI SDK · Live AI · provider/model (all key-free).
     app_ui.render_metric_cards([
-        {"label": "AI status", "value": "Enabled" if cfg.enabled else "Disabled",
-         "status": "success" if cfg.enabled else "neutral"},
-        {"label": "Provider", "value": cfg.provider},
-        {"label": "Model", "value": cfg.model},
-        {"label": "API key", "value": "Detected" if cfg.key_present else "Not detected",
-         "caption": cfg.key_source if cfg.key_present else "set ANTHROPIC_API_KEY",
+        {"label": "API key", "value": "Detected" if cfg.key_present else "Missing",
+         "caption": (cfg.key_source if cfg.key_present else f"set {ai_config.API_KEY_ENV}"),
          "status": "success" if cfg.key_present else "neutral"},
+        {"label": "AI SDK", "value": "Available" if cfg.sdk_available else "Missing",
+         "caption": ("anthropic" if cfg.sdk_available else "pip install anthropic"),
+         "status": "success" if cfg.sdk_available else "neutral"},
+        {"label": "Live AI", "value": "Enabled" if live_on else "Disabled",
+         "status": "success" if live_on else "neutral"},
+        {"label": "Model", "value": cfg.model, "caption": cfg.provider},
     ])
+
+    # The master enable switch — operable only when a key + the SDK are present. ``on_change``
+    # mirrors the widget into the persistent plain key so the choice survives navigation/reruns.
+    def _sync_live_ai() -> None:
+        st.session_state[state.LIVE_AI_KEY] = bool(
+            st.session_state.get(state.LIVE_AI_WIDGET_KEY, False))
+
+    st.toggle("Enable live AI assistant", key=state.LIVE_AI_WIDGET_KEY, on_change=_sync_live_ai,
+              disabled=not cfg.enabled,
+              help="When on, the assistant sends your conversation to the API to phrase and plan "
+                   "the next step. It never runs PHREEQC, saves, or touches the science without "
+                   "your explicit confirmation.")
+    if not cfg.enabled:
+        st.caption(f"⚪ Can't enable live AI yet — {cfg.disabled_reason()}. The assistant still "
+                   "works fully with the deterministic planner (it asks, plans, previews, and "
+                   "runs on your confirmation).")
+    elif live_on:
+        st.success("🟢 Live AI is **on** for the assistant — phrasing, planning, and explanation "
+                   "only. It never runs PHREEQC or saves anything without your confirmation, and "
+                   "never affects mapping / residuals / validation.")
+    else:
+        st.caption("⚪ Live AI is **off** — the assistant uses the deterministic planner. Turn the "
+                   "toggle on to use AI phrasing/planning (this sends conversation data to the API "
+                   "for the assistant only — data leaves this machine).")
+
     st.caption(f"Role: {ai_config.AI_ROLE_LINE}.")
-    st.caption(f"SDK available (`anthropic`): **{'yes' if cfg.sdk_available else 'no'}**.")
     st.caption("The API key is read only from the `ANTHROPIC_API_KEY` environment variable or a "
                "Streamlit secret — it is never entered or shown here.")
-    if not cfg.enabled:
-        st.caption(f"Disabled — {cfg.disabled_reason()}. The assistant still works with a "
-                   "deterministic planner.")
     st.warning(ai_config.AI_EXPERIMENTAL_WARNING)
 
 
@@ -81,6 +124,10 @@ def _render_phreeqc_engine() -> None:
     st.caption("Configure by pointing the app at a PHREEQC CLI you supply: set `PHREEQC_EXE` and "
                "`PHREEQC_DATABASE` (CEMDATA18 is not redistributable — user-supplied). The "
                "assistant still **plans** and builds reviewable input without it.")
+    st.caption("**Hosted deployment:** to run PHREEQC server-side so colleagues need only a "
+               "browser, see `docs/deployment.md` — a Docker image with PHREEQC built in, where "
+               "`PHREEQC_EXE` / `PHREEQC_DATABASE` / `ANTHROPIC_API_KEY` are server-side environment "
+               "variables / secrets (never entered or shown in the browser).")
 
 
 def _render_preferences() -> None:

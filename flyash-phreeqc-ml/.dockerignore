@@ -1,0 +1,54 @@
+# Keep the build context small + safe. The image ships SOURCE only — no secrets, no raw
+# research data, no generated artifacts. (Build context is this directory, so the sibling
+# flyash-lab-data-pipeline is already out of scope.)
+
+# --- secrets (never ship a key / secret into the image) ---
+.env
+*.env
+.streamlit/secrets.toml
+**/secrets.toml
+*.pem
+*.key
+.mra_eval_key
+
+# --- VCS / tooling ---
+.git
+.gitignore
+.github
+.idea
+.vscode
+.DS_Store
+
+# --- Python envs + caches ---
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# --- raw / confidential research data (NOT needed to run; keep it off a hosted instance) ---
+data/raw
+data/processed
+
+# --- generated artifacts (re-created at runtime; never part of the image) ---
+reports/figures
+outputs/figures
+outputs/tables
+outputs/simulations
+outputs/simulation_runs
+outputs/model_registry
+experiments/*/data
+experiments/*/outputs
+experiments/*/run_config.yaml
+
+# --- docs build / misc local cruft ---
+*.log
+node_modules
