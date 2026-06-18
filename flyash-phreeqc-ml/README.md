@@ -114,10 +114,21 @@ Validation), so nothing technical competes with the assistant.
   + an *extractable-data* flag), and — when you consent — uses AI to **extract structured variables
   from a paper's abstract** with **every value cited, missing values left null, confidence + scope
   explicit, conflicts flagged, and no fabrication**. It curates a per-run **evidence dataset**
-  (CSV-exportable) that a *future* ML / surrogate model could learn from. It **does not scrape Google
-  Scholar** (no official API — manual only), **does not train a model**, **does not predict
-  strength**, **stores no raw model responses or full-text PDFs**, and is **off the scientific result
-  path**. See [`docs/literature_agent.md`](docs/literature_agent.md).
+  (CSV-exportable) that the **Prediction Models** ML surrogate engine can learn from. The literature
+  layer itself **does not scrape Google Scholar** (no official API — manual only), **does not train a
+  model or predict strength**, **stores no raw model responses or full-text PDFs**, and is **off the
+  scientific result path**. See [`docs/literature_agent.md`](docs/literature_agent.md).
+- **An ML surrogate prediction engine (experimental).** The **Prediction Models** section trains a
+  data-driven *surrogate* for **composite mechanical properties** (compressive strength first) from
+  the curated evidence/lab data, then makes screening predictions with an **uncertainty range** and
+  applicability warnings. It is honest by construction: **only approved** rows train a real model (a
+  hard **gate** refuses too little data), metrics are out-of-sample, a model is at most
+  *experimental* (**never "validated"** — that needs measured experiments), a clearly-labelled
+  **demo** mode uses synthetic data for workflow testing only, and **the number comes from a
+  scikit-learn model, never the LLM**. PHREEQC is the leaching engine, not the strength engine; the
+  surrogate is a *separate* engine, off the geochemical result path. When a model exists, the
+  assistant *offers* it for a strength prompt (else literature/data-building — never a fabricated
+  number). See [`docs/ml_surrogate_engine.md`](docs/ml_surrogate_engine.md).
 - **The deterministic backend's role:** every scientific calculation and the PHREEQC execution —
   scenario merge, the input-preview builder, the database/phase check, the gated executor, the
   ranking / target-matching layers, and the run registry. These are the existing, tested modules.
@@ -188,7 +199,7 @@ streamlit run app.py
 ```
 
 The app opens on the **Assistant** — the front door. A dark, compact left rail holds run
-management and a simple **seven-section** navigation:
+management and a simple **nine-section** navigation:
 
 | Section | What's there |
 | --- | --- |
@@ -197,6 +208,8 @@ management and a simple **seven-section** navigation:
 | **Results** | a clean read-out of the latest prediction (estimated pH, element totals, target match, sweep plots) — labelled **model prediction only, not validated** |
 | **Data & Validation** | measured data only — **Import · Validate · Match · Compare** (simulation predicts; validation compares with reality) |
 | **Projects** | saved simulation/planning/validation runs + material profiles, report export, audit trail, user guide |
+| **Evidence Library** | search official scholarly APIs, rank + AI-extract cited evidence, curate per-run datasets (no Google Scholar scraping) |
+| **Prediction Models** | train + use the **ML surrogate** (composite mechanical properties) on **approved** evidence/lab rows — experimental estimates with uncertainty, never validated |
 | **Engine Library** | the modular engine registry — PHREEQC executable now; composites/thermal/cementitious/battery planning-only; future engines |
 | **Settings** | AI provider/model + status, PHREEQC engine status, preferences, and the future AI-framework architecture |
 
@@ -335,8 +348,14 @@ PHREEQC)** require `PHREEQC_EXE` + `PHREEQC_DATABASE` configured.
   rate model.
 - **Large-scale / adaptive search is future work** — Simulate supports small, reviewed, **capped**
   sweeps and grids only; global optimisation needs a dedicated backend or surrogate.
-- **No ML is trained on the result path.** The experimental surrogate / bias / correction layers
-  are display-only and hard-gated; for fly ash they have **no data to train on yet**.
+- **No ML is trained on the *geochemical* result path.** The experimental surrogate / bias /
+  correction layers are display-only and hard-gated; for fly ash they have **no data to train on
+  yet**.
+- **The ML surrogate (Prediction Models) is experimental, never validated.** It predicts composite
+  mechanical properties from *data*, gated on **approved** rows, with out-of-sample metrics only — a
+  screening estimate with uncertainty, **not** a design value, a measurement, or a validated model.
+  Demo models are synthetic and clearly labelled. Real validation needs measured experiments. It is
+  a *separate* engine, off the geochemical result path, and trained-model artifacts are gitignored.
 
 ---
 

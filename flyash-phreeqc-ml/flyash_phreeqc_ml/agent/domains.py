@@ -75,6 +75,36 @@ FUTURE_ENGINES = (
     "Mechanical-property / strength-prediction models",
 )
 
+# Domains a trained **ML surrogate** (mechanical-property prediction) can serve. The surrogate is
+# NOT an executable simulation engine (it predicts from data); it never reaches PHREEQC. Whether a
+# trained model actually exists is runtime state — the UI checks the model registry and passes a
+# flag; this module only knows which domains the surrogate is *relevant* to.
+ML_SURROGATE_DOMAINS = (POLYMER_COMPOSITE, MECHANICAL_TESTING, CEMENTITIOUS_BINDER)
+ENGINE_ML_SURROGATE = "ml_surrogate"
+# Stable marker so the orchestrator can de-dupe the ML offer in an assembled message.
+ML_SURROGATE_MARKER = "trained ML surrogate model is available"
+
+
+def supports_ml_surrogate(domain: str) -> bool:
+    """True when a (mechanical-property) ML surrogate is *relevant* to ``domain``.
+
+    This says nothing about whether a model has actually been trained — that is checked at the UI
+    via the model registry and passed in as a flag.
+    """
+    return domain in ML_SURROGATE_DOMAINS
+
+
+def ml_surrogate_offer(domain: str) -> str:
+    """One-line offer to use a trained ML surrogate for ``domain`` (predictions are experimental).
+
+    Only shown when a model genuinely exists (the caller checks the registry). PHREEQC is never the
+    strength engine — this is a separate, data-trained prediction engine, and its output is an
+    experimental estimate with uncertainty, not a validated value or a measurement."""
+    return (f"✅ A {ML_SURROGATE_MARKER} for **{label(domain)}** — I can give an **experimental "
+            "(not validated)** estimate with an uncertainty range in **Prediction Models** "
+            "(PHREEQC is the leaching engine, not the strength engine; the ML surrogate is the "
+            "prediction engine here). It is a screening estimate, not a measurement.")
+
 # --------------------------------------------------------------------------- #
 # Planning support for the (currently) non-executable domains.
 # For each, what a researcher typically measures (response variables) and what a future model
@@ -328,18 +358,22 @@ def label(domain: str) -> str:
     return DOMAIN_LABELS.get(domain, domain)
 
 
-def planning_only_message(domain: str) -> str:
+def planning_only_message(domain: str, *, ml_model_available: bool = False) -> str:
     """A useful planning-only response for a non-executable domain.
 
     Instead of dead-ending at "no engine", it names the domain, says honestly that no validated
     engine exists yet, offers concrete next actions (plan / data template / missing variables),
     suggests the response + input variables, and notes the future-engine path. It **never**
     implies a simulation can be run.
+
+    When ``ml_model_available`` is True *and* the domain supports the ML surrogate, it appends an
+    offer to use that trained surrogate for an **experimental (not validated)** estimate. The
+    default (``False``) message is unchanged.
     """
     s = planning_support(domain)
     resp = ", ".join(s["response_variables"])
     inp = ", ".join(s["input_variables"])
-    return (
+    base = (
         f"This looks like a **{s['domain_label']}** problem. I don't yet have a validated "
         f"{s['outcome']} simulation engine for it and **cannot run a validated {s['outcome']} model "
         f"yet** — but I can help you **structure the experiment**, **search reliable scholarly "
@@ -350,3 +384,6 @@ def planning_only_message(domain: str) -> str:
         f"literature ranges — just tell me which. (In future, {s['future_engine']} could be added "
         f"as a modular engine.) Note: no executable simulation runs for this domain — this is "
         "planning, literature, and data support only.")
+    if ml_model_available and supports_ml_surrogate(domain):
+        return base + "\n\n" + ml_surrogate_offer(domain)
+    return base

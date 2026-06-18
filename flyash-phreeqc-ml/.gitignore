@@ -21,6 +21,9 @@ outputs/tables/
 outputs/simulations/
 # Saved Simulate-tab simulation run records (provenance bundles) — generated outputs.
 outputs/simulation_runs/
+# Trained ML prediction-model artifacts + cards (project-level fallback registry). Per-run
+# registries live under experiments/*/outputs/ (already ignored). Models are not committed.
+outputs/model_registry/
 
 # Real / generated measured-experimental data — do NOT commit by default.
 # These are research data (confidential) or re-creatable run sheets. The ONLY

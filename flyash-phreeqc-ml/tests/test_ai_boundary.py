@@ -510,3 +510,58 @@ def test_result_path_does_not_import_literature():
         offenders = [t for t in targets if t in ("..literature", ".literature")
                      or t.startswith("..literature.") or t.startswith(".literature.")]
         assert not offenders, f"{mod} imports the literature package: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# ML surrogate prediction engine boundary — no AI, no executor, off the result path
+# --------------------------------------------------------------------------- #
+# The ml_models package is a data-trained prediction engine. It contains NO AI/LLM call (numbers
+# come from scikit-learn, never a language model), runs no executor, and never reaches the
+# geochemical comparison/residual/mapping result path — and the result path + simulation layers
+# never import it.
+ML_MODELS_MODULES = [
+    "ml_models/__init__.py", "ml_models/model_schema.py", "ml_models/feature_schema.py",
+    "ml_models/training_data.py", "ml_models/preprocessing.py", "ml_models/uncertainty.py",
+    "ml_models/model_card.py", "ml_models/train.py", "ml_models/predict.py",
+    "ml_models/model_registry.py",
+]
+# Forbidden substrings anywhere in the source: no LLM client, no stored raw response, no key.
+_ML_FORBIDDEN_SOURCE = ("anthropic", "raw_response", "ANTHROPIC_API_KEY", "api_key")
+
+
+def test_ml_models_import_no_ai():
+    """The prediction engine never imports an AI client/helper — predictions come from sklearn."""
+    for mod in ML_MODELS_MODULES:
+        offenders = _imports_ai(_import_targets(mod))
+        assert not offenders, f"{mod} imports AI: {offenders}"
+
+
+def test_ml_models_import_no_executor():
+    """The prediction engine runs no PHREEQC / subprocess executor."""
+    for mod in ML_MODELS_MODULES:
+        offenders = _mentions(_import_targets(mod), _EXECUTOR_MARKERS)
+        assert not offenders, f"{mod} imports an executor: {offenders}"
+
+
+def test_ml_models_store_no_raw_llm_or_secrets():
+    """No ml_models source references a raw LLM response, an AI SDK, or an API key."""
+    for mod in ML_MODELS_MODULES:
+        text = (PKG_DIR / mod).read_text(encoding="utf-8").lower()
+        hits = [tok for tok in _ML_FORBIDDEN_SOURCE if tok.lower() in text]
+        assert not hits, f"{mod} references forbidden token(s): {hits}"
+
+
+def test_result_path_does_not_import_ml_models():
+    """The geochemical result path never imports the prediction engine."""
+    for mod in RESULT_PATH_MODULES:
+        offenders = _mentions(_import_targets(mod), ("ml_models",))
+        assert not offenders, f"{mod} imports ml_models: {offenders}"
+
+
+def test_simulation_does_not_import_ml_models():
+    """The simulation planner / executor / registry / strategy never import the prediction engine."""
+    sim_mods = (PLANNER_MODULES + [EXECUTOR_MODULE, BATCH_MODULE, REGISTRY_MODULE, STRATEGY_MODULE,
+                                   TARGET_MATCHING_MODULE, SOURCE_TERMS_MODULE])
+    for mod in sim_mods:
+        offenders = _mentions(_import_targets(mod), ("ml_models",))
+        assert not offenders, f"{mod} imports ml_models: {offenders}"

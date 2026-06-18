@@ -1031,6 +1031,54 @@ experiment — **not** a blind replacement for the chemistry.
   updated. (Distinct from the older `ai/literature.py`, which *proposes quarantined literature values* for
   the fly-ash closure arithmetic — this new package is a *scholarly-search + evidence-library* system.)
 
+- **ML Surrogate Prediction Engine v1 — trained-model predictions for unsupported domains** (a new
+  `flyash_phreeqc_ml/ml_models/` package + a **Prediction Models** UI section; **off the geochemical
+  result path, no AI/LLM in the engine** — numbers come from scikit-learn, never a language model).
+  The first *trained-model* prediction engine: it turns the **Evidence Library**'s curated, cited data
+  into a fast screening estimate of **polymer-composite / fly-ash + plastic mechanical properties**
+  (`compressive_strength_MPa` first, then flexural / density / water-absorption). Modules:
+  `model_schema.py` (targets, model types, validation statuses, the joblib-serialisable `TrainedModel`
+  container — **no sklearn import**, so schema/registry/UI import without scikit-learn),
+  `feature_schema.py` (numeric + categorical features + a **core-feature** set), `training_data.py`
+  (`TrainingRow` with provenance + a **`user_review_status`**; `from_composite_evidence` maps an
+  Evidence-Library composite row → a **pending** training row; `eligible_rows` is the gate —
+  **approved + provenant + (literature) confidence ≥ 0.45**, synthetic-demo **quarantined**; JSONL
+  persistence; clearly-labelled synthetic `demo_rows`), `preprocessing.py` (rows → frame +
+  `ColumnTransformer` median-impute / one-hot tolerant of unseen values; sklearn lazy),
+  `uncertainty.py` (approximate interval — random-forest spread else CV residual σ), `train.py` (the
+  **data-sufficiency gate** `MIN_REAL_TRAINING_ROWS=10` → typed `InsufficientTrainingDataError`;
+  out-of-sample metrics via held-out split / k-fold CV; typed `SklearnNotAvailableError` with an
+  install message; **never labels a model "validated"** — only `experimental` / `demo`),
+  `predict.py` (value + interval + status + **applicability / out-of-domain / missing-feature /
+  implausible-output** warnings; **refuses** on no-model / unsupported / incomplete inputs),
+  `model_card.py` (the honest exportable card: intended / NOT-intended use, limitations, known
+  failure cases, applicability domain, validation status, extraction-uncertainty warning),
+  `model_registry.py` (save / load / list under a **safe-path-guarded**, gitignored
+  `experiments/<run>/outputs/model_registry/` via `run_manager.model_registry_dir`; **overwrite guard**;
+  cheap `has_strength_model` / `available_targets` index queries that never load an artifact). **Three
+  honesty rules:** (1) only **approved** evidence/lab rows train a real model by default (AI-extracted
+  rows arrive `pending`; low-confidence / provenance-less rows excluded unless the UI's *exploratory
+  mode* opts them in); (2) a model is at most **experimental** (CV metrics on training rows), **never
+  validated** (that needs measured experiments — still future); (3) a **demo** model trains on
+  synthetic data, is loudly labelled, and is never mixed with real rows unless explicitly chosen.
+  **UI:** `ui/prediction_models.py` (curate dataset from the Evidence Library → **review/approve** in a
+  data-editor → train real or demo model → metrics + model card + export → predict form with
+  uncertainty + warnings → saved-models registry). **Assistant integration** (message/routing only —
+  the agent imports **nothing** from `ml_models`): `domains.supports_ml_surrogate` /
+  `ml_surrogate_offer` / `ML_SURROGATE_MARKER` + `planning_only_message(domain, ml_model_available=…)`
+  (default message byte-identical); `agent_orchestrator.respond(..., ml_model_available)` appends the
+  surrogate offer once for a planning-only mechanical domain; the **UI computes availability** via a
+  read-only registry query and passes the flag, so for a "predict compressive strength" prompt the
+  assistant offers the **ML surrogate when a model exists, else literature/data-building — never a
+  fabricated number, and PHREEQC is never the strength engine**. Boundaries pinned by
+  `tests/test_ai_boundary.py` (no `ml_models` module imports an AI client / references a raw LLM
+  response / API key; none imports an executor; the geochemical result path + the simulation layers
+  never import `ml_models`); behaviour by `tests/test_ml_models.py` (schema/provenance, eligibility,
+  gate, training metrics + card, registry safe-paths + overwrite guard, prediction
+  value/interval/warnings/refusals, demo labelling, assistant routing). Requires scikit-learn (optional,
+  lazy — graceful install message without it); trained models/datasets are gitignored run outputs. Docs
+  `docs/ml_surrogate_engine.md`; README + `docs/assistant_agent.md` + `docs/literature_agent.md` updated.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -1090,6 +1138,11 @@ implementation*, not a hard limit. Follow these rules when writing new code/UI:
   shortfall" estimate that never enters closure arithmetic. Real measured release data still does not exist
   in `data/raw/experimental_icp/` (only the blank template), so for fly ash these models have **no data to
   train on yet** and Phase 2 comparison remains the scientific ceiling — the gate is what keeps that honest.
+  The **ML Surrogate Engine** (`ml_models/`, Prediction Models tab) is a *separate* prediction engine for
+  **mechanical/composite properties** (a different domain) — it is **off the geochemical result path** too
+  (it never touches comparison/residual/mapping/validity), gated on **approved** evidence/lab rows, at most
+  *experimental* (never "validated"), and its number comes from scikit-learn, never the LLM. Do not wire it
+  into the geochemical comparison either.
 - **Generated artifacts are not committed** unless explicitly requested. `data/processed/*.csv`,
   `reports/figures/*.png`, `outputs/tables/*.csv`, and the generated run sheet
   `data/raw/experimental_icp/experiment_plan.csv` are gitignored and re-creatable by

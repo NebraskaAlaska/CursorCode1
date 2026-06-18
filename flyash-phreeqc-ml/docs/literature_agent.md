@@ -3,7 +3,8 @@
 The **Evidence Library** (`flyash_phreeqc_ml/literature/`) is a research-and-evidence layer that
 searches **official / reliable scholarly APIs**, ranks the results transparently, optionally
 extracts structured experimental variables with AI, and curates per-run **evidence datasets** that
-a *future* ML / surrogate model could learn from.
+the **Prediction Models** ML surrogate engine can learn from (after you review/approve them) — see
+[`ml_surrogate_engine.md`](ml_surrogate_engine.md).
 
 It exists because most materials domains (composite strength, thermal, durability, …) have **no
 validated simulation engine yet**. Rather than dead-ending, the app helps you gather the evidence a
@@ -17,11 +18,12 @@ future model would need.
 | rank candidates transparently + explain why each is useful | invent a value, a paper, or a citation |
 | extract structured values with AI **when text is available** | treat AI-extracted values as measured truth |
 | keep every value's **source + confidence + scope** | store raw model responses or full-text PDFs |
-| build a per-run evidence dataset (CSV-exportable) | train a model, or predict compressive strength |
+| build a per-run evidence dataset (CSV-exportable) | train a model or predict strength *itself* |
 
-The app **does not simulate by itself** and **does not predict strength** — the literature agent
-builds an *evidence database*; that database can *later* train an ML / surrogate model. Citations
-and provenance are required throughout.
+The **literature package itself** does not simulate, train, or predict — it builds an *evidence
+database* with citations + provenance throughout. That curated database is what the separate
+**Prediction Models** engine (`ml_models`) trains a surrogate on — but only **approved** rows, and
+the resulting model is an *experimental* (never validated) screening estimate, not a measurement.
 
 ## Google Scholar is manual-only (never scraped)
 
@@ -88,7 +90,9 @@ When you ask for a prediction in an unsupported domain ("predict the compressive
 ash + waste plastic composite"), the assistant says plainly it **cannot run a validated strength
 model yet**, and offers to **search literature** + **build an evidence / training dataset** (plus
 the existing structure-the-plan / data-template offers). The Evidence Library is where that search +
-curation happens.
+curation happens. Once you have approved enough evidence and **trained a model in Prediction
+Models**, the assistant additionally offers that *experimental* ML surrogate estimate — never a
+fabricated number, and never PHREEQC (which is the leaching engine, not the strength engine).
 
 ## Boundaries (tests)
 
