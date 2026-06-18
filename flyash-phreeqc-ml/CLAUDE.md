@@ -1079,6 +1079,25 @@ experiment — **not** a blind replacement for the chemistry.
   lazy — graceful install message without it); trained models/datasets are gitignored run outputs. Docs
   `docs/ml_surrogate_engine.md`; README + `docs/assistant_agent.md` + `docs/literature_agent.md` updated.
 
+- **End-to-end product acceptance pass** (verification only, no code change). The platform was run as a
+  full acceptance test from a user's perspective and **passed**: `compileall` clean, `pytest` **890
+  passed / 3 skipped**, the Streamlit app **boots (HTTP 200)**, and all six workflows behaved correctly
+  and safely on the **deterministic (AI-off) path** — Assistant→PHREEQC (messy prompt fully parsed,
+  temp 25 °C flagged assumed, council shown, asks for composition, run **parks** for confirmation,
+  PHREEQC-unavailable fails gracefully as *simulation not validation*); plastic-strength routes
+  planning-only (no PHREEQC, no fabricated MPa); Evidence Library uses official APIs only (no Scholar
+  scraper), honest no-network path, provenance required, no raw response stored; ML demo labelled
+  synthetic/not-validated with interval + OOD warning; unapproved rows excluded from real training;
+  validation separation holds (`residual = measured − predicted`, no-mapping → NaN, `valid` only with
+  exact mapping). **Live AI was not exercised in this run** (deterministic path tested to avoid sending
+  data / storing responses; the live-AI NLU was validated separately in the earlier 20-prompt eval, and
+  the full real-PHREEQC arc against 3.8.6 was verified earlier). **Known follow-up polish (UX only, not
+  blocking):** the Assistant page is visually dense; the Council Review may want a collapsed / default-off
+  mode; material-composition entry should be surfaced better (it's buried in an Advanced expander); the
+  **Evidence Library → Prediction Models** (curate → approve → train) flow should be signposted in-line;
+  and the PHREEQC setup/demo path should be made easier for a reviewer (no real run without a
+  user-supplied CLI + CEMDATA18).
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
