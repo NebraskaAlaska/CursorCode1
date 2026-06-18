@@ -116,6 +116,18 @@ The UI shows a **Council Review** card (synthesis up top; the five roles under *
 reasoning"*; no raw JSON). When a run is saved, only the **derived** council fields (`to_safe_dict`)
 are stored in provenance — never a raw model response.
 
+## Planning-only domains → literature + evidence (not a fake prediction)
+
+For a domain with **no validated engine yet** (composite strength, thermal, durability…), the
+assistant's planning-only response says plainly it **cannot run a validated model yet** and offers to
+**search reliable scholarly literature** and **build an evidence / training dataset** (alongside the
+existing structure-the-plan / data-template / missing-variables offers). That search + extraction +
+curation happens in the **Evidence Library** (`flyash_phreeqc_ml/literature/`), which uses **official
+scholarly APIs** (never Google Scholar scraping), keeps every value's **source + confidence**, never
+fabricates, and is **off the scientific result path** — it builds a dataset a *future* ML / surrogate
+model could learn from; it does not predict strength. See
+[`docs/literature_agent.md`](literature_agent.md).
+
 ## The safety rules (enforced by the policy + tests)
 
 1. **Execution / save always require explicit confirmation.** When the model proposes a run/save,

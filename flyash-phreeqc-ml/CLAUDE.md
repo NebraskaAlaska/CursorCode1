@@ -1000,6 +1000,37 @@ experiment — **not** a blind replacement for the chemistry.
   no-raw-response, leaching/plastic/thermal-leach/geopolymer/unsupported/safety/question-cap, AI-merge-keeps-
   canonical) + `tests/test_nlu_extractor.py` (A/C/D). Docs `docs/assistant_agent.md`; README updated.
 
+- **Literature Research Agent v1 — search reliable APIs + curate an evidence library** (a new
+  `flyash_phreeqc_ml/literature/` package + an **Evidence Library** UI section; **off the scientific
+  result path** — extracted evidence is a *future* training dataset, never a measured/validated value;
+  **no model trained, no strength predicted, no Google Scholar scraping, no raw LLM responses stored**).
+  For a domain with no validated engine yet, the assistant now says plainly it **cannot run a validated
+  model yet** and offers to **search literature + build an evidence dataset** (`domains.planning_only_message`
+  enriched; pinned by `tests/test_literature_agent.py`). Package modules: `source_schema.py`
+  (supported sources + the provenance-carrying `PaperCandidate`; **`GOOGLE_SCHOLAR_SUPPORTED=False`** +
+  `ensure_supported_source` rejects it — there is **no scraper**, pinned by a no-scraper-import test),
+  `search_clients.py` (OpenAlex / Crossref / Semantic Scholar / PubMed clients behind one **mockable**
+  `_http_get_json`; all **keyless**, optional polite-pool email / API key from **env only**; multi-source
+  search + DOI/title de-dup; a **manual** entry path — no scraping; graceful empty result on no network),
+  `ranking.py` (transparent **deterministic** relevance ranking + a "why useful" explanation + an
+  *extractable-data* flag), `evidence_schema.py` (`LeachingEvidence` + `CompositeEvidence` — **provenance
+  required**, missing → **null**, banded **confidence** + an **extraction scope**; an **abstract-only**
+  extraction is **capped at medium**), `extraction.py` (the **only** AI module — extracts values from a
+  paper's abstract; **missing → null**, **never fabricates**, conflicts flagged, no hidden inference,
+  AI-off → empty row with an honest status, and the **raw model response is never stored**; mirrors
+  `ai/scenario_parser`), `evidence_store.py` (per-run JSONL store — **provenance enforced** on save, a
+  **safe-path guard**, CSV export; stores structured values + citation only, **never abstracts/full text**;
+  lives under the gitignored `experiments/<run>/outputs/literature/`), `research_agent.py` (query
+  generation + the search orchestration → ranked, cited candidates). **UI:** `ui/evidence_library.py` +
+  a new **Evidence Library** nav section (search box · domain/source selectors · ranked candidates with
+  why/extractable · consent-gated AI extraction · evidence table with confidence/provenance · CSV export ·
+  manual entry). **Boundary** (pinned by `tests/test_ai_boundary.py`): only `extraction` imports the AI
+  client; no literature module imports an executor or the result path; the result path never imports the
+  literature package. Covered by `tests/test_literature_agent.py` (17 tests) + boundary/modularization/
+  smoke updates (854 passed / 3 skipped). Docs `docs/literature_agent.md`; README + `docs/assistant_agent.md`
+  updated. (Distinct from the older `ai/literature.py`, which *proposes quarantined literature values* for
+  the fly-ash closure arithmetic — this new package is a *scholarly-search + evidence-library* system.)
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

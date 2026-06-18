@@ -341,9 +341,12 @@ def planning_only_message(domain: str) -> str:
     inp = ", ".join(s["input_variables"])
     return (
         f"This looks like a **{s['domain_label']}** problem. I don't yet have a validated "
-        f"{s['outcome']} simulation engine for it, but I can help you **structure the experiment** "
-        f"and **prepare a dataset**. Useful response variables to measure: {resp}. To model "
-        f"{s['outcome']} later, we'd need: {inp}. I can {s['next_actions'][0]}, "
-        f"{s['next_actions'][1]}, or {s['next_actions'][2]} — just tell me which. "
-        f"(In future, {s['future_engine']} could be added as a modular engine.) "
-        "Note: no executable simulation runs for this domain — this is planning + data support only.")
+        f"{s['outcome']} simulation engine for it and **cannot run a validated {s['outcome']} model "
+        f"yet** — but I can help you **structure the experiment**, **search reliable scholarly "
+        f"literature** (the **Evidence Library**), and **build an evidence / training dataset** for "
+        f"a future model. Useful response variables to measure: {resp}. To model {s['outcome']} "
+        f"later, we'd need: {inp}. I can {s['next_actions'][0]}, {s['next_actions'][1]}, "
+        f"{s['next_actions'][2]}, search literature + curate an evidence dataset, or compare "
+        f"literature ranges — just tell me which. (In future, {s['future_engine']} could be added "
+        f"as a modular engine.) Note: no executable simulation runs for this domain — this is "
+        "planning, literature, and data support only.")

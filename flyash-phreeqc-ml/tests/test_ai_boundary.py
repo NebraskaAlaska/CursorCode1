@@ -468,3 +468,45 @@ def test_planner_and_executor_do_not_import_agent():
         offenders = [t for t in targets if t in ("..agent", ".agent")
                      or t.startswith("..agent.") or t.startswith(".agent.")]
         assert not offenders, f"{mod} imports the agent layer: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# Literature research + evidence library boundary — off the scientific result path
+# --------------------------------------------------------------------------- #
+# Only `extraction` may import the AI client; nothing here imports an executor or the result path,
+# and the result path never imports the literature package — extracted evidence is a *future*
+# training library, never a measured/validated value.
+LITERATURE_NON_AI_MODULES = [
+    "literature/source_schema.py", "literature/evidence_schema.py", "literature/search_clients.py",
+    "literature/ranking.py", "literature/evidence_store.py", "literature/research_agent.py",
+]
+LITERATURE_AI_MODULE = "literature/extraction.py"
+_RESULT_PATH_MARKERS = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
+                        "attribution", "mass_balance", "report", "surrogate", "residual_model",
+                        "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
+
+
+def test_literature_non_ai_modules_import_no_ai():
+    """The schemas / clients / ranking / store / research agent reach NO AI helper — only the
+    extraction module may (it mirrors ai/scenario_parser)."""
+    for mod in LITERATURE_NON_AI_MODULES:
+        offenders = _imports_ai(_import_targets(mod))
+        assert not offenders, f"{mod} imports AI: {offenders}"
+
+
+def test_literature_modules_import_no_executor_or_result_path():
+    """No literature module imports an executor or the comparison/residual/mapping result path
+    (the AI extraction module may import the AI client, but runs nothing)."""
+    for mod in LITERATURE_NON_AI_MODULES + [LITERATURE_AI_MODULE]:
+        targets = _import_targets(mod)
+        offenders = _mentions(targets, _EXECUTOR_MARKERS + _RESULT_PATH_MARKERS)
+        assert not offenders, f"{mod} imports executor/result-path: {offenders}"
+
+
+def test_result_path_does_not_import_literature():
+    """The scientific result path never imports the literature package (the reverse direction)."""
+    for mod in RESULT_PATH_MODULES:
+        targets = _import_targets(mod)
+        offenders = [t for t in targets if t in ("..literature", ".literature")
+                     or t.startswith("..literature.") or t.startswith(".literature.")]
+        assert not offenders, f"{mod} imports the literature package: {offenders}"

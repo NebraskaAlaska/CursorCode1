@@ -106,6 +106,18 @@ Validation), so nothing technical competes with the assistant.
   current engine, a geopolymer-strength study is planning-only (PHREEQC only as optional
   pore-solution support), and unsafe asks ("run everything automatically", "validate my result")
   are explicitly refused.
+- **A literature research agent + Evidence Library.** For a domain with **no validated engine yet**
+  (composite strength, thermal, durability…), the assistant says plainly it **cannot run a validated
+  model yet** and offers to **search reliable scholarly literature and build a training dataset**.
+  The **Evidence Library** section searches **official scholarly APIs** (OpenAlex, Crossref, Semantic
+  Scholar, PubMed — all keyless; keys are env-only), ranks results transparently (with a "why useful"
+  + an *extractable-data* flag), and — when you consent — uses AI to **extract structured variables
+  from a paper's abstract** with **every value cited, missing values left null, confidence + scope
+  explicit, conflicts flagged, and no fabrication**. It curates a per-run **evidence dataset**
+  (CSV-exportable) that a *future* ML / surrogate model could learn from. It **does not scrape Google
+  Scholar** (no official API — manual only), **does not train a model**, **does not predict
+  strength**, **stores no raw model responses or full-text PDFs**, and is **off the scientific result
+  path**. See [`docs/literature_agent.md`](docs/literature_agent.md).
 - **The deterministic backend's role:** every scientific calculation and the PHREEQC execution —
   scenario merge, the input-preview builder, the database/phase check, the gated executor, the
   ranking / target-matching layers, and the run registry. These are the existing, tested modules.
