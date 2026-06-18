@@ -1121,6 +1121,27 @@ experiment — **not** a blind replacement for the chemistry.
   `use_ai=True` only when on, AI-failure one-turn fallback keeps the toggle on, no key value
   rendered). The key is read only from env / `st.secrets` and is never shown or logged.
 
+- **Docker-based hosted deployment** (ops/docs; **no scientific / PHREEQC / result-path change**).
+  Makes the app deployable so colleagues use it from a browser with **no local install, no PHREEQC,
+  no key**, and PHREEQC running **server-side**. New `Dockerfile` (single-stage, for reliability)
+  **builds the USGS PHREEQC CLI from source** (version a build `ARG`), ships the open `phreeqc.dat`
+  (CEMDATA18 is **not redistributable** → mounted, never baked in), **self-tests PHREEQC at build
+  time** (the build fails loudly if it can't run), installs `requirements.txt`, runs as a non-root
+  user, and serves Streamlit on `$PORT`. **Secrets are never baked in** — `ANTHROPIC_API_KEY` is a
+  **runtime** secret (`-e` / a platform secret manager); the Dockerfile sets only the non-secret
+  `PHREEQC_EXE` / `PHREEQC_DATABASE` / `PHREEQC_TIMEOUT_S`. `docker-entrypoint.sh` logs a debug-safe
+  startup status (booleans + non-secret paths, **never the key**) and honours `$PORT`.
+  `.dockerignore` ships **source only** (excludes `.env` / `secrets.toml`, `data/raw` confidential
+  research data, and all generated outputs); `docker-compose.yml` is a local-run helper that reads
+  the key from the shell / a gitignored `.env`; `.gitignore` now ignores `.env` / `*.env` /
+  `.streamlit/secrets.toml`. `docs/deployment.md` documents local-vs-hosted, the env-var contract,
+  build/run + the CEMDATA18 mount, a platform comparison (Streamlit Community Cloud is AI-only / can't
+  run PHREEQC; **Render / Fly.io / Cloud Run** with Docker for full PHREEQC), how colleagues access it
+  (one HTTPS URL + add access control — the app has no built-in login), **who pays** (the server-side
+  key owner; AI is opt-in), secret handling, and smoke tests. A Settings caption points to the guide.
+  **The image could not be built in the dev environment** (no Docker daemon); the files are
+  syntax-validated, and the PHREEQC source URL is a documented build `ARG` to verify on first build.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

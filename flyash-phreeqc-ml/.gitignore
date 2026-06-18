@@ -11,6 +11,12 @@ dist/
 venv/
 env/
 
+# Secrets — never commit API keys or local env files (the app reads ANTHROPIC_API_KEY from the
+# environment / platform secret manager only). Used by docker-compose / local Docker runs.
+.env
+*.env
+.streamlit/secrets.toml
+
 # Generated artifacts (re-creatable from raw data via the scripts)
 data/processed/
 reports/figures/

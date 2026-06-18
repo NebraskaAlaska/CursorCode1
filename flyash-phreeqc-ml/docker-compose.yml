@@ -1,0 +1,32 @@
+# Convenience for local Docker testing + simple self-hosting.
+#   ANTHROPIC_API_KEY is read from your shell or a gitignored `.env` file — NEVER hard-code it.
+#
+#   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env   # .env is gitignored + dockerignored
+#   docker compose up --build
+#   open http://localhost:8501
+#
+# See docs/deployment.md for hosted deployment (Render / Fly.io / Cloud Run / …).
+services:
+  mra:
+    build:
+      context: .
+      # args:
+      #   PHREEQC_VERSION: "3.7.3-15968"   # override to match your verified PHREEQC version
+    ports:
+      - "8501:8501"
+    environment:
+      # Injected from the environment / .env — the key value never lives in this file or the image.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Optional: an explicit model + PHREEQC timeout.
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      PHREEQC_TIMEOUT_S: "120"
+      # The image's built-in PHREEQC (phreeqc.dat) is used by default. To use CEMDATA18 for
+      # cementitious / fly-ash accuracy, mount it (below) and point PHREEQC_DATABASE at it:
+      # PHREEQC_DATABASE: /databases/CEMDATA18.dat
+    # volumes:
+    #   - ./databases:/databases:ro     # mount your (non-redistributable) CEMDATA18 .dat here
+    #   - mra_runs:/app/experiments     # persist user-created runs across restarts
+    restart: unless-stopped
+
+# volumes:
+#   mra_runs:
