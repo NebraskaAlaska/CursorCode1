@@ -200,6 +200,8 @@ class AgentState:
     last_understanding: dict = field(default_factory=dict)  # plain dict the UI renders
     ambiguous_fields: list = field(default_factory=list)    # fields to clarify (this turn)
     nlu_notice_shown: bool = False                          # gentle limited-without-AI note shown
+    last_used_ai: bool | None = None                        # did the last response use live AI?
+    last_ai_fell_back: bool = False                         # live AI was requested but failed (this turn)
 
     # advisory council review (a CouncilReview; duck-typed so this module imports no AI/council)
     last_council: object = None

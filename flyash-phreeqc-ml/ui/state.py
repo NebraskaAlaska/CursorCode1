@@ -45,6 +45,15 @@ PRODUCT_SUBTITLE = (
 # measured data is never committed by accident.
 MANUAL_ENTRY_FILENAME = "experimental_release_manual_entry.csv"
 
+# Master "Enable live AI assistant" switch. ``LIVE_AI_KEY`` is a PLAIN session key (never a
+# widget key) so Streamlit's widget-state garbage-collection on navigation can't drop it — it is
+# the source of truth the Assistant + gating read, and it persists across reruns and section
+# changes. The Settings toggle uses its OWN ``LIVE_AI_WIDGET_KEY`` and syncs into the plain key on
+# change. Off by default → the deterministic planner runs. Gated on capability (key + SDK) via
+# ``ai.config.live_ai_active``.
+LIVE_AI_KEY = "ai_live_enabled"
+LIVE_AI_WIDGET_KEY = "ai_live_enabled__toggle"
+
 @st.cache_data(show_spinner=False)
 def _read_csv(path_str: str, mtime: float) -> pd.DataFrame:
     """Read a CSV, cache-keyed on path + mtime so edits invalidate the cache."""

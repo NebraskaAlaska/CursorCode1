@@ -1098,6 +1098,29 @@ experiment — **not** a blind replacement for the chemistry.
   and the PHREEQC setup/demo path should be made easier for a reviewer (no real run without a
   user-supplied CLI + CEMDATA18).
 
+- **Settings live-AI enable toggle (persistent, capability-gated)** (UI/UX + AI-config plumbing;
+  **no scientific / PHREEQC / result-path change**). Adds a clear **Settings → "Enable live AI
+  assistant"** master switch so a user with a detected key can turn live AI on from the UI — the
+  enable control previously **did not exist in Settings** (the only switch was a consent checkbox
+  buried in the Assistant tab, and the "disabled" caption misreported a missing-SDK as "no AI key").
+  `ai/config.live_ai_active(cfg, toggle_on)` is the pure, key-free gate (*capable* = key + SDK
+  present, **AND** the toggle on); a stale toggle never overrides a lost key/SDK. Settings shows a
+  4-card status panel (**API key · AI SDK · Live AI · model/provider**, all key-free) + the toggle
+  (operable only when capable, with the missing-key / missing-SDK reason). The Assistant uses live AI
+  **only** when the toggle is on, shows the per-turn outcome ("last response used live AI: yes/no") +
+  a debug-safe booleans panel (never the key). **Persistence fix:** the choice is stored in a
+  **plain** session key (`ui.state.LIVE_AI_KEY`), never the toggle's widget key — Streamlit's
+  widget-state GC drops a widget-keyed value the moment the widget stops rendering (on navigation),
+  which previously **reset AI to off after the first prompt submission**; the toggle now uses its own
+  `LIVE_AI_WIDGET_KEY` and syncs into the plain key on change, so it survives navigation + reruns. An
+  **AI call failure** falls back deterministically for that one turn with a visible warning
+  (`agent_orchestrator.AI_FALLBACK_NOTE`; `agent_state.last_used_ai` / `last_ai_fell_back`) and
+  **never disables the toggle** (only Settings can). Covered by `tests/test_ai_config.py`
+  (`live_ai_active`) + `tests/test_ai_settings_ui.py` (AppTest: toggle visible/operable when key
+  detected, disabled + explained without a key, **persists across navigation + submission**,
+  `use_ai=True` only when on, AI-failure one-turn fallback keeps the toggle on, no key value
+  rendered). The key is read only from env / `st.secrets` and is never shown or logged.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**

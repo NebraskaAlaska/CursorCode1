@@ -54,6 +54,36 @@ def test_enabled_with_key_and_sdk(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Live-AI master switch: capable config + an explicit toggle (no key involved)
+# --------------------------------------------------------------------------- #
+def _cfg(*, key_present=True, sdk_available=True):
+    return ai_config.AIConfig(
+        provider=ai_config.PROVIDER_ANTHROPIC, model=ai_config.DEFAULT_MODEL,
+        key_present=key_present, key_source=(ai_config.SOURCE_ENV if key_present
+                                             else ai_config.SOURCE_NONE),
+        sdk_available=sdk_available)
+
+
+def test_live_ai_active_requires_toggle_even_when_capable():
+    cfg = _cfg()                                          # capable: key + SDK
+    assert cfg.enabled is True
+    assert ai_config.live_ai_active(cfg, True) is True    # capable AND toggle on -> live
+    assert ai_config.live_ai_active(cfg, False) is False  # capable but toggle off -> deterministic
+
+
+def test_live_ai_active_blocked_when_not_capable():
+    # A stale "on" toggle can never override a missing key or a missing SDK.
+    assert ai_config.live_ai_active(_cfg(key_present=False), True) is False
+    assert ai_config.live_ai_active(_cfg(sdk_available=False), True) is False
+
+
+def test_live_ai_active_is_key_free():
+    cfg = _cfg()
+    # Pure boolean logic — nothing key-derived flows through it.
+    assert SECRET not in str(ai_config.live_ai_active(cfg, True))
+
+
+# --------------------------------------------------------------------------- #
 # Env key detected, never exposed
 # --------------------------------------------------------------------------- #
 def test_env_key_detected_from_env(monkeypatch):
