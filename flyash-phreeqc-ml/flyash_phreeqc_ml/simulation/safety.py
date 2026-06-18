@@ -89,6 +89,14 @@ def scientific_warnings(scenario: SimulationScenario, *, assumptions=None) -> li
     if asks_about_precipitation(scenario):
         warns.append(PRECIPITATION_CAVEAT)
 
+    # Trace elements (Sc / REE) cannot be predicted without a starting assay + a release
+    # assumption — without them the modelled totals are ~0 (which is not "no release").
+    trace = [e for e in (scenario.outputs.target_elements or []) if e in ("Sc", "REE")]
+    if trace:
+        warns.append(
+            f"{', '.join(trace)} are trace elements — a prediction needs a starting assay and a "
+            "release assumption; without those the modelled totals are ~0 (not measured 'zero').")
+
     return warns
 
 

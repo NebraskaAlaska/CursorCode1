@@ -25,13 +25,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..ai import client as ai_client
-from ..ai import config as ai_config
-from ..ai.import_assist import _message_text, _parse_json
 from . import agent_actions as A
-from . import agent_policy, agent_prompts, agent_state, domains, tool_registry
-
-MAX_TOKENS = 1200
+from . import agent_policy, agent_state, domains, nlu_extractor, tool_registry
 
 # Per-session consent notice (same spirit as the other AI features).
 AGENT_DATA_NOTICE = (
@@ -116,32 +111,6 @@ def attach_context(state, *, material_profile=None, release_model=None, database
 
 
 # --------------------------------------------------------------------------- #
-# AI action proposal (the model only proposes; never executes)
-# --------------------------------------------------------------------------- #
-def _ai_action(state, user_message, *, client, model):
-    """Ask the LLM for one structured action. Returns an AgentAction or None (disabled/failed)."""
-    resolved = ai_client.get_client(client, model=model)
-    if not resolved.ok or resolved.client is None:
-        return None
-    try:
-        resp = resolved.client.messages.create(
-            model=ai_config.resolve_model(model), max_tokens=MAX_TOKENS,
-            system=agent_prompts.SYSTEM_PROMPT,
-            messages=[{"role": "user",
-                       "content": agent_prompts.build_user_prompt(state, user_message)}])
-    except Exception:                                       # noqa: BLE001 — never crash the chat
-        return None
-    payload = _parse_json(_message_text(resp))
-    if not isinstance(payload, dict):
-        return None
-    return A.parse_action(payload)
-
-
-def ai_available(client=None) -> bool:
-    return client is not None or ai_config.is_enabled()
-
-
-# --------------------------------------------------------------------------- #
 # The main turn
 # --------------------------------------------------------------------------- #
 def respond(state, user_message, *, client=None, model=None, use_ai: bool = True,
@@ -177,10 +146,17 @@ def respond(state, user_message, *, client=None, model=None, use_ai: bool = True
 
 def _process_turn(state, message, *, client, model, use_ai: bool = True,
                   lead_note: str = "") -> AgentTurnResult:
-    # Accumulate context + deterministic, correction-aware scenario merge.
+    # Accumulate context, then UNDERSTAND the (possibly messy) message: one AI call returns the
+    # structured understanding AND the proposed next action; with no AI a robust rule-based parse
+    # is used. The understanding is validated/normalized in nlu_extractor before anything applies.
     state.experiment_text = (state.experiment_text + "\n" + message).strip() if message \
         else state.experiment_text
-    applied = state.merge_user_message(message)
+    extraction = nlu_extractor.extract(message, state=state, client=client, model=model,
+                                       use_ai=use_ai)
+    applied = state.apply_delta(extraction.delta, assumption_specs=extraction.assumption_specs,
+                                drop_assumption_fields=extraction.drop_assumption_fields)
+    state.ambiguous_fields = list(extraction.ambiguous_fields)
+    used_ai = extraction.used_ai
 
     # A scenario change invalidates a stale preview (and any parked run on it).
     invalidate_note = ""
@@ -192,25 +168,31 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True,
         invalidate_note = ("(The scenario changed, so I cleared the old input preview — "
                            "I'll rebuild it when you're ready.)")
 
-    # Keep the domain/engine current from the full accumulated description.
-    state.domain = domains.classify(state.experiment_text)
+    # Keep the domain/engine current (typo-tolerant) from the full accumulated description.
+    state.domain = nlu_extractor.classify_message(state.experiment_text,
+                                                  hint=extraction.domain_hint)
     state.engine = domains.engine_for(state.domain)
     if state.phase == agent_state.IDLE and message:
         state.phase = agent_state.COLLECTING_CONTEXT
 
-    # Choose the next action: AI proposes; deterministic planner is the fallback.
-    used_ai = False
-    action = None
-    if use_ai and ai_available(client):
-        action = _ai_action(state, message, client=client, model=model)
-        used_ai = action is not None
-    if action is None:
+    # The next action: AI proposes (from the same call); deterministic planner is the fallback.
+    action = extraction.action
+    if action is None or action.action_name not in A.ACTION_NAMES:
         action = agent_policy.deterministic_plan(state, message)
 
     # A "propose run/sweep" action is normalised to the concrete execution action so it goes
     # through the confirmation gate (parked) — it must never resolve to a no-op that skips the gate.
     if action.action_name in (A.REQUEST_RUN_CONFIRMATION, A.REQUEST_SWEEP_CONFIRMATION):
         action = _action_to_park(action)
+
+    # Human-facing notes: what changed this turn, what couldn't be used / was unclear, and a
+    # one-time gentle "less robust without AI" note.
+    change_note = _changes_note(extraction)
+    clarify_note = _clarify_note(extraction)
+    limited_note = ""
+    if extraction.limited_without_ai and not state.nlu_notice_shown and applied:
+        limited_note = nlu_extractor.LIMITED_WITHOUT_AI_NOTE
+        state.nlu_notice_shown = True
 
     decision = agent_policy.evaluate(state, action)
     outcome = None
@@ -224,7 +206,8 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True,
             block_msg = domains.planning_only_message(state.domain)
         else:
             block_msg = f"I can't do that yet — {decision.reason}"
-        assistant_msg = _join(lead_note, _llm_lead(action), block_msg, invalidate_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, block_msg, clarify_note,
+                              invalidate_note, limited_note)
     elif decision.requires_confirmation:
         # Park the execution/save action — DO NOT run it here.
         parked = _action_to_park(action)
@@ -234,19 +217,21 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True,
         state.phase = (agent_state.AWAITING_EXECUTION_CONFIRMATION
                        if parked.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP)
                        else state.phase)
-        assistant_msg = _join(
-            lead_note, _llm_lead(action),
-            _confirm_prompt(parked), invalidate_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, _confirm_prompt(parked),
+                              clarify_note, invalidate_note, limited_note)
     else:
         # Allowed safe/preview action — run the deterministic tool now.
         outcome = tool_registry.run(action, state)
         executed = True
-        assistant_msg = _join(lead_note, _llm_lead(action), outcome.summary, invalidate_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, outcome.summary,
+                              clarify_note, invalidate_note, limited_note)
         # An EXPLAIN/results turn always carries the not-validated caveat.
         if action.action_name == A.EXPLAIN_RESULTS:
             assistant_msg = _ensure_not_validated(assistant_msg)
 
     state.confirmation_required = awaiting
+    # The "I understood this as…" card (plain dict the UI renders; reflects the merged scenario).
+    state.last_understanding = nlu_extractor.build_understanding_card(state, extraction)
     state.add_assistant_message(assistant_msg, reasoning_summary=action.reasoning_summary)
     _record(state, message, applied, action, decision, outcome,
             confirmation_required=awaiting, confirmed=confirmed_flag)
@@ -290,6 +275,37 @@ def _execute_pending(state, *, client, model):
             confirmation_required=False, confirmed=True)
     return AgentTurnResult(state=state, assistant_message=msg, action=action, policy=decision,
                            tool_outcome=outcome, executed=True, awaiting_confirmation=False)
+
+
+def apply_correction(state, delta) -> AgentTurnResult:
+    """Apply the user's direct field corrections from the "edit what I understood" UI.
+
+    Deterministic only (no AI): merges the edited fields into the scenario (replacing list fields
+    so an element/output can be removed), re-derives the domain, invalidates a stale preview, and
+    refreshes the understanding card. It never runs or executes anything.
+    """
+    delta = dict(delta or {})
+    extraction = nlu_extractor.ExtractionResult(delta=delta, source=nlu_extractor.SRC_RULE)
+    extraction.changes = nlu_extractor.compute_changes(delta, state.scenario.to_flat_dict())
+    applied = state.apply_delta(delta, replace_lists=True)
+
+    state.domain = nlu_extractor.classify_message(state.experiment_text)
+    state.engine = domains.engine_for(state.domain)
+    if applied and (set(applied) & _PREVIEW_INVALIDATING) and state.preview is not None:
+        state.preview = None
+        state.preview_status = None
+        state.sweep_previews = []
+        _clear_pending(state)
+
+    note = _changes_note(extraction) or "Updated your experiment details."
+    state.last_understanding = nlu_extractor.build_understanding_card(state, extraction)
+    state.add_assistant_message(note)
+    correction_action = A.AgentAction(action_name=A.UPDATE_SCENARIO)
+    _record(state, "[correction]", applied, correction_action,
+            agent_policy.PolicyDecision(True, False, agent_policy.ALLOW, ""), None,
+            confirmation_required=False, confirmed=False)
+    return AgentTurnResult(state=state, assistant_message=note, action=correction_action,
+                           executed=False, awaiting_confirmation=False)
 
 
 def reject_pending_action(state) -> AgentTurnResult:
@@ -349,6 +365,43 @@ def _no_pending(state):
 def _llm_lead(action) -> str:
     """The conversational lead from the model/planner (safe to show; never numbers)."""
     return (action.assistant_message or "").strip()
+
+
+def _fmt_val(value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) if value else "—"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _changes_note(extraction) -> str:
+    """A short "what changed" note when the user corrected a previously-understood value."""
+    changes = getattr(extraction, "changes", None) or []
+    if not changes:
+        return ""
+    bits = [f"{c['label']} {_fmt_val(c['old'])} → {_fmt_val(c['new'])}" for c in changes[:4]]
+    return "✏️ Updated " + "; ".join(bits) + "."
+
+
+def _clarify_note(extraction) -> str:
+    """Surface impossible values (rejected) + ambiguous fields so the user can fix them."""
+    parts: list = []
+    rejected = getattr(extraction, "rejected", None) or []
+    if rejected:
+        parts.append("⚠️ I couldn't use: " + "; ".join(r["reason"] for r in rejected[:3])
+                     + (". Could you re-state those?" if len(rejected) > 1
+                        else ". Could you re-state that?"))
+    ambiguous = getattr(extraction, "ambiguous_fields", None) or []
+    if "leachant_type" in ambiguous:
+        parts.append("❓ Which reagent did you mean (e.g. NaOH, KOH, HCl, H₂SO₄)?")
+    other = [a for a in ambiguous if a != "leachant_type"]
+    if other:
+        labels = ", ".join(nlu_extractor.FIELD_LABELS.get(a, a) for a in other[:3])
+        parts.append(f"❓ Could you clarify: {labels}?")
+    return " ".join(parts)
 
 
 def _join(*parts) -> str:

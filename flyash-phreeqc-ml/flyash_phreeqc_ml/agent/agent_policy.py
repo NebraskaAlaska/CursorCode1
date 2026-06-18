@@ -106,13 +106,27 @@ def evaluate(state, action, *, confirmed: bool = False) -> PolicyDecision:
 # --------------------------------------------------------------------------- #
 # Deterministic fallback planner (AI off, or model output unusable)
 # --------------------------------------------------------------------------- #
+# Ask at most this many fields in one turn — never dump a long questionnaire.
+_QUESTION_CAP = 3
+
+
 def _missing_question(state) -> str:
-    needed = [m.label.lower() for m in state.missing_fields]
+    """Phrase the 1–3 most important missing fields as one focused question.
+
+    Errors (truly required: solid mass, liquid volume) come before warnings; the list is capped
+    so the assistant asks a little at a time, with "(and N more)" when more remain.
+    """
+    ordered = sorted(state.missing_fields,
+                     key=lambda m: 0 if getattr(m, "severity", "") == "error" else 1)
+    needed = [m.label.lower() for m in ordered][:_QUESTION_CAP]
     if not needed:
         return "a few more details"
+    extra = len(state.missing_fields) - len(needed)
     if len(needed) == 1:
-        return needed[0]
-    return ", ".join(needed[:-1]) + f", and {needed[-1]}"
+        question = needed[0]
+    else:
+        question = ", ".join(needed[:-1]) + f", and {needed[-1]}"
+    return question + (f" (and {extra} more)" if extra > 0 else "")
 
 
 def deterministic_plan(state, user_message: str) -> A.AgentAction:

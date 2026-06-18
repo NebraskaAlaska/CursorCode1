@@ -196,6 +196,11 @@ class AgentState:
     pending_action: object = None          # AgentAction awaiting explicit confirmation
     confirmation_required: bool = False
 
+    # natural-language understanding (the "I understood this as…" card + clarification state)
+    last_understanding: dict = field(default_factory=dict)  # plain dict the UI renders
+    ambiguous_fields: list = field(default_factory=list)    # fields to clarify (this turn)
+    nlu_notice_shown: bool = False                          # gentle limited-without-AI note shown
+
     # audit
     provenance: list = field(default_factory=list)         # list[ProvenanceEvent]
 
@@ -215,24 +220,28 @@ class AgentState:
     # ----------------------------------------------------------------- #
     # Deterministic scenario merge (correction-aware; only explicit fields)
     # ----------------------------------------------------------------- #
-    def merge_user_message(self, text: str) -> dict:
-        """Merge a natural reply into the existing scenario; return the applied delta.
+    def apply_delta(self, delta: dict, *, assumption_specs=(), drop_assumption_fields=(),
+                    replace_lists: bool = False) -> dict:
+        """Merge a **pre-computed, validated** field delta into the scenario; return the applied
+        subset.
 
-        Only fields the reply **explicitly states** are updated (so an unrelated reply never
-        fabricates a value, and a later explicit value overrides an earlier one). List fields
-        (target elements / desired outputs) are unioned. Recomputes missing/assumptions/
-        warnings deterministically. Never invents composition, release fractions, or results.
+        Pure data: the orchestrator computes ``delta`` (deterministically or from a validated AI
+        understanding via :mod:`nlu_extractor`) and hands it here, so this module never touches
+        AI. Scalars overwrite (a later explicit value wins → corrections work); list fields are
+        unioned (a stated element/output is never lost) — unless ``replace_lists`` is set, used by
+        the "edit what I understood" corrector so the user can *remove* an element/output.
+        ``assumption_specs`` is a list of ``(field, value, reason)`` to record as
+        assumptions-needing-confirmation (only for fields actually present after the merge);
+        ``drop_assumption_fields`` removes now-obsolete assumptions (e.g. an explicit temperature
+        replacing an assumed one). Never invents composition, release fractions, or results.
+        Always recomputes missing/warnings.
         """
-        delta, temp_assumed = extract_explicit_delta(text)
-        if not delta:
-            self.recompute_safety()
-            return {}
-
         flat = self.scenario.to_flat_dict()
         applied: dict = {}
-        for key, value in delta.items():
+        for key, value in (delta or {}).items():
             if key in _LIST_FIELDS:
-                merged = list(dict.fromkeys(list(flat.get(key) or []) + list(value or [])))
+                merged = (list(dict.fromkeys(list(value or []))) if replace_lists
+                          else list(dict.fromkeys(list(flat.get(key) or []) + list(value or []))))
                 if merged != list(flat.get(key) or []):
                     flat[key] = merged
                     applied[key] = merged
@@ -243,12 +252,30 @@ class AgentState:
         if applied:
             self.scenario = SimulationScenario.from_flat_dict(flat)
             self.scenario.liquid_solid_ratio = self.scenario.computed_ls_ratio()
-            # Track an assumed-temperature assumption deterministically.
-            if temp_assumed and "temperature_C" in applied:
-                self._set_assumption("temperature_C", applied["temperature_C"],
-                                     "room temperature / ambient — assumed, no explicit value")
+
+        for field_name in drop_assumption_fields or ():
+            self.assumptions = [a for a in self.assumptions if a.field != field_name]
+        current = self.scenario.to_flat_dict()
+        for field_name, value, reason in assumption_specs or ():
+            if current.get(field_name) is not None:     # only flag a field that is actually set
+                self._set_assumption(field_name, value, reason)
+
         self.recompute_safety()
         return applied
+
+    def merge_user_message(self, text: str) -> dict:
+        """Deterministically merge a natural reply into the scenario (back-compat entry point).
+
+        Equivalent to extracting the explicit field delta with the rule-based gating and applying
+        it via :meth:`apply_delta`. The orchestrator's AI-first path computes the delta with
+        :mod:`nlu_extractor` instead and calls :meth:`apply_delta` directly.
+        """
+        delta, temp_assumed = extract_explicit_delta(text)
+        specs = ([("temperature_C", delta["temperature_C"],
+                   "room temperature / ambient — assumed, no explicit value")]
+                 if temp_assumed and "temperature_C" in delta else [])
+        drop = ("temperature_C",) if ("temperature_C" in delta and not temp_assumed) else ()
+        return self.apply_delta(delta, assumption_specs=specs, drop_assumption_fields=drop)
 
     def _set_assumption(self, field_name: str, value, reason: str) -> None:
         self.assumptions = [a for a in self.assumptions if a.field != field_name]

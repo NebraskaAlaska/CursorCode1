@@ -78,6 +78,19 @@ Validation), so nothing technical competes with the assistant.
 - **The AI's role:** conversation, clarification (asking for the missing critical details),
   planning (choosing the modelling route), tool **orchestration** (proposing one action at a time),
   and **explanation** of results in plain language.
+- **Robust natural-language understanding.** You can type **messy, informal, misspelled, incomplete**
+  messages — *"im leeching class c fli ash w naoh .5m 2g 10ml for 1hr room temp wanna ph ca si"* — and
+  the assistant infers the experiment, normalizes units/typos (`.5m`→0.5 M, `na oh`/`sodum hydroxde`→
+  NaOH, `fli ash`/`CFA`→Class C fly ash, `1 hr`→60 min), extracts the variables, **flags any value it
+  had to assume** (e.g. "room temp" → 25 °C, marked *needs confirmation*), **rejects impossible values**
+  (negative mass, out-of-range temperature) by asking instead, **asks only when genuinely ambiguous**
+  (a bare "acid" is never silently mapped to HCl), and **merges follow-ups + corrections** into the same
+  scenario (*"actually make it 40 C"* changes only the temperature). An **"I understood this as…"** card
+  shows what was captured (with an inline **"✏️ Edit what I understood"** corrector). **With AI enabled**
+  the understanding is most robust; **without a key** a deterministic parser handles the common cases and
+  notes that free-text robustness is more limited. The AI extracts + clarifies; **deterministic code
+  validates, normalizes, and calculates** — and never extracts a composition, release fraction, measured
+  value, or validation status.
 - **The deterministic backend's role:** every scientific calculation and the PHREEQC execution —
   scenario merge, the input-preview builder, the database/phase check, the gated executor, the
   ranking / target-matching layers, and the run registry. These are the existing, tested modules.
