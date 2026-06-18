@@ -43,6 +43,7 @@ from . import (
     agent_prompts,
     agent_state,
     domains,
+    nlu_extractor,
     tool_registry,
 )
 from .agent_actions import AgentAction
@@ -50,6 +51,7 @@ from .agent_orchestrator import (
     AGENT_CONSENT_LABEL,
     AGENT_DATA_NOTICE,
     AgentTurnResult,
+    apply_correction,
     confirm_pending_action,
     reject_pending_action,
     respond,
@@ -58,8 +60,8 @@ from .agent_state import AgentState
 
 __all__ = [
     "AgentState", "AgentAction", "AgentTurnResult",
-    "respond", "confirm_pending_action", "reject_pending_action",
+    "respond", "confirm_pending_action", "reject_pending_action", "apply_correction",
     "AGENT_DATA_NOTICE", "AGENT_CONSENT_LABEL",
     "agent_state", "agent_actions", "agent_prompts", "agent_policy",
-    "agent_orchestrator", "tool_registry", "domains",
+    "agent_orchestrator", "tool_registry", "domains", "nlu_extractor",
 ]

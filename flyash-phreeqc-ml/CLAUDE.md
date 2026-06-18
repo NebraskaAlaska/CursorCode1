@@ -930,6 +930,41 @@ experiment — **not** a blind replacement for the chemistry.
   `nav_section="Workspace"` step (Simulate now lives in Workspace, not a default tab). README + docs updated
   (dark seven-section nav, `docs/ai_architecture.md` future plugin-engine roadmap).
 
+- **Robust natural-language understanding for the agent** (NLU layer; AI-first with a deterministic fallback;
+  **no scientific / PHREEQC / execution / source-term / database / ranking / validation logic change** — the agent
+  stays off the result path). The assistant no longer needs exact wording — it copes with messy, informal,
+  misspelled, incomplete prompts like a chat assistant. New **`flyash_phreeqc_ml/agent/nlu_extractor.py`** is the
+  understanding layer (it mirrors `ai/scenario_parser`, agent-state-aware): **one** grounded LLM call returns a
+  structured `understanding` block **and** the proposed action (so the orchestrator makes a single call), then
+  deterministic code **validates + normalizes** it before anything is applied; with no key a robust rule-based
+  parse runs (flagged "more limited without AI"). It owns: `normalize_text` (typo/informal-unit/spacing fixes —
+  `.5m`→`0.5 M`, `na oh`/`sodum hydroxde`→`NaOH`, `fli ash`/`CFA`→`Class C fly ash`, `redmud`→`red mud`,
+  `1 hr`→`60 min`, leading-dot decimals, molar-`m`→`M`), canonicalization (`canonical_leachant` — careful: a bare
+  "acid" is **ambiguous**, never silently HCl; permissive case-insensitive element extraction), schema-repair +
+  numeric **validation** (`validate_value` / `_negative_fields` — negatives + out-of-range temperature/molarity
+  **rejected** and turned into a question, never applied), assumption flagging (an assumed value like "room temp"
+  → 25 °C is folded in **and** marked `needs_confirmation`), change/conflict detection (`compute_changes`), and
+  the **"I understood this as…"** card (`build_understanding_card`). **Hard rules:** it extracts **only** the
+  experiment set-up (material / leachant / masses / volume / time / temp / CO₂ cover / target elements / desired
+  outputs) and **never** a composition, release fraction, measured value, computed pH/result, or validation status
+  (those are stripped defensively; the existing `FORBIDDEN_ARGUMENT_KEYS` still strips the action args). The merge
+  moved into a pure **`agent_state.apply_delta`** (scalars overwrite so corrections win; lists union — or replace
+  for the corrector; assumptions flagged/cleared); `agent_state` stays AI-free (`merge_user_message` is now a thin
+  wrapper). The orchestrator calls `nlu_extractor.extract` (replacing the old `_ai_action`), classifies the domain
+  on **normalized** text, and surfaces a **"what changed"** note, a **clarify** note (rejected/ambiguous), and a
+  one-time **limited-without-AI** note; a new **`apply_correction`** powers the UI's inline editor. `agent_prompts`
+  gained the `understanding` schema + messy-text rules; `agent_policy._missing_question` now asks the **1–3** most
+  important fields (errors first, capped); `safety.scientific_warnings` adds an honest **Sc/REE trace-element**
+  caveat. `ui/assistant_tab.py` renders the understanding card + **"✏️ Edit what I understood / ✋ That's not
+  right"** inline corrector (works AI-on or AI-off; no advanced-tab hunting). **`nlu_extractor` is the second
+  AI-touching agent module** (with the orchestrator) — both still import no executor and no result path (pinned by
+  `tests/test_ai_boundary.py`). Covered by `tests/test_nlu_extractor.py` (normalization, careful-acid, impossible-
+  value rejection, the three messy example prompts, AI `understanding` validation + forbidden-key stripping,
+  invalid-JSON safe fallback, change detection, JSON-safe card) + new `tests/test_agent.py` cases (messy prompts
+  via rules **and** AI, follow-up merge, correction announced, inline-corrector edit, "run everything
+  automatically" never auto-executes, ambiguous-acid asked, limited-note-once, no-raw-text-in-card). Docs
+  `docs/assistant_agent.md`; README updated.
+
 The app's current direction continues this generalization + presentation arc (generic
 terminology, two non-mixed plot families, per-run results, canonical mapping statuses with
 structured matched/missing/conflicting fields) — see **Direction: generalization + presentation**
@@ -1455,15 +1490,21 @@ modules together and own all file I/O paths.
   view). Pure; does no scoring of its own. Covered by `tests/test_suggestion_table.py`.
 
 - **`flyash_phreeqc_ml/agent/`** — the **AI agent orchestration layer** behind the Assistant tab (off the
-  scientific result path). Wraps an LLM around the deterministic Simulate backend: per turn the model
-  **proposes one structured action**, `agent_policy` **gates** it (execution/save require explicit
-  confirmation; PHREEQC blocked for non-leaching / missing-composition), and `tool_registry` runs the
-  **existing** deterministic functions. Pure modules (`agent_state` / `agent_actions` / `agent_prompts` /
-  `agent_policy` / `domains`) import no AI and no executor; only `agent_orchestrator` touches AI; only
-  `tool_registry` touches the executor; **no scientific/result-path module imports the agent**. `domains.py`
-  also owns the planning-support metadata for non-executable domains. With no key a deterministic planner
-  drives the same flow. See the two **agent / Materials-Research-Assistant** completed-phase bullets above;
-  docs `docs/assistant_agent.md`; boundaries pinned by `tests/test_ai_boundary.py`.
+  scientific result path). Wraps an LLM around the deterministic Simulate backend: per turn `nlu_extractor`
+  **understands** the (possibly messy) message and the model **proposes one structured action**, `agent_policy`
+  **gates** it (execution/save require explicit confirmation; PHREEQC blocked for non-leaching /
+  missing-composition), and `tool_registry` runs the **existing** deterministic functions. **`nlu_extractor.py`**
+  (new — see the *Robust NLU* completed-phase bullet) is the AI-first understanding layer (it mirrors
+  `ai/scenario_parser`): one grounded call returns a structured `understanding` block **and** the action, then
+  deterministic code **validates/normalizes** it (typo+unit normalization, canonicalization, impossible-value
+  rejection, assumption flagging, change/conflict detection) — falling back to a robust rule-based parse with no
+  key. Pure modules (`agent_state` / `agent_actions` / `agent_prompts` / `agent_policy` / `domains`) import no AI
+  and no executor; the **two AI-touching modules are `agent_orchestrator` + `nlu_extractor`** (both still import
+  no executor); only `tool_registry` touches the executor; **no scientific/result-path module imports the agent**.
+  `agent_state.apply_delta` is the pure correction-aware merge; `domains.py` owns the planning-support metadata
+  for non-executable domains. With no key a deterministic parser + planner drives the same flow. See the
+  **agent / Materials-Research-Assistant / Robust NLU** completed-phase bullets above; docs
+  `docs/assistant_agent.md`; boundaries pinned by `tests/test_ai_boundary.py`.
 
 - **`app.py`** (repo root) is a **thin entry point** (~210 code lines): the `sys.path` bootstrap, the
   run-management **sidebar** (`_render_run_sidebar` — now the **only** top-level render function) + the

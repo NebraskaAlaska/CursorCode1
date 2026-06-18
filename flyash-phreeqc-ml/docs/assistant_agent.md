@@ -20,26 +20,66 @@ conversation state
 
 | The AI **does** | The AI **never** does |
 | --- | --- |
-| converse, ask for missing critical details | invent a material composition, release fraction, phase, pH, concentration, or measured value |
-| classify the domain (a *hint*; the rule clamps it) | run a simulation (it only *proposes*; the policy + your confirmation run it) |
-| propose **one** structured action per turn | write or edit PHREEQC input (a deterministic builder does, from the scenario) |
-| explain results in plain language (numbers from the tools) | bypass a material-profile / release-model / database warning |
-| — | claim a result is "validated" (simulation ≠ validation) |
+| **understand messy, informal, typo-filled, incomplete** prompts (abbreviations, informal units, several variables in one sentence, follow-ups + corrections) | invent a material composition, release fraction, phase, pH, concentration, or measured value |
+| converse, ask the 1–3 missing critical details | run a simulation (it only *proposes*; the policy + your confirmation run it) |
+| extract a structured `understanding` block, **validated/normalized by deterministic code** | write or edit PHREEQC input (a deterministic builder does, from the scenario) |
+| classify the domain (a *hint*; the rule clamps it) | bypass a material-profile / release-model / database warning |
+| explain results in plain language (numbers from the tools) | claim a result is "validated" (simulation ≠ validation) |
 
-If there is **no API key**, a **deterministic planner** drives the same conversation (rule-based
-phrasing) — the workflow works fully without AI.
+If there is **no API key**, a robust **deterministic** parser + planner drives the same
+conversation (text normalization + the tested rule parser) — the workflow works fully without AI,
+with a gentle "less robust without AI" note.
+
+## Natural-language understanding (robust to messy prompts)
+
+`agent/nlu_extractor.py` is the assistant's understanding layer (it mirrors
+`ai/scenario_parser.py` but is agent-state-aware). It turns *"im leeching class c fli ash w naoh
+.5m 2g 10ml for 1hr room temp wanna ph ca si"* into the right structured set-up:
+
+- **AI on** → one grounded LLM call returns a structured `understanding` block **and** the proposed
+  next action. The AI output is then **validated + normalized deterministically** before anything
+  is applied.
+- **AI off / no key / call failed** → a robust deterministic parse: `normalize_text` fixes typos /
+  informal units / spacing (`.5m`→`0.5 M`, `na oh`/`sodum hydroxde`→`NaOH`, `fli ash`/`CFA`→`Class
+  C fly ash`, `redmud`→`red mud`, `1 hr`→`60 min`), the tested rule parser extracts values, and
+  canonicalization + validation finish the job.
+
+Hard rules (never weakened, either path):
+
+- It extracts **only the experiment set-up** (material, leachant, masses, volumes, time,
+  temperature, CO₂ cover, target elements, desired outputs). It **never** extracts (and defensively
+  strips) a material composition, a release fraction, a measured value, a computed pH/result, or a
+  validation status.
+- It **never silently invents** a value: an *assumed* value (e.g. "room temp" → 25 °C) is flagged
+  `needs_confirmation`; an *impossible* value (negative mass/volume/time, out-of-range
+  temperature/concentration) is **rejected** and turned into a question.
+- **Follow-ups merge, corrections win.** Sparse replies (*"0.5m, 2g, 10ml, 60 min"*) accumulate into
+  one scenario; a correction (*"actually make it 40 C"*) overrides only that field, clears any prior
+  assumption, and is announced. Genuinely **ambiguous** input (e.g. "acid leach" with no named
+  reagent) is **asked about, never guessed**.
+
+The UI shows an **"I understood this as…"** card after each turn (domain, material, conditions,
+target elements, what was normalized, assumptions to confirm, what's missing) with an inline
+**"✏️ Edit what I understood / ✋ That's not right"** corrector — so a misread field is fixed in one
+click, without hunting advanced tabs.
 
 ## Modules (`flyash_phreeqc_ml/agent/`)
 
 | Module | Role | Imports |
 | --- | --- | --- |
-| `agent_state.py` | conversation + structured scenario + deterministic, correction-aware **merge** of a natural reply (only fields the reply explicitly states; later corrections win); provenance trace | rule_parser / safety / scenario_schema (pure) |
+| `agent_state.py` | conversation + structured scenario + the pure `apply_delta` **merge** (scalars overwrite so corrections win; lists union; assumptions flagged/cleared); the "I understood this as…" card state; provenance trace | rule_parser / safety / scenario_schema (pure) |
+| `nlu_extractor.py` | **natural-language understanding** — AI-first extraction (one grounded call → `understanding` + action) with a deterministic fallback; text normalization, canonicalization, validation/schema-repair, change/conflict detection, the understanding card | ai.client + actions / prompts / state / domains · **AI-first, no executor** |
 | `agent_actions.py` | the **action vocabulary** + `AgentAction` + `parse_action` (strips forbidden keys like `phreeqc_input_text`) + per-action **metadata** (risk / confirmation / domain / preconditions) | pure |
 | `domains.py` | **domain classification** + the engine map (only `leaching_geochemistry → PHREEQC`) | pure |
-| `agent_prompts.py` | the system prompt + a **grounded** per-turn prompt (the model sees the deterministic state, never invents it) | scenario_schema / actions / domains |
+| `agent_prompts.py` | the system prompt (incl. the `understanding` schema + messy-text rules) + a **grounded** per-turn prompt (the model sees the deterministic state, never invents it) | scenario_schema / actions / domains |
 | `tool_registry.py` | binds each action to a **deterministic backend function** (the existing builder/executor/registry/strategy/target-matching) | simulation modules · **no AI** |
-| `agent_policy.py` | the **gate** (allow / needs-confirmation / block) + the **deterministic planner** | actions / domains / state · **no AI, no executor** |
-| `agent_orchestrator.py` | the **loop** — the only module that touches AI | ai.client / import_assist + the above |
+| `agent_policy.py` | the **gate** (allow / needs-confirmation / block) + the **deterministic planner** (asks 1–3 prioritized questions) | actions / domains / state · **no AI, no executor** |
+| `agent_orchestrator.py` | the **loop**: extract (via `nlu_extractor`) → merge → classify → gate → run/park/block; surfaces change/clarify/limited notes + the `apply_correction` edit path | nlu_extractor + the above |
+
+> **Two AI-touching agent modules.** Only `agent_orchestrator` and `nlu_extractor` import the AI
+> client (the latter mirrors `ai/scenario_parser`). Both still import **no executor and no
+> result-path** code; the pure modules (state / actions / prompts / policy / domains) and the tool
+> registry import **no AI** at all.
 
 ## The safety rules (enforced by the policy + tests)
 
@@ -90,16 +130,21 @@ measured data** (the assistant never holds those). It is additive — no scienti
 
 ## Boundaries (tests)
 
-- `tests/test_agent.py` — behaviour: asks for missing details, natural replies merge (corrections
-  win), AI can't run without confirmation, PHREEQC blocked for a plastic-strength scenario,
-  planning-only response, preview built through the existing builder, confirmed execution routes
-  through the existing executor, explanation carries the not-validated caveat, missing
-  composition blocks execution, the agent writes no PHREEQC input, a saved run stores no raw model
-  response.
+- `tests/test_nlu_extractor.py` — the understanding layer: text normalization (typos/units), the
+  careful-acid rule, impossible-value rejection (negatives + out-of-range), the three messy example
+  prompts (leaching / plastic-strength / red-mud), AI `understanding` validation + forbidden-key
+  stripping, invalid-JSON safe fallback, change/conflict detection, the JSON-safe card.
+- `tests/test_agent.py` — behaviour: asks for the 1–3 missing details, messy prompts populate the
+  scenario (rules **and** AI understanding), follow-ups merge + corrections win and are announced,
+  the inline corrector edits without running, "run everything automatically" never auto-executes,
+  ambiguous "acid" is asked, the limited-without-AI note shows once, no raw model text in the card,
+  PHREEQC blocked for a plastic-strength scenario, preview/execution route through the existing
+  builder/executor, the agent writes no PHREEQC input, a saved run stores no raw model response.
 - `tests/test_ai_boundary.py` — imports: the agent's pure modules reach no AI/executor; the tool
-  registry reaches no AI; no scientific/result-path module imports the agent; the planner/executor
-  layers don't depend on the agent.
-- `tests/test_app_tabs_smoke.py` — the full seven-tab app renders end-to-end.
+  registry **and** `nlu_extractor` reach no executor (the NLU layer may import AI, like
+  `ai/scenario_parser`, but runs nothing); no agent module imports the result path; no
+  scientific/result-path module imports the agent.
+- `tests/test_app_tabs_smoke.py` — the full seven-section app renders end-to-end.
 
 ## Disabling AI
 

@@ -385,14 +385,17 @@ def test_result_path_does_not_import_target_matching():
 # AI agent orchestration layer boundary — the LLM proposes; deterministic code runs
 # --------------------------------------------------------------------------- #
 # The agent's PURE modules (decision/data) must reach no AI and no execution code, so "can
-# this run?" never depends on importing PHREEQC. Only the orchestrator may import AI, and only
-# the tool registry may import the executor/builders — and the tool registry may import NO AI
-# (AI never writes input, never runs anything, never decides a composition/release fraction).
+# this run?" never depends on importing PHREEQC. The AI-touching agent modules are the
+# orchestrator AND the NLU extractor (the latter mirrors ai/scenario_parser — AI-first extraction
+# with a deterministic fallback); both still import no executor and no result path. The tool
+# registry may import the executor/builders but NO AI (AI never writes input, runs nothing, or
+# decides a composition/release fraction).
 AGENT_PURE_MODULES = [
     "agent/agent_state.py", "agent/agent_actions.py", "agent/agent_prompts.py",
     "agent/agent_policy.py", "agent/domains.py",
 ]
 AGENT_TOOL_MODULE = "agent/tool_registry.py"
+AGENT_NLU_MODULE = "agent/nlu_extractor.py"
 _EXECUTOR_MARKERS = ("phreeqc_executor", "batch_executor", "phreeqc_runner", "subprocess")
 
 
@@ -418,14 +421,21 @@ def test_agent_tool_registry_imports_no_ai():
     assert not offenders, f"{AGENT_TOOL_MODULE} imports AI: {offenders}"
 
 
+def test_nlu_extractor_imports_no_executor():
+    """The NLU layer is AI-first (it may import the AI client, like ai/scenario_parser), but it
+    runs NOTHING — no executor / runner / subprocess ever appears in it."""
+    offenders = _mentions(_import_targets(AGENT_NLU_MODULE), _EXECUTOR_MARKERS)
+    assert not offenders, f"{AGENT_NLU_MODULE} imports an executor: {offenders}"
+
+
 def test_agent_modules_do_not_import_result_path():
     """No agent module imports the comparison/residual/mapping/validation code or the Match-tab
     runner — the agent is off the scientific result path (it orchestrates the Simulate side)."""
     forbidden = ("residuals", "inclusion", "mapping_table", "scenarios", "replicates",
                  "attribution", "mass_balance", "report", "surrogate", "residual_model",
                  "residual_stats", "incompleteness", "phreeqc_runner", "run_manager")
-    for mod in AGENT_PURE_MODULES + [AGENT_TOOL_MODULE, "agent/agent_orchestrator.py",
-                                     "agent/__init__.py"]:
+    for mod in AGENT_PURE_MODULES + [AGENT_TOOL_MODULE, AGENT_NLU_MODULE,
+                                     "agent/agent_orchestrator.py", "agent/__init__.py"]:
         offenders = _mentions(_import_targets(mod), forbidden)
         assert not offenders, f"{mod} imports result-path code: {offenders}"
 

@@ -19,10 +19,11 @@ import streamlit as st
 import app_ui
 from flyash_phreeqc_ml import config
 from flyash_phreeqc_ml.agent import agent_orchestrator as orch
-from flyash_phreeqc_ml.agent import agent_state, domains
+from flyash_phreeqc_ml.agent import agent_state, domains, nlu_extractor
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.materials import profile_schema as mp
 from flyash_phreeqc_ml.simulation import phreeqc_executor, source_terms
+from flyash_phreeqc_ml.simulation import scenario_schema as S
 
 from .common import _render_next_step
 
@@ -103,6 +104,7 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
     with col_main:
         _render_examples(state, run=selected_run, consent=consent, cfg=cfg)
         _render_chat_history(state)
+        _render_understanding(selected_run, state)
         _render_pending_and_confirm(selected_run, state, consent, cfg)
         _render_planning_support(selected_run, state, consent, cfg)
         # Technical detail stays hidden by default (expanders).
@@ -248,6 +250,130 @@ def _render_chat_history(state) -> None:
             st.markdown(msg.content)
             if msg.reasoning_summary and msg.role == agent_state.ROLE_ASSISTANT:
                 st.caption(f"🧭 {msg.reasoning_summary}")
+
+
+# --------------------------------------------------------------------------- #
+# "I understood this as…" card + correction affordance
+# --------------------------------------------------------------------------- #
+# Fields the inline corrector exposes (key, label, kind). Blank = leave unchanged.
+_CORRECTABLE = [
+    ("material_name", "Material", "text"),
+    ("leachant_type", "Leachant", "text"),
+    ("leachant_concentration_M", "Concentration (M)", "num"),
+    ("solid_mass_g", "Solid mass (g)", "num"),
+    ("liquid_volume_mL", "Liquid volume (mL)", "num"),
+    ("time_min", "Time (min)", "num"),
+    ("temperature_C", "Temperature (°C)", "num"),
+]
+
+
+def _render_understanding(run, state) -> None:
+    """The compact 'I understood this as…' card + an inline corrector (no advanced-tab hunting).
+
+    Renders from ``state.last_understanding`` (a plain dict built by the agent). It works whether
+    AI is on or off (it shows the rule-based reading too), so the user always sees what was
+    captured and can fix any field right here.
+    """
+    card = state.last_understanding
+    if not card:
+        return
+    # Only show once something meaningful has been captured.
+    if (card.get("domain") == domains.UNKNOWN and card.get("material") in (None, "—")
+            and not card.get("key_variables") and not card.get("target_elements")):
+        return
+
+    with st.container(border=True):
+        app_ui.section_header("🧠 I understood this as")
+        conf = card.get("confidence")
+        meta = card.get("source_label", "")
+        if isinstance(conf, (int, float)) and conf:
+            meta += f" · confidence {conf:.0%}"
+        st.caption(meta)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            engine = " · ✅ PHREEQC engine" if card.get("executable") else " · 🧪 planning only"
+            st.markdown(f"**Domain:** {card.get('domain_label', '—')}{engine}")
+            st.markdown(f"**Material:** {card.get('material', '—')}")
+            st.markdown(f"**Leachant:** {card.get('leachant', '—')}")
+        with c2:
+            kv = card.get("key_variables") or []
+            st.markdown("**Conditions:** " + ("; ".join(kv) if kv else "—"))
+            te = card.get("target_elements") or []
+            st.markdown("**Target elements:** " + (", ".join(te) if te else "—"))
+            do = card.get("desired_outputs") or []
+            if do:
+                st.markdown("**Desired outputs:** " + ", ".join(do))
+
+        for ch in card.get("changes") or []:
+            st.caption(f"✏️ updated {ch['label']}: {ch['old']} → {ch['new']}")
+        if card.get("normalizations"):
+            st.caption("Interpreted: " + "; ".join(str(n) for n in card["normalizations"][:4]))
+        for a in card.get("assumptions") or []:
+            st.caption(f"🟡 assumption to confirm — **{a['field']}** = {a.get('value')} "
+                       f"({a.get('reason')})")
+        for rj in card.get("rejected") or []:
+            st.caption(f"⚠️ couldn't use **{rj['field']}**: {rj['reason']}")
+        if card.get("missing"):
+            st.caption("Still needed: " + ", ".join(card["missing"]))
+        if card.get("ambiguous"):
+            st.caption("Please clarify: " + ", ".join(card["ambiguous"]))
+
+        st.caption("If anything's off, fix it below — you won't lose the rest.")
+        _render_correction_editor(run, state)
+
+
+def _build_correction_delta(flat, raw, target_elements) -> dict:
+    """Build a delta from the corrector's text/number inputs (blank = unchanged; reject negatives)."""
+    delta: dict = {}
+    for key, _label, kind in _CORRECTABLE:
+        text = (raw.get(key) or "").strip()
+        if text == "":
+            continue
+        if kind == "num":
+            val = S.as_float(text)
+            if val is None or val < 0:
+                continue
+            if val != flat.get(key):
+                delta[key] = val
+        else:
+            if key == "leachant_type":
+                canon, _amb = nlu_extractor.canonical_leachant(text)
+                val = canon or text
+            else:
+                val = text
+            if val != flat.get(key):
+                delta[key] = val
+    if set(target_elements) != set(flat.get("target_elements") or []):
+        delta["target_elements"] = list(target_elements)
+    return delta
+
+
+def _render_correction_editor(run, state) -> None:
+    flat = state.scenario.to_flat_dict()
+    with st.expander("✏️ Edit what I understood  ·  ✋ That's not right", expanded=False):
+        st.caption("Correct any field directly — blanks are left unchanged. This updates the "
+                   "experiment set-up; nothing runs.")
+        with st.form(f"asst_correct__{run or '_none_'}"):
+            cols = st.columns(2)
+            raw: dict = {}
+            for i, (key, label, _kind) in enumerate(_CORRECTABLE):
+                cur = flat.get(key)
+                raw[key] = cols[i % 2].text_input(
+                    label, value=("" if cur is None else str(cur)),
+                    key=f"asst_corr_{key}_{run or '_none_'}")
+            target_elements = st.multiselect(
+                "Target elements", list(S.RECOGNIZED_ELEMENTS),
+                default=list(flat.get("target_elements") or []),
+                key=f"asst_corr_te_{run or '_none_'}")
+            submitted = st.form_submit_button("Apply corrections")
+        if submitted:
+            delta = _build_correction_delta(flat, raw, target_elements)
+            if delta:
+                orch.apply_correction(state, delta)
+                st.rerun()
+            else:
+                st.info("No changes detected.")
 
 
 def _render_pending_and_confirm(run, state, consent, cfg) -> None:

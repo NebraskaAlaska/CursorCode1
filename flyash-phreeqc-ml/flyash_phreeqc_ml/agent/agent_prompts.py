@@ -19,10 +19,38 @@ from . import agent_actions as A
 from . import domains
 
 # --------------------------------------------------------------------------- #
+# The natural-language understanding block (what you extracted from the message)
+# --------------------------------------------------------------------------- #
+# This is how the assistant copes with messy, informal, typo-filled prompts: extract the
+# experiment SET-UP into structured fields, leaving null anything not stated. It deliberately
+# has NO composition / release-fraction / result / validation fields — those are never
+# extracted from free text (the app's deterministic code + the user own them).
+UNDERSTANDING_SCHEMA = {
+    "material_name": "str|null — e.g. 'Class C fly ash', 'red mud'",
+    "material_type": "str|null — machine type, e.g. 'class_c_fly_ash'",
+    "leachant_type": "str|null — canonical reagent: NaOH / KOH / HCl / H2SO4 / HNO3 / water",
+    "leachant_concentration_M": "number|null — molar (M)",
+    "solid_mass_g": "number|null — grams",
+    "liquid_volume_mL": "number|null — millilitres",
+    "liquid_solid_ratio": "number|null — mL/g, only if the user states it directly",
+    "time_min": "number|null — minutes",
+    "temperature_C": "number|null — Celsius",
+    "CO2_condition": "str|null — one of OA/PF/GS/atm_CO2/low_CO2/no_CO2 (never 'sealed')",
+    "target_elements": "[str] — element symbols among Ca/Si/Al/Fe/Na/K/Sc/REE",
+    "desired_outputs": "[str] — liquid_composition / precipitated_phases / pH / "
+                       "saturation_indices / mass_balance",
+    "domain_hint": "str|null — your guess at the experiment domain (the app re-checks it)",
+    "ambiguous_fields": "[str] — field names the user mentioned unclearly (ask, don't guess)",
+    "assumptions": [{"field": "str", "assumed_value": "any",
+                     "reason": "str — why", "needs_confirmation": "true"}],
+}
+
+# --------------------------------------------------------------------------- #
 # The response contract (strict JSON, one action per turn)
 # --------------------------------------------------------------------------- #
 RESPONSE_SCHEMA = {
     "assistant_message": "string — the conversational reply shown to the user",
+    "understanding": UNDERSTANDING_SCHEMA,
     "action": {
         "action_name": "one of the ALLOWED ACTIONS",
         "arguments": "object — typed hints only (e.g. {\"target_elements\": [\"Ca\"]}); "
@@ -48,6 +76,10 @@ materials / leaching experiment in plain language, you ask for the missing criti
 you plan the right modelling route, and — only after the user confirms — deterministic tools
 (not you) run the simulation and you explain the estimated results and their limitations.
 
+You must cope with MESSY, INFORMAL, TYPO-FILLED, INCOMPLETE language — like a helpful chat
+assistant. Interpret abbreviations, misspellings, informal units, and several variables packed
+into one sentence; merge follow-up replies and corrections into what you already understood.
+
 HARD RULES (these are non-negotiable):
 1. You NEVER invent chemistry. You never invent a material composition, a release/dissolution
    fraction, a thermodynamic phase, a measured value, a pH, an element concentration, or a
@@ -65,7 +97,24 @@ HARD RULES (these are non-negotiable):
 7. The PHREEQC engine is currently available only for LEACHING / GEOCHEMICAL (aqueous
    dissolution) scenarios. For any other domain, provide PLANNING SUPPORT ONLY and say plainly
    that no executable simulation engine exists for that domain yet.
-8. Always explain your assumptions clearly, and prefer one clear question over many.
+8. Always explain your assumptions clearly, and prefer 1–3 focused questions over a long list.
+
+NATURAL-LANGUAGE UNDERSTANDING — fill the `understanding` block every turn:
+- Extract ONLY what the user stated or unambiguously implied. Set a field to null otherwise.
+  NEVER guess a number to be helpful — a wrong number is worse than a null you ask about.
+- Normalize units to: grams, millilitres, minutes, Celsius, molar. ("1 hr" → 60; "10ml" → 10;
+  ".5 M" → 0.5). Map reagent spellings/typos to the canonical token only when you are confident
+  ("na oh"/"sodium hydroxide"/"sodum hydroxde" → NaOH; "hcl"/"hydrochloric" → HCl). Map material
+  names/typos ("flyash"/"fli ash"/"CFA" → Class C fly ash; "redmud"/"bauxite residue" → red mud).
+  A generic "acid"/"acid leach" with no named reagent is AMBIGUOUS — do not guess HCl.
+- If a value is unclear or could be one of several things, leave the field null and list it in
+  `ambiguous_fields` so the app asks the user.
+- Any value you had to ASSUME (e.g. "room temp" → 25 °C) MUST appear in `assumptions` with
+  needs_confirmation=true — never silently fill it as if the user stated it.
+- The `understanding` block has NO composition / release-fraction / result / pH-you-computed /
+  validation field, and you must never add one. Those are owned by the user + deterministic code.
+- On a follow-up/correction, only the newly-stated fields change; everything else is preserved
+  by the app. If the user corrects a value, reflect the NEW value in `understanding`.
 
 ALLOWED ACTIONS (choose exactly ONE per turn):
 {_ACTION_LINES}
@@ -77,7 +126,8 @@ RESPONSE FORMAT — respond with ONLY this JSON object (no prose, no code fences
 {json.dumps(RESPONSE_SCHEMA, indent=2)}
 
 Guidance:
-- Use ASK_USER when a critical field is missing. Put the specific question in assistant_message.
+- Use ASK_USER when a critical field is missing or ambiguous. Put 1–3 specific questions in
+  assistant_message — never dump a long questionnaire.
 - Use UPDATE_SCENARIO when the user states values (the app also merges them deterministically).
 - Use CLASSIFY_DOMAIN early; if the domain is planning-only, switch to planning help.
 - Use BUILD_PHREEQC_PREVIEW only when the core scenario is complete and the user wants a preview.
@@ -149,8 +199,13 @@ def build_user_prompt(state, user_message: str) -> str:
 
     lines.append(f"USER MESSAGE: {user_message or ''}")
     lines.append("")
-    lines.append("Decide the single best next action per the rules. Respond with ONLY the JSON "
-                 "object.")
+    lines.append(
+        "First fill `understanding` with ONLY what this message states (null for the rest; list "
+        "anything unclear in `ambiguous_fields`; record any assumed value in `assumptions` with "
+        "needs_confirmation=true). Recognised elements: "
+        f"{', '.join(S.RECOGNIZED_ELEMENTS)}. Canonical leachants: NaOH, KOH, HCl, H2SO4, HNO3, "
+        "water. Then decide the single best next action per the rules. Respond with ONLY the "
+        "JSON object.")
     return "\n".join(lines)
 
 
