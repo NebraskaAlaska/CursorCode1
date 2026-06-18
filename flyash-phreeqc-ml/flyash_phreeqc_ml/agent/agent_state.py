@@ -201,6 +201,9 @@ class AgentState:
     ambiguous_fields: list = field(default_factory=list)    # fields to clarify (this turn)
     nlu_notice_shown: bool = False                          # gentle limited-without-AI note shown
 
+    # advisory council review (a CouncilReview; duck-typed so this module imports no AI/council)
+    last_council: object = None
+
     # audit
     provenance: list = field(default_factory=list)         # list[ProvenanceEvent]
 
@@ -370,6 +373,14 @@ class AgentState:
             except Exception:                              # noqa: BLE001
                 mp_summary = {"material_name": getattr(mp, "material_name", None),
                               "is_usable": getattr(mp, "is_usable", False)}
+        # Council provenance is the DERIVED structured summary only (no raw model text), via the
+        # duck-typed to_safe_dict() — so this pure module never imports the council/AI layer.
+        council = None
+        if self.last_council is not None:
+            try:
+                council = self.last_council.to_safe_dict()
+            except Exception:                              # noqa: BLE001
+                council = None
         return {
             "agent_assisted": True,
             "domain": self.domain,
@@ -381,6 +392,7 @@ class AgentState:
             "material_profile_summary": mp_summary,
             "release_model_status": self.release_model_status,
             "warnings": list(self.warnings),
+            "council_review": council,
             "not_validated_warning": NOT_VALIDATED_WARNING,
         }
 

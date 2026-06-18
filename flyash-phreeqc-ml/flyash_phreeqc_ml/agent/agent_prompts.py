@@ -34,9 +34,14 @@ UNDERSTANDING_SCHEMA = {
     "liquid_volume_mL": "number|null — millilitres",
     "liquid_solid_ratio": "number|null — mL/g, only if the user states it directly",
     "time_min": "number|null — minutes",
-    "temperature_C": "number|null — Celsius",
+    "temperature_C": "number|null — the AQUEOUS-LEACH temperature in Celsius (NOT a calcination "
+                     "temperature)",
+    "pretreatment_temperature_C": "number|null — a calcination / thermal-pretreatment temperature "
+                                  "(e.g. 'calcine at 900 C then leach'); keep it OUT of temperature_C",
     "CO2_condition": "str|null — one of OA/PF/GS/atm_CO2/low_CO2/no_CO2 (never 'sealed')",
     "target_elements": "[str] — element symbols among Ca/Si/Al/Fe/Na/K/Sc/REE",
+    "unsupported_elements": "[str] — requested elements OUTSIDE that set (e.g. Ni, Co, Mn, Li); "
+                            "list them here, never drop them silently",
     "desired_outputs": "[str] — liquid_composition / precipitated_phases / pH / "
                        "saturation_indices / mass_balance",
     "domain_hint": "str|null — your guess at the experiment domain (the app re-checks it)",
@@ -115,6 +120,17 @@ NATURAL-LANGUAGE UNDERSTANDING — fill the `understanding` block every turn:
   validation field, and you must never add one. Those are owned by the user + deterministic code.
 - On a follow-up/correction, only the newly-stated fields change; everything else is preserved
   by the app. If the user corrects a value, reflect the NEW value in `understanding`.
+- Fly-ash CLASS: for a bare "fly ash" / "flyash", set material_name "fly ash" and DO NOT assume
+  Class C — add "fly_ash_class" to ambiguous_fields. Only use "Class C fly ash" if the user says C.
+- MULTI-STEP (thermal-then-leach): if the user calcines/heats at a high temperature and THEN
+  leaches, that high temperature is the calcination temperature → put it in
+  pretreatment_temperature_C and leave temperature_C (the leach temperature) null unless a
+  separate leach temperature is stated. Add temperature_C to ambiguous_fields so the app asks.
+- OUT-OF-SCOPE elements (Ni/Co/Mn/Li/Cu/Zn/Pb/…): list them in unsupported_elements (never in
+  target_elements, never dropped) — the current engine handles only Ca/Si/Al/Fe/Na/K/Sc/REE.
+- A binder / geopolymer / cement STRENGTH study is NOT aqueous leaching — don't hint a leaching
+  domain just because the user mentions pH; mechanical strength has no executable engine.
+- Keep assistant_message to AT MOST 3 focused questions (the single most useful ones).
 
 ALLOWED ACTIONS (choose exactly ONE per turn):
 {_ACTION_LINES}

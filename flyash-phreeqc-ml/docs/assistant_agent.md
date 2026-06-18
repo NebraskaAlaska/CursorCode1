@@ -74,12 +74,47 @@ click, without hunting advanced tabs.
 | `agent_prompts.py` | the system prompt (incl. the `understanding` schema + messy-text rules) + a **grounded** per-turn prompt (the model sees the deterministic state, never invents it) | scenario_schema / actions / domains |
 | `tool_registry.py` | binds each action to a **deterministic backend function** (the existing builder/executor/registry/strategy/target-matching) | simulation modules · **no AI** |
 | `agent_policy.py` | the **gate** (allow / needs-confirmation / block) + the **deterministic planner** (asks 1–3 prioritized questions) | actions / domains / state · **no AI, no executor** |
-| `agent_orchestrator.py` | the **loop**: extract (via `nlu_extractor`) → merge → classify → gate → run/park/block; surfaces change/clarify/limited notes + the `apply_correction` edit path | nlu_extractor + the above |
+| `agent_council.py` | the **advisory council** — five role assessments + one synthesis; deterministic baseline + an optional AI enrichment merged so canonical facts/caveats stay code-generated; reinforces the robustness fixes + rejects unsafe asks | ai.client + state / domains / nlu_extractor · **AI-first, no executor, no tool registry** |
+| `agent_orchestrator.py` | the **loop**: extract (via `nlu_extractor`) → merge → classify → gate → run/park/block; runs the advisory council (`council=True`); surfaces change/clarify/limited notes + the `apply_correction` edit path | nlu_extractor + agent_council + the above |
 
-> **Two AI-touching agent modules.** Only `agent_orchestrator` and `nlu_extractor` import the AI
-> client (the latter mirrors `ai/scenario_parser`). Both still import **no executor and no
-> result-path** code; the pure modules (state / actions / prompts / policy / domains) and the tool
-> registry import **no AI** at all.
+> **Three AI-touching agent modules.** Only `agent_orchestrator`, `nlu_extractor`, and
+> `agent_council` import the AI client. All three still import **no executor and no result-path**
+> code (and the council imports **no tool registry** — it can't run anything); the pure modules
+> (state / actions / prompts / policy / domains) and the tool registry import **no AI** at all.
+
+## Agent Council (advisory review layer)
+
+`agent/agent_council.py` makes the assistant feel like a **team of research advisors**, not one
+parser. After the orchestrator has understood a message and chosen an action, the council produces
+a short structured **review** from five role perspectives — *Experiment Understanding · Domain &
+Engine Router · Scientific Critic · Experiment Design Advisor · Results & Validation Critic* — plus
+one synthesized recommendation (`understood_scenario`, `likely_domain`, `executable_engine_status`,
+`planning_or_execution_status`, `key_missing_details`, `assumptions_to_confirm`,
+`scientific_warnings`, `recommended_next_user_question`, `safe_next_action`).
+
+It is **purely advisory** and cannot weaken the safety model:
+
+- It **never executes a tool**, runs nothing, and imports no executor / tool registry.
+- It **never decides the action** — the orchestrator + policy gate own that; the council's
+  `safe_next_action` only *mirrors* the orchestrator's choice for the user.
+- It **never fabricates** a composition, release fraction, measured value, pH/strength result,
+  validation status, or certainty.
+- The **safety-critical synthesis fields** (engine status, scientific warnings, missing details,
+  safe next action) are **code-generated** from the existing validators. With AI on, the council
+  call enriches only the **role prose + understood-scenario + the one next question** — the AI can
+  never weaken a canonical fact or caveat (they are taken from the deterministic baseline).
+
+Modes: **AI on** → one grounded call, validated + merged onto the deterministic baseline; **AI off
+/ failed** → a deterministic lightweight council from the domain / safety / missing-field
+validators, labelled *"AI council unavailable; using deterministic review."* It also reinforces the
+robustness behaviours — a thermal-pretreatment temperature is reported separately from the leach
+temperature, out-of-scope elements (e.g. Ni/Co/Mn) are surfaced, a geopolymer-strength study is
+planning-only (PHREEQC only as optional pore-solution support), and an **unsafe** ask ("run
+everything automatically", "assume data", "validate my result") is **explicitly rejected**.
+
+The UI shows a **Council Review** card (synthesis up top; the five roles under *"Show council
+reasoning"*; no raw JSON). When a run is saved, only the **derived** council fields (`to_safe_dict`)
+are stored in provenance — never a raw model response.
 
 ## The safety rules (enforced by the policy + tests)
 
@@ -140,10 +175,15 @@ measured data** (the assistant never holds those). It is additive — no scienti
   ambiguous "acid" is asked, the limited-without-AI note shows once, no raw model text in the card,
   PHREEQC blocked for a plastic-strength scenario, preview/execution route through the existing
   builder/executor, the agent writes no PHREEQC input, a saved run stores no raw model response.
+- `tests/test_agent_council.py` — the council: five role summaries, the synthesis (missing
+  details + safe next action), no raw response stored, leaching (PHREEQC offered but asks for
+  composition/release), plastic-composite planning-only, thermal+leach temperature separation,
+  geopolymer not over-routed, out-of-scope elements captured, unsafe-intent rejection, the
+  question cap, and the AI path (roles merged, canonical fields kept, advisory only).
 - `tests/test_ai_boundary.py` — imports: the agent's pure modules reach no AI/executor; the tool
-  registry **and** `nlu_extractor` reach no executor (the NLU layer may import AI, like
-  `ai/scenario_parser`, but runs nothing); no agent module imports the result path; no
-  scientific/result-path module imports the agent.
+  registry **and** `nlu_extractor` **and** `agent_council` reach no executor (they may import AI,
+  like `ai/scenario_parser`, but run nothing; the council also imports no tool registry); no agent
+  module imports the result path; no scientific/result-path module imports the agent.
 - `tests/test_app_tabs_smoke.py` — the full seven-section app renders end-to-end.
 
 ## Disabling AI

@@ -629,3 +629,39 @@ def test_understanding_card_never_holds_raw_model_text():
     orch.respond(s, "leach fly ash naoh", client=FakeClient([payload]))
     assert sentinel not in json.dumps(s.last_understanding)
     assert sentinel not in json.dumps([e.to_dict() for e in s.provenance])
+
+
+# --------------------------------------------------------------------------- #
+# 13) Regression: CLASSIFY_DOMAIN must not re-classify on raw (typo) text
+# --------------------------------------------------------------------------- #
+def test_classify_domain_action_preserves_normalized_domain():
+    """Regression (live-eval prompt #6): a typo-heavy non-leaching prompt whose chosen action is
+    CLASSIFY_DOMAIN must NOT regress to `unknown`. The orchestrator classifies on NORMALIZED text
+    (→ polymer_composite); the CLASSIFY_DOMAIN tool now preserves that instead of re-deriving from
+    the raw typo text. Stays planning-only — no PHREEQC, nothing executed."""
+    s = agent_state.AgentState()
+    r = orch.respond(s, "mixing fli ash w waste plstic need compresive strengh 28 days",
+                     client=FakeClient([_action(A.CLASSIFY_DOMAIN)]))
+    assert r.action.action_name == A.CLASSIFY_DOMAIN
+    assert s.domain in (domains.POLYMER_COMPOSITE, domains.MECHANICAL_TESTING)
+    assert s.domain != domains.UNKNOWN                          # the bug regressed it to unknown
+    assert not domains.is_executable(s.domain) and s.engine is None      # planning-only, no engine
+    assert "PHREEQC" not in r.assistant_message
+    assert s.execution_result is None                          # no simulation ran
+
+
+def test_tool_classify_domain_preserves_existing_domain_over_raw_text():
+    """Unit: the classify tool keeps an already-computed domain rather than re-deriving from raw
+    typo-laden text, but still classifies from scratch when no domain is known yet."""
+    from flyash_phreeqc_ml.agent import tool_registry
+    # already-computed (e.g. by the orchestrator on normalized text) → preserved, not clobbered
+    s = agent_state.AgentState()
+    s.experiment_text = "mixing fli ash w waste plstic need compresive strengh 28 days"  # raw typos
+    s.domain = domains.POLYMER_COMPOSITE
+    out = tool_registry._tool_classify_domain(s, {})
+    assert s.domain == domains.POLYMER_COMPOSITE and out.data["executable"] is False
+    # no domain yet (unknown) → classifies from scratch; clean leaching text → executable leaching
+    s2 = agent_state.AgentState()
+    s2.experiment_text = "leach 2 g fly ash in 10 mL 0.5 M NaOH"
+    out2 = tool_registry._tool_classify_domain(s2, {})
+    assert s2.domain == domains.LEACHING_GEOCHEMISTRY and out2.data["executable"] is True

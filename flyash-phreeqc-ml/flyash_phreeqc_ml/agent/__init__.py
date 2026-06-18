@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from . import (
     agent_actions,
+    agent_council,
     agent_orchestrator,
     agent_policy,
     agent_prompts,
@@ -63,5 +64,5 @@ __all__ = [
     "respond", "confirm_pending_action", "reject_pending_action", "apply_correction",
     "AGENT_DATA_NOTICE", "AGENT_CONSENT_LABEL",
     "agent_state", "agent_actions", "agent_prompts", "agent_policy",
-    "agent_orchestrator", "tool_registry", "domains", "nlu_extractor",
+    "agent_orchestrator", "tool_registry", "domains", "nlu_extractor", "agent_council",
 ]
