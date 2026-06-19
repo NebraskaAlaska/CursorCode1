@@ -44,11 +44,9 @@ AI_FALLBACK_NOTE = (
     "⚠️ Live AI was unavailable for this message, so I used the deterministic parser for this "
     "turn. Your **Enable live AI** setting is unchanged — I'll try AI again on the next message.")
 
-# Scenario fields whose change invalidates a previously-built input preview.
-_PREVIEW_INVALIDATING = {
-    "solid_mass_g", "liquid_volume_mL", "leachant_type", "leachant_concentration_M",
-    "temperature_C", "time_min", "CO2_condition", "cover_condition", "target_elements",
-}
+# (Preview-input change detection lives in ``agent_state.scenario_preview_signature`` +
+# ``_invalidate_preview_if_stale`` below — it covers scenario fields AND the release model /
+# material composition / database, so a preview is never left stale after any of them changes.)
 
 # Affirmative / negative detection for replying to a *parked* action. The affirmative must be
 # the WHOLE message (an affirmation, optionally trailing "run it" / "please"), so a longer
@@ -173,15 +171,9 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
     state.ambiguous_fields = list(extraction.ambiguous_fields)
     used_ai = extraction.used_ai
 
-    # A scenario change invalidates a stale preview (and any parked run on it).
-    invalidate_note = ""
-    if applied and (set(applied) & _PREVIEW_INVALIDATING) and state.preview is not None:
-        state.preview = None
-        state.preview_status = None
-        state.sweep_previews = []
-        _clear_pending(state)
-        invalidate_note = ("(The scenario changed, so I cleared the old input preview — "
-                           "I'll rebuild it when you're ready.)")
+    # Any change to a preview input (scenario field / release model / composition / database)
+    # invalidates the stale preview + any parked run on it, with a clear reason naming what changed.
+    invalidate_note = _invalidate_preview_if_stale(state)
 
     # Keep the domain/engine current (typo-tolerant) from the full accumulated description.
     state.domain = nlu_extractor.classify_message(state.experiment_text,
@@ -240,6 +232,10 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
         parked = _action_to_park(action)
         state.pending_action = parked
         state.confirmation_required = True
+        # Snapshot the *reviewed* preview so confirming runs exactly what was reviewed (never a
+        # fresh rebuild from changed state). A later scenario change clears this snapshot too.
+        if parked.action_name == A.RUN_SINGLE_SIMULATION and state.preview is not None:
+            state.pending_preview = state.preview
         awaiting = True
         state.phase = (agent_state.AWAITING_EXECUTION_CONFIRMATION
                        if parked.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP)
@@ -342,13 +338,9 @@ def apply_correction(state, delta) -> AgentTurnResult:
 
     state.domain = nlu_extractor.classify_message(state.experiment_text)
     state.engine = domains.engine_for(state.domain)
-    if applied and (set(applied) & _PREVIEW_INVALIDATING) and state.preview is not None:
-        state.preview = None
-        state.preview_status = None
-        state.sweep_previews = []
-        _clear_pending(state)
+    invalidate_note = _invalidate_preview_if_stale(state)
 
-    note = _changes_note(extraction) or "Updated your experiment details."
+    note = _join(_changes_note(extraction) or "Updated your experiment details.", invalidate_note)
     state.last_understanding = nlu_extractor.build_understanding_card(state, extraction)
     state.add_assistant_message(note)
     correction_action = A.AgentAction(action_name=A.UPDATE_SCENARIO)
@@ -404,6 +396,62 @@ def _confirm_prompt(parked) -> str:
 def _clear_pending(state) -> None:
     state.pending_action = None
     state.confirmation_required = False
+    state.pending_preview = None
+
+
+# Human labels for the preview-input fields, for the "I cleared the preview because … changed" note.
+_PREVIEW_CHANGE_LABELS = {
+    "solid_mass_g": "solid mass", "liquid_volume_mL": "liquid volume",
+    "leachant_type": "leachant", "leachant_concentration_M": "concentration",
+    "temperature_C": "temperature", "time_min": "time", "CO2_condition": "CO₂ condition",
+    "cover_condition": "cover", "target_elements": "target elements",
+    "release_model": "release model", "material_composition": "material composition",
+    "database": "database",
+}
+
+
+def _changed_preview_inputs(old_sig, new_sig) -> list:
+    """Which named inputs differ between two preview signatures (for the clear-reason note)."""
+    if not (isinstance(old_sig, tuple) and isinstance(new_sig, tuple)
+            and len(old_sig) == len(new_sig) == 4):
+        return []
+    changed: list = []
+    old_sc, new_sc = dict(old_sig[0]), dict(new_sig[0])
+    for k in old_sc:
+        if old_sc.get(k) != new_sc.get(k):
+            changed.append(_PREVIEW_CHANGE_LABELS.get(k, k))
+    if old_sig[1] != new_sig[1]:
+        changed.append(_PREVIEW_CHANGE_LABELS["release_model"])
+    if old_sig[2] != new_sig[2]:
+        changed.append(_PREVIEW_CHANGE_LABELS["material_composition"])
+    if old_sig[3] != new_sig[3]:
+        changed.append(_PREVIEW_CHANGE_LABELS["database"])
+    # de-dup, keep order
+    return list(dict.fromkeys(changed))
+
+
+def _invalidate_preview_if_stale(state) -> str:
+    """Clear a preview (and any parked run on it) when its inputs changed; return a clear reason.
+
+    The single invalidation path: composition / release model / database / preview-affecting
+    scenario fields all feed the signature, so a change to *any* of them clears the stale preview
+    while **keeping** the confirmed composition and other set-up (only the generated text is
+    dropped). Returns "" when nothing changed.
+    """
+    if state.preview is None or state.preview_signature is None:
+        return ""
+    current = state.scenario_preview_signature()
+    if current == state.preview_signature:
+        return ""
+    changed = _changed_preview_inputs(state.preview_signature, current)
+    state.preview = None
+    state.preview_status = None
+    state.preview_signature = None
+    state.sweep_previews = []
+    _clear_pending(state)
+    what = ", ".join(changed) if changed else "the set-up"
+    return (f"(I cleared the old input preview because {what} changed — say *build the preview* to "
+            "rebuild it. Your confirmed composition and other settings are kept.)")
 
 
 def _no_pending(state):

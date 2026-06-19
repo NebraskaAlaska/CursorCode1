@@ -69,6 +69,31 @@ EXEC_DONE = "run"
 # meaningful". Kept as local literals so this pure-data module imports no builder/executor.
 _RUNNABLE_PREVIEW_STATUSES = ("ready_for_review", "template_warning")
 
+# Explicit run lifecycle (the single answer the UI shows for "where am I in the run?").
+# missing_inputs → ready_for_review → awaiting_confirmation → (confirm) → executed | failed.
+# "awaiting_confirmation" is the parked state; confirmation transitions straight to executed/failed
+# (the run is approved + executed in one deterministic step — never auto-run).
+LIFECYCLE_MISSING_INPUTS = "missing_inputs"
+LIFECYCLE_READY_FOR_REVIEW = "ready_for_review"
+LIFECYCLE_AWAITING_CONFIRMATION = "awaiting_confirmation"
+LIFECYCLE_EXECUTED = "executed"
+LIFECYCLE_FAILED = "failed"
+
+# The executor's success status, mirrored as a local literal so this pure-data module imports no
+# executor (the boundary rule) — kept identical to ``phreeqc_executor.STATUS_SUCCESS``.
+_EXEC_SUCCESS_STATUS = "success"
+
+# Scenario fields whose change should invalidate a built input preview (``target_elements`` also
+# changes the SELECTED_OUTPUT block). The orchestrator's ``_invalidate_preview_if_stale`` reads the
+# full signature (these fields + release model + composition + database).
+_PREVIEW_SIGNATURE_FIELDS = (
+    "solid_mass_g", "liquid_volume_mL", "leachant_type", "leachant_concentration_M",
+    "temperature_C", "time_min", "CO2_condition", "cover_condition", "target_elements",
+)
+# Run-action names whose parked state means "awaiting confirmation" (local literals; this pure
+# module imports no action vocabulary).
+_RUN_ACTION_NAMES = ("RUN_SINGLE_SIMULATION", "RUN_SWEEP")
+
 # --------------------------------------------------------------------------- #
 # Explicit-field detection (presence regexes — a reply only updates what it states)
 # --------------------------------------------------------------------------- #
@@ -195,6 +220,12 @@ class AgentState:
     # confirmation gating
     pending_action: object = None          # AgentAction awaiting explicit confirmation
     confirmation_required: bool = False
+    # When a RUN action is parked, the *exact* reviewed preview is snapshotted here so confirming
+    # executes the stored, reviewed input — never a fresh rebuild from possibly-changed state.
+    pending_preview: object = None         # phreeqc_input_builder.PhreeqcInputPreview snapshot
+    # The signature of the inputs the current ``preview`` was built from; a mismatch on a later
+    # turn means a dependency changed → invalidate the stale preview (with a clear reason).
+    preview_signature: object = None
 
     # natural-language understanding (the "I understood this as…" card + clarification state)
     last_understanding: dict = field(default_factory=dict)  # plain dict the UI renders
@@ -313,9 +344,52 @@ class AgentState:
         """A built preview whose composition is available (so a run is meaningful).
 
         Uses the stored ``preview_status`` string (set by the build tool) so this pure-data
-        module never imports the builder/executor.
+        module never imports the builder/executor. A **parked** run also counts as runnable via
+        its preview *snapshot* (``pending_preview``) — so confirming runs the reviewed input even
+        if the live ``preview`` was meanwhile cleared. (A scenario change clears the snapshot too,
+        so a stale parked run can never run.)
         """
+        pp = self.pending_preview
+        if pp is not None and getattr(pp, "status", None) in _RUNNABLE_PREVIEW_STATUSES:
+            return True
         return self.preview is not None and self.preview_status in _RUNNABLE_PREVIEW_STATUSES
+
+    @property
+    def run_lifecycle(self) -> str:
+        """Where the run is: missing_inputs / ready_for_review / awaiting_confirmation /
+        executed / failed (the single status the UI shows). Derived, never stored stale."""
+        er = self.execution_result
+        if er is not None:
+            return (LIFECYCLE_EXECUTED if getattr(er, "status", None) == _EXEC_SUCCESS_STATUS
+                    else LIFECYCLE_FAILED)
+        if (self.pending_action is not None and self.confirmation_required
+                and getattr(self.pending_action, "action_name", None) in _RUN_ACTION_NAMES):
+            return LIFECYCLE_AWAITING_CONFIRMATION
+        if self.preview_runnable:
+            return LIFECYCLE_READY_FOR_REVIEW
+        return LIFECYCLE_MISSING_INPUTS
+
+    def scenario_preview_signature(self) -> tuple:
+        """A hashable signature of every input the PHREEQC preview is built from.
+
+        Combines the preview-affecting scenario fields, the release model (mode + fraction), the
+        material profile (id + usability), and the database path. A change between turns means a
+        previously-built preview is stale and must be rebuilt — caught by the orchestrator, which
+        clears it with a clear reason. Pure; never raises.
+        """
+        flat = self.scenario.to_flat_dict()
+
+        def _h(v):
+            return tuple(v) if isinstance(v, (list, tuple)) else v
+
+        sc = tuple((k, _h(flat.get(k))) for k in _PREVIEW_SIGNATURE_FIELDS)
+        rm = self.release_model
+        rm_sig = ((getattr(rm, "mode", None), getattr(rm, "global_fraction", None))
+                  if rm is not None else (None, None))
+        mp = self.material_profile
+        mp_sig = ((getattr(mp, "profile_id", None), bool(getattr(mp, "is_usable", False)))
+                  if mp is not None else (None, False))
+        return (sc, rm_sig, mp_sig, self.database_path)
 
     @property
     def has_results(self) -> bool:

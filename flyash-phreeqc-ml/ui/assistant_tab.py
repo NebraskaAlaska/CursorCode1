@@ -91,9 +91,14 @@ def _ml_model_available(run: str | None) -> bool:
 
 
 def _send(state, message, *, run, consent, cfg) -> None:
-    """Send a message to the assistant (chip or chat input) and rerun."""
+    """Send a message to the assistant (chip or chat input) and rerun.
+
+    ``consent`` is the shared live-AI status (``ai_config.live_ai_status(...).active``), which
+    already requires capability (key + SDK) AND the Settings toggle — so it is the single gate the
+    orchestrator receives. No second ``cfg.enabled`` check (that would let a stale read disagree).
+    """
     council_on = bool(st.session_state.get("asst_council", True))
-    orch.respond(state, message, use_ai=bool(consent and cfg.enabled), council=council_on,
+    orch.respond(state, message, use_ai=bool(consent), council=council_on,
                  material_profile=_material_profile(run), release_model=_release_model(run),
                  database_path=config.PHREEQC_DATABASE_PATH,
                  ml_model_available=_ml_model_available(run))
@@ -130,6 +135,7 @@ def _render_assistant_tab(selected_run: str | None, dev_mode: bool = False) -> N
         _render_understanding(selected_run, state)
         _render_council(state)
         _render_pending_and_confirm(selected_run, state, consent, cfg)
+        _render_run_status_and_results(state)
         _render_planning_support(selected_run, state, consent, cfg)
         # Technical detail stays hidden by default (expanders).
         _render_context_providers(selected_run, state)
@@ -155,7 +161,9 @@ def _render_ai_status(cfg, state) -> bool:
     assistant** in Settings (a persistent flag that survives reruns + navigation). Off → the
     deterministic planner runs (it still asks for missing details, plans, builds previews, and runs
     on your confirmation)."""
-    live_on = ai_config.live_ai_active(cfg, bool(st.session_state.get(LIVE_AI_KEY, False)))
+    # The ONE shared live-AI status (same helper Settings uses → they always agree).
+    ai_status = ai_config.live_ai_status(cfg, bool(st.session_state.get(LIVE_AI_KEY, False)))
+    live_on = ai_status.active
     if live_on:
         st.caption(f"🟢 Live AI on (model `{cfg.model}`) — phrasing + planning only; nothing runs "
                    "or saves without your confirmation. Manage it in **Settings**.")
@@ -174,13 +182,15 @@ def _render_ai_status(cfg, state) -> bool:
     elif last is not None:
         st.caption(f"ℹ️ Last response used live AI: **{'yes' if last else 'no'}**.")
 
-    # Debug-safe status — booleans only, never the key value.
+    # Debug-safe status — booleans only, never the key value. Mirrors the Settings status panel.
     with app_ui.advanced_expander("AI status (debug-safe — no key shown)"):
         st.write({
             "key_detected": bool(cfg.key_present),
             "sdk_available": bool(cfg.sdk_available),
+            "capable": bool(ai_status.capable),
             "live_ai_enabled": bool(live_on),
             "requested_use_ai": bool(live_on),
+            "status_reason": ai_status.reason,
             "last_response_used_ai": getattr(state, "last_used_ai", None),
             "last_ai_fell_back": bool(getattr(state, "last_ai_fell_back", False)),
         })
@@ -499,6 +509,67 @@ def _render_pending_and_confirm(run, state, consent, cfg) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Run lifecycle: a clear "next step" card + an inline results read-out
+# --------------------------------------------------------------------------- #
+_LIFECYCLE_NEXT = {
+    agent_state.LIFECYCLE_AWAITING_CONFIRMATION:
+        "⏳ **Awaiting your confirmation** — click **✅ Yes, run it** above (or reply *yes*). "
+        "Nothing runs until you confirm.",
+    agent_state.LIFECYCLE_READY_FOR_REVIEW:
+        "▶️ **Input preview is ready for review.** Open **Advanced details** below to read the "
+        "exact PHREEQC input, then say *run it* — I'll ask you to confirm before it executes.",
+    agent_state.LIFECYCLE_FAILED:
+        "⚠️ **The last run did not succeed** (see the reason in the chat above). You can still "
+        "review / download the input in **Advanced details**, or fix the set-up and rebuild.",
+    agent_state.LIFECYCLE_EXECUTED:
+        "✅ **Simulation complete** — the result is below; the full read-out + plots are in the "
+        "**Results** section.",
+}
+
+
+def _render_run_status_and_results(state) -> None:
+    """A single 'where am I + what's next' card, plus an inline results read-out once a run
+    completes (so the user never has to hunt for results). Reads the deterministic lifecycle."""
+    if state.domain != domains.LEACHING_GEOCHEMISTRY:
+        return
+    lc = state.run_lifecycle
+    with st.container(border=True):
+        app_ui.section_header("Next step")
+        st.markdown(_LIFECYCLE_NEXT.get(lc, _next_action_hint(state)))
+
+    if not (state.has_results and state.parsed_result is not None):
+        return
+    parsed = state.parsed_result
+    with st.container(border=True):
+        app_ui.section_header("Latest simulation result")
+        app_ui.render_warning_panel(
+            "Model estimate — not validated",
+            "PHREEQC simulation output under your reviewed assumptions. It is a model estimate, "
+            "NOT measured and NOT validated. Validate in **Data & Validation**.", level="warning")
+        pH = _f_num(getattr(parsed, "pH", None), 2)
+        st.markdown(f"**Estimated pH:** {pH if pH is not None else '—'}")
+        totals = {k: _f_num(v, 3) for k, v in getattr(parsed, "element_totals_mM", {}).items()}
+        if totals:
+            st.markdown("**Aqueous element totals (mM):** "
+                        + ", ".join(f"{el} ≈ {v}" for el, v in list(totals.items())[:8]))
+        sis = getattr(parsed, "saturation_indices", None) or []
+        si_bits = [f"{s.get('phase')} {si:+.2f}" for s in sis
+                   if (si := _f_num(s.get("SI"), 2)) is not None]
+        if si_bits:
+            st.markdown("**Saturation indices:** " + ", ".join(si_bits[:6]))
+        for w in (getattr(parsed, "warnings", None) or [])[:3]:
+            st.caption(f"⚠️ {w}")
+        st.caption("Full read-out, sweep plots, and download: open the **Results** section.")
+
+
+def _f_num(value, nd=3):
+    try:
+        return round(float(value), nd)
+    except (TypeError, ValueError):
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Planning support (planning-only domains — useful next actions, not a dead-end)
 # --------------------------------------------------------------------------- #
 def _render_planning_support(run, state, consent, cfg) -> None:
@@ -568,11 +639,13 @@ def _render_context_providers(run: str | None, state) -> None:
 
         st.divider()
         st.markdown("**Material release model** — release fractions are *your assumptions*, not "
-                    "measured truth; they control the predicted dissolved totals.")
-        mode = st.radio("Release model", [_RELEASE_NONE, _RELEASE_GLOBAL], key="asst_release_mode")
+                    "measured truth; they control the predicted dissolved totals. (Changing this "
+                    "rebuilds the input preview; it never erases your confirmed composition.)")
+        mode = st.radio("Release model", [_RELEASE_NONE, _RELEASE_GLOBAL],
+                        key=f"asst_release_mode__{run or '_none_'}")
         if mode == _RELEASE_GLOBAL:
             pct = st.number_input("Global release (%)", min_value=0.0, max_value=100.0,
-                                  value=1.0, step=0.5, key="asst_release_pct")
+                                  value=1.0, step=0.5, key=f"asst_release_pct__{run or '_none_'}")
             st.session_state[f"asst_release__{run or '_none_'}"] = source_terms.global_release(
                 pct / 100.0)
         else:
@@ -581,7 +654,8 @@ def _render_context_providers(run: str | None, state) -> None:
         st.divider()
         av = phreeqc_executor.check_availability()
         st.markdown(f"**PHREEQC engine:** {'✅ configured' if av.can_run else '⚠️ not configured'} "
-                    f"— {av.message} (configure in **Settings**).")
+                    "— configure in **Settings**.")
+        st.caption(phreeqc_executor.availability_hint(av))
 
 
 # --------------------------------------------------------------------------- #

@@ -61,7 +61,9 @@ def _render_ai_settings() -> None:
     if state.LIVE_AI_WIDGET_KEY not in st.session_state:        # re-seed after widget GC
         st.session_state[state.LIVE_AI_WIDGET_KEY] = bool(st.session_state[state.LIVE_AI_KEY])
     toggle_on = bool(st.session_state[state.LIVE_AI_KEY])
-    live_on = ai_config.live_ai_active(cfg, toggle_on)
+    # The ONE shared live-AI status (same helper the Assistant reads → they can never disagree).
+    ai_status = ai_config.live_ai_status(cfg, toggle_on)
+    live_on = ai_status.active
 
     # Status card: API key · AI SDK · Live AI · provider/model (all key-free).
     app_ui.render_metric_cards([
@@ -120,7 +122,7 @@ def _render_phreeqc_engine() -> None:
          "caption": _short_path(av.database_path) or "set PHREEQC_DATABASE",
          "status": "success" if av.database_found else "neutral"},
     ])
-    st.caption(av.message)
+    st.caption(phreeqc_executor.availability_hint(av))
     st.caption("Configure by pointing the app at a PHREEQC CLI you supply: set `PHREEQC_EXE` and "
                "`PHREEQC_DATABASE` (CEMDATA18 is not redistributable — user-supplied). The "
                "assistant still **plans** and builds reviewable input without it.")

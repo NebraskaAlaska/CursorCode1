@@ -57,7 +57,10 @@ RUN set -eux; \
 # fly-ash accuracy, mount CEMDATA18 and override PHREEQC_DATABASE (see docs/deployment.md).
 ENV PHREEQC_EXE=/usr/local/bin/phreeqc \
     PHREEQC_DATABASE=/opt/phreeqc/database/phreeqc.dat \
-    PHREEQC_TIMEOUT_S=120
+    PHREEQC_TIMEOUT_S=120 \
+    APP_IN_DOCKER=1
+# APP_IN_DOCKER lets the app phrase availability honestly: inside the container PHREEQC should be
+# ready (so a failure is a deployment issue to fix), vs. a local Streamlit run with no PHREEQC.
 
 # --- self-test: fail the BUILD loudly if PHREEQC can't actually run --------------------------
 RUN set -eux; \
