@@ -409,7 +409,9 @@ class ExtractionResult:
     source: str = SRC_RULE                               # ai / rule / rule_fallback
     used_ai: bool = False
     limited_without_ai: bool = False
-    ai_error: str | None = None
+    ai_error: str | None = None                          # human, key-free (the reason shown)
+    ai_error_category: str | None = None                 # stable code (ai_client CALL_*/ERROR_*)
+    ai_error_message: str | None = None                  # sanitized detail (type + status, no key)
     domain_hint: str | None = None
     action: object = None                                # an AgentAction (AI path) or None
     assistant_message: str = ""                          # the model's conversational lead (AI)
@@ -641,40 +643,56 @@ def repair_understanding(understanding: dict, *, current_flat: dict) -> Extracti
 # --------------------------------------------------------------------------- #
 # The AI call (one grounded turn → understanding + action)
 # --------------------------------------------------------------------------- #
-def _extract_with_ai(message, state, *, client, model, current_flat) -> ExtractionResult | None:
-    """Run the single grounded LLM turn. Returns ``None`` (never raises) when AI is unavailable
-    or the response is unusable — the caller then uses the deterministic path."""
+def _extract_with_ai(message, state, *, client, model, current_flat):
+    """Run the single grounded LLM turn.
+
+    Returns ``(result_or_None, error_category, error_message)`` — never raises. On any failure the
+    result is ``None`` and the category/message say **why** (a stable :mod:`ai.client` code + a
+    sanitized, key-free detail), so the caller can surface a specific fallback reason instead of a
+    generic "unavailable". The category is never derived from raw response/exception text.
+    """
     resolved = ai_client.get_client(client, model=model)
     if not resolved.ok or resolved.client is None:
-        return None
+        # The client could not even be built (no key / no SDK / init failed) — pass that through.
+        cat = getattr(resolved, "error", None) or getattr(resolved, "error_code", None)
+        msg = getattr(resolved, "message", None) or ai_client.call_error_message(cat)
+        return None, cat, msg
     try:
         resp = resolved.client.messages.create(
             model=ai_config.resolve_model(model), max_tokens=MAX_TOKENS,
             system=agent_prompts.SYSTEM_PROMPT,
             messages=[{"role": "user",
                        "content": agent_prompts.build_user_prompt(state, message)}])
-    except Exception:                                       # noqa: BLE001 — never crash the chat
-        return None
+    except Exception as exc:                                # noqa: BLE001 — never crash the chat
+        cat, msg = ai_client.classify_exception(exc)
+        return None, cat, msg
+
     payload = _parse_json(_message_text(resp))
     if not isinstance(payload, dict):
-        return None
+        # A non-JSON reply: most often the response was cut off at max_tokens (truncated JSON).
+        truncated = getattr(resp, "stop_reason", None) == "max_tokens"
+        cat = ai_client.CALL_TRUNCATED if truncated else ai_client.CALL_INVALID_JSON
+        return None, cat, ai_client.call_error_message(cat)
 
-    action = A.parse_action(payload)                        # strips forbidden keys
-    understanding = payload.get("understanding")
-    if isinstance(understanding, dict):
-        result = repair_understanding(understanding, current_flat=current_flat)
-        top_conf = S.as_float(payload.get("confidence"))    # confidence is a top-level field
-        if top_conf is not None:
-            result.confidence = max(0.0, min(1.0, top_conf))
-    else:
-        # The model proposed an action but no structured understanding → parse fields with rules,
-        # but still credit the AI for choosing the action.
-        result = _deterministic_delta(message, current_flat)
-        result.source = SRC_AI
+    try:
+        action = A.parse_action(payload)                    # strips forbidden keys
+        understanding = payload.get("understanding")
+        if isinstance(understanding, dict):
+            result = repair_understanding(understanding, current_flat=current_flat)
+            top_conf = S.as_float(payload.get("confidence"))  # confidence is a top-level field
+            if top_conf is not None:
+                result.confidence = max(0.0, min(1.0, top_conf))
+        else:
+            # The model proposed an action but no structured understanding → parse fields with
+            # rules, but still credit the AI for choosing the action.
+            result = _deterministic_delta(message, current_flat)
+            result.source = SRC_AI
+    except Exception:                                       # noqa: BLE001 — never crash the chat
+        return None, ai_client.CALL_PROCESSING, ai_client.call_error_message(ai_client.CALL_PROCESSING)
     result.used_ai = True
     result.action = action
     result.assistant_message = str(payload.get("assistant_message") or "").strip()
-    return result
+    return result, None, None
 
 
 # --------------------------------------------------------------------------- #
@@ -693,14 +711,19 @@ def extract(message: str, *, state, client=None, model=None, use_ai: bool = True
 
     result = None
     if use_ai and ai_on:
-        result = _extract_with_ai(message, state, client=client, model=model,
-                                  current_flat=current_flat)
+        result, err_cat, err_msg = _extract_with_ai(message, state, client=client, model=model,
+                                                    current_flat=current_flat)
         if result is None:
-            # AI was on but the call/parse failed → deterministic fallback, clearly degraded.
+            # AI was on but the call/parse failed → deterministic fallback, clearly degraded, with
+            # the SPECIFIC sanitized reason threaded through so the UI can say exactly why.
             result = _deterministic_delta(message, current_flat)
             result.source = SRC_RULE_FALLBACK
             result.limited_without_ai = True
-            result.ai_error = "AI extraction was unavailable for this message — used the rule parser."
+            result.ai_error_category = err_cat
+            result.ai_error_message = err_msg
+            result.ai_error = (err_msg
+                               or "AI extraction was unavailable for this message — used the "
+                               "rule parser.")
     if result is None:
         result = _deterministic_delta(message, current_flat)
         result.limited_without_ai = not ai_on

@@ -49,6 +49,12 @@ PROVIDER_ENV = "ANTHROPIC_PROVIDER"
 # without code changes.
 DEFAULT_MODEL = "claude-opus-4-8"
 
+# Request hardening for live calls. A bounded timeout turns a network hang into a clean,
+# classifiable ``timeout`` error instead of freezing a Streamlit turn; the SDK's built-in
+# retries (with backoff) smooth transient 429/5xx. Both are non-secret and overridable by env.
+REQUEST_TIMEOUT_S: float = float(os.environ.get("ANTHROPIC_TIMEOUT_S", "45") or "45")
+MAX_RETRIES: int = int(os.environ.get("ANTHROPIC_MAX_RETRIES", "2") or "2")
+
 # A small curated list the settings UI offers; free-text entry is also allowed.
 SUGGESTED_MODELS = (
     "claude-opus-4-8",
@@ -179,6 +185,16 @@ def api_key_present() -> bool:
 
 def api_key_source() -> str:
     return detect_api_key()[1]
+
+
+def key_length() -> int:
+    """Length of the detected API key (an integer only — **never** the key itself).
+
+    A safe diagnostic: a 0 means no key; a plausible non-zero length (≈100) confirms a key is
+    actually present and non-trivial, without exposing any of its characters.
+    """
+    key, _source = detect_api_key()
+    return len(key) if key else 0
 
 
 def sdk_available() -> bool:
@@ -328,3 +344,58 @@ def live_ai_status(config: AIConfig, toggle_on: bool) -> LiveAIStatus:
     else:
         reason = "Live AI is off — turn on 'Enable live AI assistant' in Settings."
     return LiveAIStatus(active=active, capable=capable, toggle_on=toggle, reason=reason)
+
+
+# --------------------------------------------------------------------------- #
+# Safe diagnostics (every field is non-secret; the key value never appears)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class AIDiagnostics:
+    """A key-free snapshot for the 'why is live AI off / failing' panel.
+
+    Holds only safe facts: key *presence* + *length* (never the key), SDK availability, the
+    selected model/provider, whether live AI is enabled, and the last sanitized AI error +
+    whether this turn fell back. Safe to display, log, or serialise anywhere.
+    """
+
+    key_present: bool
+    key_length: int
+    sdk_available: bool
+    selected_model: str
+    provider: str
+    live_ai_enabled: bool
+    capable: bool
+    last_ai_error_type: str | None
+    last_ai_error_message: str | None
+    fallback_this_turn: bool
+
+    def to_safe_dict(self) -> dict:
+        return {
+            "key_present": self.key_present,
+            "key_length": self.key_length,
+            "sdk_available": self.sdk_available,
+            "selected_model": self.selected_model,
+            "provider": self.provider,
+            "live_ai_enabled": self.live_ai_enabled,
+            "capable": self.capable,
+            "last_ai_error_type": self.last_ai_error_type,
+            "last_ai_error_message": self.last_ai_error_message,
+            "fallback_this_turn": self.fallback_this_turn,
+        }
+
+
+def diagnostics(*, toggle_on: bool = False, last_ai_error_type: str | None = None,
+                last_ai_error_message: str | None = None, fallback_this_turn: bool = False,
+                provider: str | None = None, model: str | None = None) -> AIDiagnostics:
+    """Resolve the safe AI diagnostics snapshot (pure, key-free, never raises).
+
+    ``last_ai_error_*`` and ``fallback_this_turn`` are passed in from the conversation state
+    (per-turn facts the config layer doesn't own); everything else is resolved here.
+    """
+    cfg = resolve_config(provider=provider, model=model)
+    status = live_ai_status(cfg, toggle_on)
+    return AIDiagnostics(
+        key_present=cfg.key_present, key_length=key_length(), sdk_available=cfg.sdk_available,
+        selected_model=cfg.model, provider=cfg.provider, live_ai_enabled=status.active,
+        capable=status.capable, last_ai_error_type=last_ai_error_type,
+        last_ai_error_message=last_ai_error_message, fallback_this_turn=bool(fallback_this_turn))

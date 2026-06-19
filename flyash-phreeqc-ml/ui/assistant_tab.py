@@ -174,26 +174,28 @@ def _render_ai_status(cfg, state) -> bool:
         st.caption(f"⚪ Deterministic assistant mode — {cfg.disabled_reason()}. Configure AI in "
                    "**Settings**.")
 
-    # Per-turn AI outcome (never silent on a failure; the toggle is never changed by it).
+    # Per-turn AI outcome (never silent on a failure; the toggle is never changed by it). On a
+    # fallback we show the SPECIFIC sanitized reason so the cause is debuggable without secrets.
     last = getattr(state, "last_used_ai", None)
     if getattr(state, "last_ai_fell_back", False):
-        st.caption("ℹ️ Last response: live AI was unavailable → deterministic fallback for that "
-                   "turn (your AI toggle is unchanged).")
+        reason = getattr(state, "last_ai_error_message", None) or "unspecified reason"
+        st.caption(f"⚠️ Last response: live AI was unavailable → deterministic fallback for that "
+                   f"turn. **Reason:** {reason} Your AI toggle is unchanged.")
     elif last is not None:
         st.caption(f"ℹ️ Last response used live AI: **{'yes' if last else 'no'}**.")
 
-    # Debug-safe status — booleans only, never the key value. Mirrors the Settings status panel.
-    with app_ui.advanced_expander("AI status (debug-safe — no key shown)"):
-        st.write({
-            "key_detected": bool(cfg.key_present),
-            "sdk_available": bool(cfg.sdk_available),
-            "capable": bool(ai_status.capable),
-            "live_ai_enabled": bool(live_on),
-            "requested_use_ai": bool(live_on),
-            "status_reason": ai_status.reason,
-            "last_response_used_ai": getattr(state, "last_used_ai", None),
-            "last_ai_fell_back": bool(getattr(state, "last_ai_fell_back", False)),
-        })
+    # Debug-safe diagnostics — the single safe snapshot (no key value, ever). Mirrors Settings.
+    with app_ui.advanced_expander("AI status & diagnostics (debug-safe — no key shown)"):
+        diag = ai_config.diagnostics(
+            toggle_on=bool(st.session_state.get(LIVE_AI_KEY, False)),
+            last_ai_error_type=getattr(state, "last_ai_error_type", None),
+            last_ai_error_message=getattr(state, "last_ai_error_message", None),
+            fallback_this_turn=bool(getattr(state, "last_ai_fell_back", False)))
+        payload = diag.to_safe_dict()
+        payload["last_response_used_ai"] = getattr(state, "last_used_ai", None)
+        payload["status_reason"] = ai_status.reason
+        st.write(payload)
+        st.caption("Every field is non-secret — the API key value is never shown.")
     return live_on
 
 
