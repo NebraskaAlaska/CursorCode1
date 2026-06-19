@@ -289,4 +289,42 @@ def live_ai_active(config: AIConfig, toggle_on: bool) -> bool:
     the SDK are present) **and** the user has explicitly turned on the live-AI switch
     (``toggle_on``, the Settings toggle). A stale ``toggle_on`` never overrides a lost capability,
     so a removed key / SDK disables AI even if the toggle was left on. Pure + key-free."""
-    return bool(getattr(config, "enabled", False) and toggle_on)
+    return live_ai_status(config, toggle_on).active
+
+
+@dataclass(frozen=True)
+class LiveAIStatus:
+    """The single, shared answer to 'is live AI on right now, and why' (key-free).
+
+    Both Settings (the status card) and the Assistant (the per-turn ``use_ai`` decision +
+    caption) derive their state from this one helper, so they can never drift apart.
+    """
+
+    active: bool          # live AI will actually run this turn (capable AND toggle on)
+    capable: bool         # a key + the SDK are present (the toggle is only operable then)
+    toggle_on: bool       # the user's Settings switch
+    reason: str           # short, human, key-free — safe to display anywhere
+
+    def to_safe_dict(self) -> dict:
+        return {"active": self.active, "capable": self.capable, "toggle_on": self.toggle_on,
+                "reason": self.reason}
+
+
+def live_ai_status(config: AIConfig, toggle_on: bool) -> LiveAIStatus:
+    """Resolve the **one** live-AI status used by the UI everywhere (pure, key-free).
+
+    Capability (``config.enabled`` = key + SDK) and the user's Settings toggle are combined into a
+    single ``active`` flag plus a human ``reason`` that explains *why* AI is on/off — so Settings
+    and the Assistant always agree. A lost key/SDK forces ``active=False`` even with the toggle
+    left on; a per-turn API failure is reported separately (it never flips this status off).
+    """
+    capable = bool(getattr(config, "enabled", False))
+    toggle = bool(toggle_on)
+    active = capable and toggle
+    if active:
+        reason = f"Live AI is on (model {getattr(config, 'model', '—')})."
+    elif not capable:
+        reason = getattr(config, "disabled_reason", lambda: None)() or "AI is disabled."
+    else:
+        reason = "Live AI is off — turn on 'Enable live AI assistant' in Settings."
+    return LiveAIStatus(active=active, capable=capable, toggle_on=toggle, reason=reason)

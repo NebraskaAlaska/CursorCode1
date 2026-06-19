@@ -189,11 +189,13 @@ def _tool_build_preview(state, args) -> ToolOutcome:
         phase_template=state.phase_template, database_path=state.database_path)
     state.preview = preview
     state.preview_status = preview.status
+    state.preview_signature = state.scenario_preview_signature()
     state.database_report = preview.database_report or state.database_report
     state.phase = agent_state.PREVIEW_READY
     return ToolOutcome(
         status=preview.status,
         summary=(f"Built a draft PHREEQC input preview (status: {preview.status}). "
+                 f"{_preview_status_note(preview.status)} "
                  "PHREEQC has NOT been run — this is a reviewable draft only."),
         warnings=list(preview.warnings),
         data={"status": preview.status, "template_type": preview.template_type,
@@ -208,11 +210,16 @@ def _wrap_single_run(execution, parsed) -> object:
 
 
 def _tool_run_single(state, args) -> ToolOutcome:
-    """Execute the confirmed preview verbatim (deterministic; reached only after confirmation)."""
-    if state.preview is None:
+    """Execute the confirmed preview verbatim (deterministic; reached only after confirmation).
+
+    Runs the **parked snapshot** (``pending_preview``) when present — the exact reviewed input —
+    falling back to the live ``preview``. It never rebuilds from the (possibly-changed) scenario.
+    """
+    preview = state.pending_preview if state.pending_preview is not None else state.preview
+    if preview is None:
         return ToolOutcome(ok=False, status="no_preview",
                            summary="No input preview to run — build one first.")
-    execution, parsed = phreeqc_executor.run_and_parse(state.preview)
+    execution, parsed = phreeqc_executor.run_and_parse(preview)
     state.execution_result = execution
     state.parsed_result = parsed
     state.batch_result = _wrap_single_run(execution, parsed)
@@ -252,6 +259,7 @@ def _tool_build_sweep_matrix(state, args) -> ToolOutcome:
     if previews:
         state.preview = previews[0]
         state.preview_status = previews[0].status
+        state.preview_signature = state.scenario_preview_signature()
     note = (f"over {field_name}" if ranges else "(single scenario — no sweep range given)")
     return ToolOutcome(
         status="matrix_built",
@@ -473,10 +481,29 @@ def _parsed_brief(parsed) -> str:
     return ("Estimated " + ", ".join(bits) + ".") if bits else "Run parsed (no pH/totals found)."
 
 
+def _preview_status_note(status: str) -> str:
+    """A short, honest note on what a preview status means for running it."""
+    if status == phreeqc_input_builder.STATUS_READY:
+        return "It's ready for review — say *run it* (you'll confirm first)."
+    if status == phreeqc_input_builder.STATUS_NEEDS_COMPOSITION:
+        return ("It still needs a **confirmed material composition** before a meaningful run — "
+                "add one under **Advanced details → Material composition** and confirm it (the "
+                "release model alone is not enough).")
+    if status == phreeqc_input_builder.STATUS_MISSING_FIELD:
+        return "Some required set-up fields are still missing — see the warnings."
+    if status == phreeqc_input_builder.STATUS_UNSUPPORTED_LEACHANT:
+        return "This leachant has no preview template (supported: water, NaOH, HCl)."
+    if status == phreeqc_input_builder.STATUS_TEMPLATE_WARNING:
+        return "It's reviewable, but is a preview-only template (the runner templates NaOH only)."
+    return "Review it before running."
+
+
 def _execution_status_message(status: str, error: str | None) -> str:
     if status == phreeqc_executor.STATUS_MISSING:
-        return ("PHREEQC is not configured on this machine, so I could not run it. You can still "
-                "review and download the input preview; set PHREEQC_EXE + PHREEQC_DATABASE to run.")
+        # Use the SAME availability reasoning Settings shows, so they always agree, and make the
+        # local-vs-container distinction explicit (rather than a flat "not configured").
+        return ("I couldn't run PHREEQC. " + phreeqc_executor.availability_hint()
+                + " You can still review and download the input preview.")
     if status == phreeqc_executor.STATUS_TIMEOUT:
         return "The PHREEQC run timed out. Try a simpler scenario or raise the timeout."
     return f"The PHREEQC run did not succeed ({status}): {error or 'see the run log'}."

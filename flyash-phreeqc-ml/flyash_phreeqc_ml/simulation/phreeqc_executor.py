@@ -250,6 +250,41 @@ def is_configured() -> bool:
     return check_availability().can_run
 
 
+def running_in_docker() -> bool:
+    """Best-effort: are we running inside the app's container? (no run, never raises).
+
+    True when the image marker ``APP_IN_DOCKER`` is set (the Dockerfile sets it) or the
+    container sentinel ``/.dockerenv`` exists. Used only to phrase a clearer "local Streamlit
+    without PHREEQC" vs "container, but PHREEQC env missing" message — never to gate execution.
+    """
+    import os
+    if str(os.environ.get("APP_IN_DOCKER", "")).strip():
+        return True
+    try:
+        return Path("/.dockerenv").exists()
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+def availability_hint(av: PhreeqcAvailability | None = None) -> str:
+    """One human, key-free line both Settings and the Assistant show, so they always agree.
+
+    Distinguishes three cases the demo conflated: PHREEQC ready; running **locally** without
+    PHREEQC (point at Docker / env vars); or inside the **container** but the PHREEQC env vars
+    don't resolve (a deployment problem to fix in the image).
+    """
+    av = av if av is not None else check_availability()
+    if av.can_run:
+        return "PHREEQC is configured and ready — simulations can run after you confirm."
+    if running_in_docker():
+        return ("PHREEQC is not ready in this container — " + av.message
+                + " Check the image's PHREEQC_EXE / PHREEQC_DATABASE (see docs/deployment.md).")
+    return ("Local Streamlit without PHREEQC — " + av.message
+            + " The assistant still plans and builds a reviewable input; to actually run "
+            "simulations, use the Docker image (docs/deployment.md) or set PHREEQC_EXE + "
+            "PHREEQC_DATABASE to a PHREEQC CLI you supply.")
+
+
 # --------------------------------------------------------------------------- #
 # The execution primitive (shared by execute_preview + smoke_test)
 # --------------------------------------------------------------------------- #
