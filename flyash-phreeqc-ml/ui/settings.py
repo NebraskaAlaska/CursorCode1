@@ -14,6 +14,7 @@ from __future__ import annotations
 import streamlit as st
 
 import app_ui
+from flyash_phreeqc_ml.ai import client as ai_client
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.simulation import phreeqc_executor
 from ui import state
@@ -106,6 +107,34 @@ def _render_ai_settings() -> None:
     st.caption("The API key is read only from the `ANTHROPIC_API_KEY` environment variable or a "
                "Streamlit secret — it is never entered or shown here.")
     st.warning(ai_config.AI_EXPERIMENTAL_WARNING)
+
+    _render_ai_diagnostics(cfg, toggle_on)
+
+
+def _render_ai_diagnostics(cfg, toggle_on: bool) -> None:
+    """Safe diagnostics + a one-click live smoke test (no key, no raw response ever shown).
+
+    Helps debug 'live AI is unavailable' without exposing secrets: it reports key *presence* +
+    *length* (never the key), SDK availability, the selected model, and runs a harmless one-line
+    prompt through the **same** client the assistant uses, surfacing only a sanitized category."""
+    with app_ui.advanced_expander("AI diagnostics (safe — no key shown)"):
+        diag = ai_config.diagnostics(toggle_on=toggle_on)
+        st.write(diag.to_safe_dict())
+        st.caption("All fields are non-secret. `key_length` confirms a key is present (≈100 chars) "
+                   "without revealing any of it.")
+        st.markdown("**Live AI smoke test** — send a harmless one-sentence prompt through the same "
+                    "client the assistant uses. It never logs the key or stores the response.")
+        if st.button("Run live AI smoke test", key="ai_smoke_test", disabled=not cfg.enabled,
+                     help=None if cfg.enabled else f"Needs a key + SDK — {cfg.disabled_reason()}."):
+            with st.spinner("Sending a one-sentence test prompt…"):
+                res = ai_client.smoke_test()
+            if res.ok:
+                st.success(f"✅ Live AI reachable (model `{res.model}`) — key, SDK, and network all "
+                           "work. The assistant can use live AI.")
+            else:
+                st.error(f"❌ Live AI call failed — **{res.category}**: {res.message} "
+                         f"(model `{res.model}`). The assistant falls back to the deterministic "
+                         "planner; the toggle stays on.")
 
 
 def _render_phreeqc_engine() -> None:

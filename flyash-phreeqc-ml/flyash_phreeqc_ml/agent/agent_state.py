@@ -233,6 +233,8 @@ class AgentState:
     nlu_notice_shown: bool = False                          # gentle limited-without-AI note shown
     last_used_ai: bool | None = None                        # did the last response use live AI?
     last_ai_fell_back: bool = False                         # live AI was requested but failed (this turn)
+    last_ai_error_type: str | None = None                   # stable category of the last AI failure
+    last_ai_error_message: str | None = None                # sanitized reason (no key, no raw text)
 
     # advisory council review (a CouncilReview; duck-typed so this module imports no AI/council)
     last_council: object = None

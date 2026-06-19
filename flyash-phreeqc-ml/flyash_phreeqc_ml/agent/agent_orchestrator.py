@@ -44,6 +44,18 @@ AI_FALLBACK_NOTE = (
     "⚠️ Live AI was unavailable for this message, so I used the deterministic parser for this "
     "turn. Your **Enable live AI** setting is unchanged — I'll try AI again on the next message.")
 
+
+def _fallback_note(extraction) -> str:
+    """The one-turn fallback note, with the SPECIFIC sanitized reason appended when known.
+
+    Keeps :data:`AI_FALLBACK_NOTE` as a stable prefix (so callers/tests can match it) and adds the
+    key-free reason from the extraction so the user/dev can see *why* live AI was unavailable.
+    """
+    reason = getattr(extraction, "ai_error_message", None)
+    if reason:
+        return f"{AI_FALLBACK_NOTE}\n\n**Reason:** {reason}"
+    return AI_FALLBACK_NOTE
+
 # (Preview-input change detection lives in ``agent_state.scenario_preview_signature`` +
 # ``_invalidate_preview_if_stale`` below — it covers scenario fields AND the release model /
 # material composition / database, so a preview is never left stale after any of them changes.)
@@ -202,7 +214,15 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
     ai_fell_back = extraction.source == nlu_extractor.SRC_RULE_FALLBACK
     state.last_used_ai = bool(used_ai)
     state.last_ai_fell_back = ai_fell_back
-    fallback_note = AI_FALLBACK_NOTE if ai_fell_back else ""
+    if ai_fell_back:
+        # Thread the SPECIFIC sanitized reason (category + key-free detail) so the UI shows exactly
+        # why live AI was unavailable, instead of a generic message.
+        state.last_ai_error_type = getattr(extraction, "ai_error_category", None)
+        state.last_ai_error_message = getattr(extraction, "ai_error_message", None)
+    elif used_ai:                                   # a clean live-AI turn clears any stale error
+        state.last_ai_error_type = None
+        state.last_ai_error_message = None
+    fallback_note = _fallback_note(extraction) if ai_fell_back else ""
 
     # The once-only "AI is off / limited" nudge — only when AI is genuinely off, not on a failure
     # (a failure gets its own per-turn note above so it is never silent).
