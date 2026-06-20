@@ -19,7 +19,7 @@ import streamlit as st
 import app_ui
 from flyash_phreeqc_ml import config, run_manager
 from flyash_phreeqc_ml.agent import agent_orchestrator as orch
-from flyash_phreeqc_ml.agent import agent_state, domains, nlu_extractor
+from flyash_phreeqc_ml.agent import agent_state, chat_setup_parser, domains, nlu_extractor
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.materials import profile_schema as mp
 from flyash_phreeqc_ml.ml_models import model_registry as ml_registry
@@ -102,7 +102,86 @@ def _send(state, message, *, run, consent, cfg) -> None:
                  material_profile=_material_profile(run), release_model=_release_model(run),
                  database_path=config.PHREEQC_DATABASE_PATH,
                  ml_model_available=_ml_model_available(run))
+    # Mirror the agent's canonical material/release/database state back into the per-run session
+    # keys the Advanced-details expander reads, so a composition the user typed in chat shows up
+    # auto-filled there (and flows back in on the next turn). Single source of truth = the state.
+    _sync_session_from_state(state, run)
     st.rerun()
+
+
+def _context_signature(mpf, rmf):
+    """A small signature of the material composition + release model (to detect a change)."""
+    mp_sig = None
+    if mpf is not None:
+        try:
+            mp_sig = (mpf.composition_basis, mpf.material_name,
+                      tuple((str(e.species), float(e.value)) for e in mpf.entries),
+                      bool(getattr(mpf, "is_usable", False)))
+        except Exception:                                   # noqa: BLE001 - defensive
+            mp_sig = getattr(mpf, "material_name", None)
+    rm_sig = ((getattr(rmf, "mode", None), getattr(rmf, "global_fraction", None))
+              if rmf is not None else None)
+    return (mp_sig, rm_sig)
+
+
+def _sync_session_from_state(state, run) -> None:
+    """Write the agent's canonical composition / release / database back to the per-run session
+    keys, and flag a one-time widget re-seed when the chat-parsed draft changed.
+
+    The re-seed flag is consumed by :func:`_seed_context_widgets` at the *top* of the Advanced-
+    details expander (before its widgets are created), so the composition box / release widgets
+    auto-fill from what the user typed in chat — without fighting later manual edits."""
+    suffix = run or "_none_"
+    mpf = getattr(state, "material_profile", None)
+    rmf = getattr(state, "release_model", None)
+    dbn = getattr(state, "requested_database", None)
+    if mpf is not None:
+        st.session_state[f"asst_mp__{suffix}"] = mpf
+    if rmf is not None:
+        st.session_state[f"asst_release__{suffix}"] = rmf
+    if dbn:
+        st.session_state[f"asst_db__{suffix}"] = dbn
+    sig = _context_signature(mpf, rmf)
+    if sig != st.session_state.get(f"asst_ctx_sig__{suffix}"):
+        st.session_state[f"asst_ctx_sig__{suffix}"] = sig
+        st.session_state[f"asst_ctx_seed__{suffix}"] = True
+
+
+def _fmt_entry_value(value) -> str:
+    """Format a composition value for the seeded `species value` text (drop a trailing .0)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(f)) if f == int(f) else f"{f:g}"
+
+
+def _seed_context_widgets(run) -> None:
+    """Seed the composition / release widgets from the canonical draft (once per change).
+
+    Must run BEFORE those widgets are instantiated this render (Streamlit forbids writing a widget
+    key after the widget exists). Guarded by the one-shot ``asst_ctx_seed__`` flag so it auto-fills
+    on a fresh chat-parse but never overwrites the user's subsequent manual edits."""
+    suffix = run or "_none_"
+    if not st.session_state.pop(f"asst_ctx_seed__{suffix}", False):
+        return
+    mpf = st.session_state.get(f"asst_mp__{suffix}")
+    if mpf is not None:
+        try:
+            st.session_state["asst_mp_text"] = "\n".join(
+                f"{e.species} {_fmt_entry_value(e.value)}" for e in mpf.entries)
+            st.session_state["asst_mp_name"] = mpf.material_name
+            if mpf.composition_basis in mp.KNOWN_BASES:
+                st.session_state["asst_mp_basis"] = mpf.composition_basis
+        except Exception:                                   # noqa: BLE001 - best-effort seed
+            pass
+    rmf = st.session_state.get(f"asst_release__{suffix}")
+    mode = getattr(rmf, "mode", None)
+    if mode == source_terms.MODE_GLOBAL and getattr(rmf, "global_fraction", None) is not None:
+        st.session_state[f"asst_release_mode__{suffix}"] = _RELEASE_GLOBAL
+        st.session_state[f"asst_release_pct__{suffix}"] = round(rmf.global_fraction * 100.0, 6)
+    elif mode in (None, source_terms.MODE_NONE):
+        st.session_state[f"asst_release_mode__{suffix}"] = _RELEASE_NONE
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +351,10 @@ def _next_action_hint(state) -> str:
     if state.missing_fields:
         return "💬 Answer the question in the chat to complete the set-up."
     if state.domain == domains.LEACHING_GEOCHEMISTRY and not state.composition_usable:
-        return "🧱 Provide a confirmed material composition (Advanced details) for a meaningful run."
+        if state.material_profile is not None:           # a draft was parsed/entered → confirm it
+            return ("🧱 **Review and confirm the parsed material composition** (Advanced details) — "
+                    "then I'll build the preview.")
+        return "🧱 Provide a material composition (Advanced details) for a meaningful run."
     if state.preview is not None and state.has_results:
         return "📊 Ask me to *explain the results*, then compare with measured data."
     if state.preview is not None:
@@ -609,11 +691,19 @@ def _render_planning_support(run, state, consent, cfg) -> None:
 # Context providers (composition / release / database) — under an expander
 # --------------------------------------------------------------------------- #
 def _render_context_providers(run: str | None, state) -> None:
+    # Seed the widgets from the canonical draft BEFORE they are created (so a composition / release
+    # the user typed in chat shows up auto-filled here). Guarded so it never fights manual edits.
+    _seed_context_widgets(run)
+    suffix = run or "_none_"
     needs = state.domain == domains.LEACHING_GEOCHEMISTRY and not state.composition_usable
     with app_ui.advanced_expander("Material composition, release model & database",
                                   expanded=needs):
         st.markdown("**Material composition** — a confirmed composition is required before a "
-                    "meaningful run. Composition is never invented.")
+                    "meaningful run. Composition is never invented; if you typed one in chat it is "
+                    "transcribed here as a **draft** for you to review and confirm.")
+        mpf = _material_profile(run)
+        if mpf is not None:
+            _render_parsed_composition_panel(mpf)
         basis = st.selectbox("Composition basis", list(mp.KNOWN_BASES),
                              format_func=lambda b: mp.BASIS_LABELS.get(b, b), key="asst_mp_basis")
         text = st.text_area("Paste `species value` lines (e.g. `CaO 24`, `SiO2 35`)",
@@ -621,43 +711,75 @@ def _render_context_providers(run: str | None, state) -> None:
         name = st.text_input("Material name", value="Class C fly ash", key="asst_mp_name")
         confirm = st.checkbox("I confirm this composition is correct (makes it usable).",
                               key="asst_mp_confirm")
-        if st.button("Save composition", key="asst_mp_save"):
+        if st.button("Save / confirm composition", key="asst_mp_save"):
             entries = mp.parse_composition_text(text)
             if not entries:
                 st.warning("No `species value` lines parsed — nothing saved.")
             else:
                 profile = mp.MaterialProfile(
-                    profile_id=f"asst-{run or 'run'}", material_name=name or "material",
+                    profile_id=chat_setup_parser.ASSISTANT_PROFILE_ID, material_name=name or "material",
                     composition_basis=basis, entries=entries,
                     verification_status=(mp.STATUS_USER_CONFIRMED if confirm else mp.STATUS_DRAFT))
-                st.session_state[f"asst_mp__{run or '_none_'}"] = profile
+                st.session_state[f"asst_mp__{suffix}"] = profile
+                # Update the canonical agent state immediately so the next-step card reflects it
+                # without waiting for the next chat message (single source of truth).
+                state.material_profile = profile
+                orch.refresh_context_status(state)
+                st.session_state[f"asst_ctx_sig__{suffix}"] = _context_signature(
+                    profile, _release_model(run))
                 st.success(f"Saved {len(entries)} component(s) — "
                            + ("usable." if profile.is_usable else "draft (tick confirm to use)."))
                 st.rerun()
-        mpf = _material_profile(run)
-        if mpf is not None:
-            st.caption(f"Current: {mpf.material_name} — "
-                       + ("✅ usable" if mpf.is_usable else "⚠️ draft (not usable)"))
 
         st.divider()
         st.markdown("**Material release model** — release fractions are *your assumptions*, not "
                     "measured truth; they control the predicted dissolved totals. (Changing this "
                     "rebuilds the input preview; it never erases your confirmed composition.)")
-        mode = st.radio("Release model", [_RELEASE_NONE, _RELEASE_GLOBAL],
-                        key=f"asst_release_mode__{run or '_none_'}")
-        if mode == _RELEASE_GLOBAL:
-            pct = st.number_input("Global release (%)", min_value=0.0, max_value=100.0,
-                                  value=1.0, step=0.5, key=f"asst_release_pct__{run or '_none_'}")
-            st.session_state[f"asst_release__{run or '_none_'}"] = source_terms.global_release(
-                pct / 100.0)
+        prev_rel = _release_model(run)
+        prev_mode = getattr(prev_rel, "mode", source_terms.MODE_NONE)
+        # A per-element / measured / literature release (e.g. set from chat) is not representable by
+        # the two-option widget — show it read-only and keep it instead of clobbering it to global.
+        if prev_mode not in (source_terms.MODE_NONE, source_terms.MODE_GLOBAL):
+            st.caption(f"Release model from chat: `{prev_mode}` (kept as-is). Use the Workspace tab "
+                       "for the full release-model editor.")
         else:
-            st.session_state[f"asst_release__{run or '_none_'}"] = source_terms.no_release()
+            mode = st.radio("Release model", [_RELEASE_NONE, _RELEASE_GLOBAL],
+                            key=f"asst_release_mode__{suffix}")
+            if mode == _RELEASE_GLOBAL:
+                pct = st.number_input("Global release (%)", min_value=0.0, max_value=100.0,
+                                      value=1.0, step=0.5, key=f"asst_release_pct__{suffix}")
+                st.session_state[f"asst_release__{suffix}"] = source_terms.global_release(pct / 100.0)
+            else:
+                st.session_state[f"asst_release__{suffix}"] = source_terms.no_release()
 
         st.divider()
+        requested_db = st.session_state.get(f"asst_db__{suffix}") or getattr(
+            state, "requested_database", None)
         av = phreeqc_executor.check_availability()
+        if requested_db:
+            st.markdown(f"**Database selected:** `{requested_db}` (from your request). The app uses "
+                        "the **server-configured** database; change it in **Settings**.")
         st.markdown(f"**PHREEQC engine:** {'✅ configured' if av.can_run else '⚠️ not configured'} "
                     "— configure in **Settings**.")
         st.caption(phreeqc_executor.availability_hint(av))
+
+
+def _render_parsed_composition_panel(mpf) -> None:
+    """Show the current composition draft (status, components, total) — the visible auto-fill."""
+    usable = bool(getattr(mpf, "is_usable", False))
+    badge = "✅ confirmed (usable)" if usable else "⚠️ draft — review & confirm below"
+    with st.container(border=True):
+        st.markdown(f"**{getattr(mpf, 'material_name', 'material')}** — {badge}")
+        try:
+            rows = [{"component": str(e.species), "value": e.value} for e in mpf.entries]
+            if rows:
+                st.dataframe(rows, use_container_width=True, hide_index=True, height=min(
+                    240, 40 + 35 * len(rows)))
+            total = mpf.oxide_total()
+            if total is not None:
+                st.caption(f"Total ≈ {total:g} wt% · basis: {mpf.basis_label()}")
+        except Exception:                                   # noqa: BLE001 - display only
+            pass
 
 
 # --------------------------------------------------------------------------- #

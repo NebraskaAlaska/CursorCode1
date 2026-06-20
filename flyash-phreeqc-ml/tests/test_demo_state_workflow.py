@@ -439,6 +439,40 @@ def test_no_real_api_key_committed_in_source():
 
 
 # --------------------------------------------------------------------------- #
+# 13) Chat-typed composition auto-fills the Advanced-details state (UI wiring)
+# --------------------------------------------------------------------------- #
+def test_chat_composition_autofills_advanced_details_in_ui(monkeypatch, tmp_path):
+    """End-to-end at the UI level: typing a composition in the Assistant chat populates the
+    canonical material-profile state (the same key the Advanced-details expander + the builder
+    read), as a draft — proving the chat and the Advanced options now share one source of truth."""
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    from flyash_phreeqc_ml.materials import profile_schema as mp
+    from ui import assistant_tab
+    monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
+
+    at = AppTest.from_file("app.py", default_timeout=120).run()
+    _goto(at, "Assistant")
+    assert _no_exc(at)
+
+    prompt = ("im leaching class c fly ash with naoh. use composition sio2 34 al2o3 18 cao 24 "
+              "fe2o3 7 mgo 5 na2o 2 k2o 1 so3 4 loi other 5. use global 1% release. use phreeqc.dat")
+    at.chat_input[0].set_value(prompt).run()
+    assert _no_exc(at)
+
+    # The canonical material-profile state holds the chat-parsed DRAFT (9 components), unconfirmed.
+    profile = at.session_state[assistant_tab._state_key(None)].material_profile
+    assert profile is not None and len(profile.entries) == 9
+    assert profile.verification_status == mp.STATUS_DRAFT and not profile.is_usable
+    # The per-run session key the Advanced-details expander reads holds the same object.
+    assert at.session_state["asst_mp___none_"] is profile
+    # The release model + database were captured too.
+    state = at.session_state[assistant_tab._state_key(None)]
+    assert state.release_model is not None and state.requested_database == "phreeqc.dat"
+    # The visible reply + next-step point the user at reviewing/confirming the parsed composition.
+    assert "confirm" in _text(at).lower()
+
+
+# --------------------------------------------------------------------------- #
 # AppTest helpers
 # --------------------------------------------------------------------------- #
 def _goto(at, section):

@@ -665,3 +665,75 @@ def test_tool_classify_domain_preserves_existing_domain_over_raw_text():
     s2.experiment_text = "leach 2 g fly ash in 10 mL 0.5 M NaOH"
     out2 = tool_registry._tool_classify_domain(s2, {})
     assert s2.domain == domains.LEACHING_GEOCHEMISTRY and out2.data["executable"] is True
+
+
+# --------------------------------------------------------------------------- #
+# 14) Chat-typed composition / release / database auto-fill the canonical state
+#     (the state-sync fix) — draft → confirm → preview, never auto-running.
+# --------------------------------------------------------------------------- #
+_DEMO_PROMPT = (
+    "im leeching class c fli ash w naoh .5m 2g 10ml for 1hr room temp wanna ph ca si. "
+    "use synthetic demo composition sio2 34 al2o3 18 cao 24 fe2o3 7 mgo 5 na2o 2 k2o 1 so3 4 "
+    "loi other 5. use global 1 percent release for ca si al fe na k. use phreeqc.dat and 25 C.")
+
+
+def test_chat_typed_composition_autofills_draft_then_confirm_builds_preview():
+    """The bug scenario, end-to-end on the deterministic path: a single messy chat message with a
+    composition + release + database auto-fills the canonical state as a DRAFT (the builder still
+    says needs-composition), and an explicit chat confirmation makes it usable and builds the
+    preview — proving the Assistant and the builder now share one state."""
+    s = agent_state.AgentState()
+    r1 = orch.respond(s, _DEMO_PROMPT)                          # deterministic (no client)
+
+    # Composition transcribed into the canonical state as an unconfirmed draft.
+    assert s.material_profile is not None
+    assert s.material_profile.verification_status == mp.STATUS_DRAFT
+    assert not s.composition_usable                            # draft → builder still needs it
+    assert len(s.material_profile.entries) == 9
+    # Release + database auto-filled too.
+    assert s.release_model is not None and s.release_model.mode == source_terms.MODE_GLOBAL
+    assert abs(s.release_model.global_fraction - 0.01) < 1e-9
+    assert s.requested_database == "phreeqc.dat"
+    assert s.domain == domains.LEACHING_GEOCHEMISTRY
+    assert "draft" in r1.assistant_message.lower()
+    # NOTHING ran or is parked yet (no auto-run, no auto-build of a usable preview).
+    assert s.preview is None and s.execution_result is None and not s.confirmation_required
+
+    # Explicit chat confirmation flips the draft usable AND the planner advances to the preview.
+    orch.respond(s, "I confirm this material composition and the 1% release, build the preview")
+    assert s.composition_usable
+    assert s.material_profile.verification_status == mp.STATUS_USER_CONFIRMED
+    assert s.preview is not None and s.preview_status == "ready_for_review"
+    assert s.run_lifecycle == agent_state.LIFECYCLE_READY_FOR_REVIEW
+    assert s.execution_result is None                          # built, but NOT run
+
+
+def test_chat_composition_never_auto_runs_before_explicit_run_confirmation():
+    """Even with composition + release + a ready preview, PHREEQC never runs until the run is
+    parked AND explicitly confirmed (two separate gates: confirm composition, then confirm run)."""
+    s = agent_state.AgentState()
+    orch.respond(s, _DEMO_PROMPT)
+    orch.respond(s, "I confirm the composition and release, build the preview")
+    assert s.run_lifecycle == agent_state.LIFECYCLE_READY_FOR_REVIEW
+    assert s.execution_result is None
+
+    # Asking to run only PARKS it (awaiting confirmation) — still nothing executed.
+    r = orch.respond(s, "run it")
+    assert r.awaiting_confirmation and s.confirmation_required
+    assert s.pending_action.action_name == A.RUN_SINGLE_SIMULATION
+    assert s.execution_result is None
+    assert s.run_lifecycle == agent_state.LIFECYCLE_AWAITING_CONFIRMATION
+
+
+def test_chat_release_change_updates_state_and_keeps_confirmed_composition():
+    """A later chat message that changes the release model updates the canonical state (the new
+    fraction) without erasing the confirmed composition."""
+    s = agent_state.AgentState()
+    orch.respond(s, _DEMO_PROMPT)
+    orch.respond(s, "I confirm the composition and release, build the preview")
+    assert s.composition_usable and s.preview is not None
+
+    r = orch.respond(s, "actually use a 5% release instead")
+    assert abs(s.release_model.global_fraction - 0.05) < 1e-9   # release updated from chat
+    assert s.composition_usable                                # composition kept (still confirmed)
+    assert "release model" in r.assistant_message.lower()      # the change is announced

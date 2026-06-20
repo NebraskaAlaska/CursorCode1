@@ -201,6 +201,7 @@ class AgentState:
     material_profile: object = None        # duck-typed usable_assay / is_usable
     release_model: object = None           # source_terms.DissolutionModel
     database_path: str | None = None
+    requested_database: str | None = None  # database NAME the user named in chat (display only)
     phase_template: object = None
     preview: object = None                 # phreeqc_input_builder.PhreeqcInputPreview
     database_report: object = None
