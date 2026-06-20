@@ -239,7 +239,11 @@ def test_smoke_test_classifies_failure(monkeypatch):
     assert FAKE_KEY not in (res.message or "")
 
 
-def test_smoke_test_no_key():
+def test_smoke_test_no_key(monkeypatch):
+    # Pin the (OPTIONAL) anthropic SDK present so this isolates the *no-key* path — matching
+    # test_smoke_test_success / _classifies_failure. Without it, an env where anthropic is not
+    # installed short-circuits to ERROR_NO_SDK before the key check this test asserts on.
+    monkeypatch.setattr(ai_config, "sdk_available", lambda: True)
     res = ai_client.smoke_test()               # no key (the autouse fixture cleared it)
     assert res.ok is False and res.category == ai_client.ERROR_NO_KEY
 

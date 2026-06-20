@@ -105,7 +105,8 @@ def _render_scenario_explorer(run_name: str, manifest: pd.DataFrame) -> None:
         "as replicate/batch outputs for the same broad scenario, not as 10/20/60 min time points.**"
     )
     descriptions = scenarios.load_solution_descriptions()
-    with st.expander("What do sol1 / sol2 / sol3 represent? (from the PHREEQC input files)"):
+    with st.container(border=True):
+        st.markdown("**What do sol1 / sol2 / sol3 represent? (from the PHREEQC input files)**")
         if descriptions.empty:
             st.caption(
                 "No parsed PHREEQC input solutions found yet (run Phase 1). PHREEQC `.pqi` "
@@ -811,7 +812,8 @@ def _render_condition_mapping(run_name: str, data: pd.DataFrame, manifest: pd.Da
             except run_manager.RunManagerError as exc:
                 st.error(str(exc))
 
-    with st.expander("Advanced validation metadata"):
+    with st.container(border=True):
+        st.markdown("**Advanced validation metadata**")
         _render_advanced_validation_metadata(sample, scenario)
 
 def _render_condition_mapping_advanced(run_name: str, cond_map: pd.DataFrame) -> None:
@@ -871,8 +873,9 @@ def _render_replicate_collision_warnings(data: pd.DataFrame, mapping: pd.DataFra
                    "PHREEQC scenario is expected, not a collision.)")
         return
     # Keep the (often repeated) detail tidy for presentation.
-    st.warning(f"⚠️ {len(warns)} replicate-aware mapping warning(s) — expand for detail.")
-    with st.expander("Mapping warning detail"):
+    st.warning(f"⚠️ {len(warns)} replicate-aware mapping warning(s) — see detail below.")
+    with st.container(border=True):
+        st.markdown("**Mapping warning detail**")
         seen: set[str] = set()
         for w in warns:
             if w["message"] in seen:
