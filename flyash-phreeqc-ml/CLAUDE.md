@@ -37,22 +37,23 @@ PHREEQC should run only after review and explicit confirmation.
 Workflow lifecycle:
 missing_inputs → ready_for_review → awaiting_confirmation → executed / failed
 
-Current debugging focus:
-Synchronize Assistant-parsed material composition, release model, and database with the Advanced details UI state.
+Recent work (implemented, on main):
 
-Problem to fix:
-The Assistant can understand a composition from chat, but the deterministic PHREEQC builder still sees Advanced details → Material composition as empty. The Assistant and Advanced options must share one canonical state.
+* Demo workflow state/results stabilization (PR #25).
+* Safe live-AI diagnostics + classified, sanitized fallback reasons (PR #26/#27).
+* Chat → material-state sync (PR #28).
 
-Desired behavior:
+Chat → material-state sync (shipped — keep these invariants):
+The Assistant and the Advanced details now share one canonical state (AgentState). Chat-typed
+composition / release model / database are parsed deterministically (never AI-invented) by
+`flyash_phreeqc_ml/agent/chat_setup_parser.py` and the deterministic PHREEQC builder reads the
+same state. Invariants to preserve:
 
-* If user types composition in chat, parse it.
-* Auto-fill Advanced details → Material composition.
-* Mark parsed profile as draft/unconfirmed.
-* User can confirm via UI or chat.
-* Once confirmed, PHREEQC builder should not say needs_material_composition.
-* Release model and database should also auto-fill from chat.
-* Do not auto-run PHREEQC.
-* Keep confirmation gate.
+* Chat-typed composition is parsed and auto-fills Advanced details → Material composition.
+* The parsed profile is draft/unconfirmed until the user confirms it (UI or chat).
+* Once confirmed, the PHREEQC builder no longer reports needs_material_composition.
+* Release model and database also auto-fill from chat.
+* Composition is never invented; PHREEQC never auto-runs; the confirmation gate stays.
 
 ## Demo test input
 
