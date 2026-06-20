@@ -26,7 +26,8 @@ import re
 from dataclasses import dataclass
 
 from . import agent_actions as A
-from . import agent_council, agent_policy, agent_state, domains, nlu_extractor, tool_registry
+from . import (agent_council, agent_policy, agent_state, chat_setup_parser, domains,
+               nlu_extractor, tool_registry)
 
 # Per-session consent notice (same spirit as the other AI features).
 AGENT_DATA_NOTICE = (
@@ -115,7 +116,14 @@ def attach_context(state, *, material_profile=None, release_model=None, database
         state.database_path = database_path
     if phase_template is not None:
         state.phase_template = phase_template
+    refresh_context_status(state)
 
+
+def refresh_context_status(state) -> None:
+    """Recompute the material-profile / release-model status strings from the current objects.
+
+    Called after :func:`attach_context` *and* after the deterministic chat-setup parser updates the
+    material profile / release model, so the status strings always match the live objects."""
     mp = state.material_profile
     state.material_profile_status = (
         agent_state.MP_USABLE if (mp is not None and getattr(mp, "is_usable", False))
@@ -183,6 +191,17 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
     state.ambiguous_fields = list(extraction.ambiguous_fields)
     used_ai = extraction.used_ai
 
+    # Deterministically capture any material composition / release model / database the user TYPED
+    # (never AI, never invented) into the canonical state as an unconfirmed DRAFT — the chat →
+    # Advanced-details auto-fill (see :mod:`chat_setup_parser`). This runs BEFORE the invalidation
+    # check (so a chat-changed release/composition clears a stale preview) and BEFORE the action is
+    # chosen (so confirming a composition this turn lets the planner advance to the preview).
+    setup_notes = chat_setup_parser.apply_setup(
+        state, message, default_material_name=state.scenario.to_flat_dict().get("material_name"))
+    if setup_notes:
+        refresh_context_status(state)
+    setup_note = "\n\n".join(setup_notes)
+
     # Any change to a preview input (scenario field / release model / composition / database)
     # invalidates the stale preview + any parked run on it, with a clear reason naming what changed.
     invalidate_note = _invalidate_preview_if_stale(state)
@@ -245,8 +264,8 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
                 state.domain, ml_model_available=ml_model_available)
         else:
             block_msg = f"I can't do that yet — {decision.reason}"
-        assistant_msg = _join(lead_note, _llm_lead(action), change_note, block_msg, clarify_note,
-                              invalidate_note, limited_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, setup_note, block_msg,
+                              clarify_note, invalidate_note, limited_note)
     elif decision.requires_confirmation:
         # Park the execution/save action — DO NOT run it here.
         parked = _action_to_park(action)
@@ -260,14 +279,14 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
         state.phase = (agent_state.AWAITING_EXECUTION_CONFIRMATION
                        if parked.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP)
                        else state.phase)
-        assistant_msg = _join(lead_note, _llm_lead(action), change_note, _confirm_prompt(parked),
-                              clarify_note, invalidate_note, limited_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, setup_note,
+                              _confirm_prompt(parked), clarify_note, invalidate_note, limited_note)
     else:
         # Allowed safe/preview action — run the deterministic tool now.
         outcome = tool_registry.run(action, state)
         executed = True
-        assistant_msg = _join(lead_note, _llm_lead(action), change_note, outcome.summary,
-                              clarify_note, invalidate_note, limited_note)
+        assistant_msg = _join(lead_note, _llm_lead(action), change_note, setup_note,
+                              outcome.summary, clarify_note, invalidate_note, limited_note)
         # An EXPLAIN/results turn always carries the not-validated caveat.
         if action.action_name == A.EXPLAIN_RESULTS:
             assistant_msg = _ensure_not_validated(assistant_msg)

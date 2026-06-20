@@ -392,7 +392,7 @@ def test_result_path_does_not_import_target_matching():
 # decides a composition/release fraction).
 AGENT_PURE_MODULES = [
     "agent/agent_state.py", "agent/agent_actions.py", "agent/agent_prompts.py",
-    "agent/agent_policy.py", "agent/domains.py",
+    "agent/agent_policy.py", "agent/domains.py", "agent/chat_setup_parser.py",
 ]
 AGENT_TOOL_MODULE = "agent/tool_registry.py"
 AGENT_NLU_MODULE = "agent/nlu_extractor.py"
