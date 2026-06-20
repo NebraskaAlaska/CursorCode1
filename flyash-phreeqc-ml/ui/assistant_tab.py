@@ -21,6 +21,7 @@ from flyash_phreeqc_ml import config, run_manager
 from flyash_phreeqc_ml.agent import agent_orchestrator as orch
 from flyash_phreeqc_ml.agent import agent_state, chat_setup_parser, domains, nlu_extractor
 from flyash_phreeqc_ml.ai import config as ai_config
+from flyash_phreeqc_ml.instruments import instrument_router
 from flyash_phreeqc_ml.materials import profile_schema as mp
 from flyash_phreeqc_ml.ml_models import model_registry as ml_registry
 from flyash_phreeqc_ml.simulation import phreeqc_executor, source_terms
@@ -327,6 +328,51 @@ def _render_side_panel(state) -> None:
     with st.container(border=True):
         app_ui.section_header("Recommended next action")
         st.markdown(_next_action_hint(state))
+
+    # E. Recommended Digital Lab instrument (advisory only — never runs anything).
+    _render_recommended_instrument(state)
+
+
+def _last_user_message(state) -> str:
+    """The most recent user-typed message (drives the recommended-instrument card)."""
+    for m in reversed(getattr(state, "history", []) or []):
+        if getattr(m, "role", None) == agent_state.ROLE_USER:
+            return m.content
+    return ""
+
+
+def _render_recommended_instrument(state) -> None:
+    """Advisory 'recommended instrument' card from the deterministic instrument router.
+
+    Reads the latest user message + the lab-mode flags and shows the detected objective, the
+    recommended instrument(s), what is still missing, the next action, and validation/uncertainty
+    options. It NEVER runs anything (the router's ``auto_run`` is always False)."""
+    text = _last_user_message(state)
+    if not text.strip():
+        return
+    rr = instrument_router.route(
+        text, state=state, ml_model_available=False,
+        validation_mode=bool(getattr(state, "validation_mode", False)),
+        uncertainty_mode=bool(getattr(state, "uncertainty_mode", False)),
+        evidence_mode=bool(getattr(state, "evidence_mode", False)))
+    if not rr.primary:
+        return
+    with st.container(border=True):
+        app_ui.section_header("Recommended instrument", "Digital Lab")
+        st.caption(f"🎯 Objective: {rr.objective}")
+        for spec in rr.instrument_specs():
+            app_ui.render_status_badge(f"{spec.display_name} · {spec.readiness_label()}",
+                                       spec.readiness_badge())
+        if rr.missing_inputs:
+            st.markdown("**Still needed:** " + ", ".join(rr.missing_inputs))
+        if rr.next_action:
+            st.markdown("**Next:** " + rr.next_action)
+        if rr.validation_options:
+            st.caption("Validation: " + "; ".join(rr.validation_options))
+        if rr.uncertainty_options:
+            st.caption("Sensitivity: " + ", ".join(rr.uncertainty_options))
+        for w in rr.warnings:
+            st.caption("⚠️ " + w)
 
 
 def _status_label(state) -> str:
