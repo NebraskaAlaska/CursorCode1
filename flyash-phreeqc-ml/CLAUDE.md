@@ -30,6 +30,7 @@ Main systems:
 * Evidence / Literature Library
 * ML Surrogate Engine
 * Validation Layer
+* Virtual LAB Machines (backend-only blueprint + runner)
 * Settings / diagnostics
 
 PHREEQC should run only after review and explicit confirmation.
@@ -54,6 +55,43 @@ same state. Invariants to preserve:
 * Once confirmed, the PHREEQC builder no longer reports needs_material_composition.
 * Release model and database also auto-fill from chat.
 * Composition is never invented; PHREEQC never auto-runs; the confirmation gate stays.
+
+In progress (feature branches; not yet on main):
+
+* XRD Advisory v2 — four advisory XRD modes. Draft PR #33 (`feature/xrd-advisory-v2`).
+* Virtual LAB Machines — backend-only machine catalogue + executable runner.
+  On `feature/virtual-lab-machines` (draft PR → `feature/digital-lab-instruments`).
+
+Virtual LAB Machines (backend-only — keep these invariants):
+"Virtual LAB" gives users virtual scientific machines (PHREEQC, XRD, ICP, FTIR/Raman, SEM-EDS,
+TGA/DSC, Mechanical Testing, ML Surrogate, Literature Evidence, Sustainability/Cost, Experimental
+Design, Validation/Uncertainty) to ESTIMATE / simulate / process / screen / prioritise experiments
+and reduce trial-and-error — never to replace experimental validation. Two layers, both in
+`flyash_phreeqc_ml/instruments/`:
+
+* `virtual_lab_machines.py` — the metadata BLUEPRINT (what each machine can do, needs, must never
+  claim, and how a result is verified). `ui_activation_status` is backend-only for every machine.
+* `virtual_lab_machine_runner.py` — the EXECUTABLE runner over user-provided inputs; every result
+  carries the standard fields (machine_id, status, output_data_type, result_summary, results,
+  warnings, missing_inputs, assumptions, provenance, validation_status,
+  can_be_used_for_validation_claim).
+
+Invariants to preserve:
+
+* Backend-only: not imported by app.py, not rendered by any ui/ file, not exported from
+  instruments/__init__.py; imports no Streamlit and runs no website code.
+* Every output is labelled (user_provided_assumption / synthetic_demo_data / literature_evidence /
+  measured_lab_data / simulated_model_estimate / ml_prediction / advisory_interpretation /
+  validated_result).
+* No fabrication: ICP / SEM-EDS / TGA-DSC / Mechanical process only supplied rows; XRD never invents
+  peaks; FTIR matches user peaks to broad advisory regions only; Sustainability invents no factors.
+* PHREEQC is preview/gate only in the runner — it never executes PHREEQC (executed / auto_run always
+  False; execution stays on the existing confirmation-gated path).
+* A `validated_result` (can_be_used_for_validation_claim=True) is possible ONLY from the Validation
+  machine with measured data AND explicit criteria that are met; simulation / ML / literature are
+  never validated on their own.
+* ML predicts nothing without an approved trained model; the Literature engine never scrapes
+  (incl. Google Scholar) and keeps evidence candidate/unreviewed with provenance until human review.
 
 ## Demo test input
 
