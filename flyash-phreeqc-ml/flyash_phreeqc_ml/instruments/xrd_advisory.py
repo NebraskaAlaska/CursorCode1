@@ -378,11 +378,14 @@ class XrdMatchResult:
                          "'identified as'. Confirm with reference patterns + full-pattern fitting.")
 
     def candidate_table(self) -> list[dict]:
-        """Flat rows for the UI (phase, confidence, matched/total, matched & missing 2θ, assessment)."""
+        """Flat rows for the UI. The confidence column is labelled ``confidence (tentative)`` so a
+        bare 'high' can never read as a confirmed identification — the underlying data key on each
+        candidate (``candidates[i]["confidence"]``) is unchanged for callers/tests."""
         rows: list[dict] = []
         for c in self.candidates:
             rows.append({
-                "phase": c["phase"], "formula": c["formula"], "confidence": c["confidence"],
+                "phase": c["phase"], "formula": c["formula"],
+                "confidence (tentative)": c["confidence"],
                 "matched": f'{c["n_matched"]}/{c["n_reference"]}',
                 "matched_2theta_deg": ", ".join(f'{m["measured"]:g}' for m in c["matched_peaks"]) or "—",
                 "missing_major_2theta_deg": ", ".join(f"{x:g}" for x in c["missing_major_peaks"]) or "—",

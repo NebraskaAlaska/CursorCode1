@@ -139,6 +139,20 @@ def test_confidence_high_needs_several_unique_peaks_and_stays_tentative():
     assert "identified" not in quartz["wording"].lower()    # still not an identification
 
 
+def test_match_table_confidence_column_is_labelled_tentative():
+    # The displayed table must not expose a bare standalone 'confidence' label that could read as
+    # certainty; the column is qualified, and each row's assessment stays cautious.
+    rows = xrd.match_measured_peaks([20.9, 26.6, 50.1]).candidate_table()
+    assert rows
+    for row in rows:
+        assert "confidence (tentative)" in row
+        assert "confidence" not in row                      # no bare standalone confidence label
+        assert "tentatively consistent with" in row["assessment"].lower()
+        assert "identified" not in row["assessment"].lower()
+    # The underlying data key on the candidate is unchanged (API/back-compat).
+    assert xrd.match_measured_peaks([26.6]).candidates[0]["confidence"] == xrd.CONFIDENCE_LOW
+
+
 def test_match_with_no_peaks_invents_nothing():
     res = xrd.match_measured_peaks([])
     assert res.candidates == [] and res.unmatched_measured == []

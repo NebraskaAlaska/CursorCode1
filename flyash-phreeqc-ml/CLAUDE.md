@@ -30,6 +30,7 @@ Main systems:
 * Evidence / Literature Library
 * ML Surrogate Engine
 * Validation Layer
+* Digital Lab / Virtual Instruments (incl. XRD Advisory v2)
 * Settings / diagnostics
 
 PHREEQC should run only after review and explicit confirmation.
@@ -54,6 +55,37 @@ same state. Invariants to preserve:
 * Once confirmed, the PHREEQC builder no longer reports needs_material_composition.
 * Release model and database also auto-fill from chat.
 * Composition is never invented; PHREEQC never auto-runs; the confirmation gate stays.
+
+In progress (feature branches; draft PRs, not yet on main):
+
+* Digital Lab / Virtual Instruments — Phase 1 (PHREEQC / ICP / XRD active; advisory placeholders).
+  On `feature/digital-lab-instruments`.
+* XRD Advisory v2 — four advisory XRD modes. Draft PR #33
+  (`feature/xrd-advisory-v2` → `feature/digital-lab-instruments`).
+
+XRD Advisory v2 (keep these invariants):
+XRD is advisory / pattern-planning, NOT definitive phase identification. The science lives in
+`flyash_phreeqc_ml/instruments/xrd_advisory.py`; the router (`instruments/instrument_router.py`) only
+recommends a mode (never executes), and the UI (`ui/digital_lab.py`) renders backend output (owns no
+science logic; no nested Streamlit expanders). Four modes:
+
+* Expected Peaks — approximate Cu Kα reference peaks for known phase NAMES; every peak labelled
+  approximate/advisory; an unknown phase returns `reference_data_needed` (never invented peaks); a bare
+  FORMULA (e.g. CaCO3) is flagged polymorph-ambiguous — a formula alone cannot fix a pattern.
+* Match Measured Peaks — user-provided 2θ only; tentative candidates with capped confidence (a single
+  matched peak can never be "high"); wording is "tentatively consistent with", never identified /
+  confirmed / validated; the displayed column is "confidence (tentative)"; reports missing-major and
+  unmatched peaks plus overlap / ambiguity warnings.
+* PHREEQC Phase Checklist — PHREEQC-predicted / saturated phases are phases to CHECK by XRD; a
+  saturation index is NOT XRD validation; unknown phases return reference-data-needed.
+* Reference Data Notes — the internal table is approximate teaching/advisory references, NOT
+  ICDD-certified standards and not Rietveld / full-pattern identification; external CIF / ICDD PDF /
+  pymatgen is deferred (no new heavy dependencies added).
+
+Invariants: never fabricate measured XRD data or reference peaks for unknown phases; never claim
+identified / confirmed / validated; a formula alone is insufficient (phase / structure / reference data
+required); PHREEQC saturation is not XRD validation; routing only suggests workflows — scientific
+output comes from deterministic code or labelled reference/advisory data.
 
 ## Demo test input
 
