@@ -171,12 +171,34 @@ def _render_icp_result(result) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# XRD Advisory
+# XRD Advisory v2 — four user-facing modes (all advisory; UI calls the backend, owns no science).
 # --------------------------------------------------------------------------- #
-def _render_xrd_module() -> None:
-    app_ui.section_header("XRD Advisory / Pattern Planning", "expected phases — not a measured ID")
-    st.caption("ℹ️ " + xrd.EXPLANATION)
+_XRD_MODES = {
+    "Expected Peaks": xrd.MODE_EXPECTED_PEAKS,
+    "Match Measured Peaks": xrd.MODE_MATCH_MEASURED,
+    "PHREEQC Phase Checklist": xrd.MODE_PHREEQC_CHECKLIST,
+    "Reference Data Notes": xrd.MODE_REFERENCE_NOTES,
+}
 
+
+def _render_xrd_module() -> None:
+    app_ui.section_header("XRD Advisory / Pattern Planning",
+                          "advisory & pattern-planning — never a measured identification")
+    st.caption("ℹ️ " + xrd.EXPLANATION)
+    # A flat radio (no nested expanders — the app previously had nested-expander issues).
+    label = st.radio("XRD mode", list(_XRD_MODES), horizontal=True, key="lab_xrd_mode")
+    mode = _XRD_MODES[label]
+    if mode == xrd.MODE_EXPECTED_PEAKS:
+        _render_xrd_expected()
+    elif mode == xrd.MODE_MATCH_MEASURED:
+        _render_xrd_match()
+    elif mode == xrd.MODE_PHREEQC_CHECKLIST:
+        _render_xrd_phreeqc_checklist()
+    else:
+        _render_xrd_reference_notes()
+
+
+def _render_xrd_expected() -> None:
     names = xrd.reference_phase_names()
     selected = st.multiselect("Expected phases (reference dictionary)", names,
                               default=names[:3], key="lab_xrd_phases")
@@ -186,17 +208,67 @@ def _render_xrd_module() -> None:
     if not phases:
         st.caption("Pick one or more expected phases to see approximate reference peaks.")
         return
-    advisory = xrd.expected_peaks(phases)
-    _render_xrd_advisory(advisory)
+    _render_xrd_advisory(xrd.expected_peaks(phases))
+
+
+def _render_xrd_match() -> None:
+    st.caption("Enter MEASURED 2θ peaks to get TENTATIVE possible phases — never an identification.")
+    c1, c2 = st.columns([3, 1])
+    peaks_text = c1.text_input("Measured 2θ peaks (°, comma-separated)", value="26.6, 29.4, 34.1",
+                               key="lab_xrd_meas")
+    tol = c2.number_input("Tolerance ±° 2θ", min_value=0.05, max_value=1.0,
+                          value=float(xrd.DEFAULT_MATCH_TOLERANCE_DEG), step=0.05, key="lab_xrd_tol")
+    measured = [p.strip() for p in str(peaks_text or "").split(",") if p.strip()]
+    result = xrd.match_measured_peaks(measured, tolerance=tol)
+    if result.candidates:
+        st.markdown("**Tentative candidate phases** (possible matches only — not identifications)")
+        st.dataframe(pd.DataFrame(result.candidate_table()), use_container_width=True,
+                     hide_index=True)
+    else:
+        st.warning("No tentative candidates in the internal reference set for these peaks.")
+    if result.unmatched_measured:
+        st.caption("Measured peaks with no internal candidate: "
+                   + ", ".join(f"{x:g}" for x in result.unmatched_measured))
+    with st.container(border=True):
+        st.markdown("**" + result.wording_note + "**")
+        for w in result.warnings:
+            st.caption("⚠️ " + w)
+        st.caption(result.disclaimer)
+
+
+def _render_xrd_phreeqc_checklist() -> None:
+    st.caption("PHREEQC suggests phases that MAY be worth checking by XRD — a saturation prediction "
+               "is not XRD validation.")
+    phases_text = st.text_input("PHREEQC-predicted / saturated phases (comma-separated)",
+                                value="Calcite, Portlandite, Ettringite", key="lab_xrd_pqphases")
+    names = [p.strip() for p in str(phases_text or "").split(",") if p.strip()]
+    if not names:
+        st.caption("Enter the phases PHREEQC predicted (or that reached saturation).")
+        return
+    _render_xrd_advisory(xrd.phases_to_check_from_predicted(names))
+
+
+def _render_xrd_reference_notes() -> None:
+    notes = xrd.reference_data_notes()
+    st.caption("📐 " + notes["note"])
+    st.markdown(f"**Covered phases ({notes['covered_count']})** — internal approximate references:")
+    st.dataframe(pd.DataFrame(notes["covered_phases"]), use_container_width=True, hide_index=True)
+    st.markdown("**Needs external reference data** (CIF / ICDD PDF / a library such as pymatgen, later):")
+    st.dataframe(pd.DataFrame({"phase (no internal peaks)": notes["needs_external_reference"]}),
+                 use_container_width=True, hide_index=True)
+    st.caption("🔭 " + notes["future_work"])
 
 
 def _render_xrd_advisory(advisory) -> None:
     table = [{"phase": e["phase"], "formula": e["formula"], "status": e["status"],
               "approx 2θ (°)": ", ".join(str(x) for x in e["approx_2theta"]) or "—",
-              "label": e["label"]} for e in advisory.checklist]
+              "label": e["label"], "note": e.get("note", "")} for e in advisory.checklist]
     st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
     st.caption("📐 " + advisory.peak_basis)
-    with st.expander("Warnings & disclaimer (overlap · amorphous content · confirm with reference)"):
+    # Bordered container (NOT an expander) to avoid nested-expander incompatibility.
+    with st.container(border=True):
+        st.caption("Warnings · disclaimer (overlap · amorphous · preferred orientation · confirm "
+                   "with reference)")
         for w in advisory.warnings:
             st.caption("⚠️ " + w)
         st.markdown("**" + advisory.disclaimer + "**")
