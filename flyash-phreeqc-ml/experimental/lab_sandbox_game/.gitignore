@@ -1,0 +1,24 @@
+# Keep the experimental sandbox folder self-contained and clean for review.
+# (The repo root .gitignore already covers most of this; this local copy makes the folder liftable.)
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local virtualenvs for the optional backend deps
+.venv/
+venv/
+
+# Defensive: this scaffold never generates these, but never commit PHREEQC engine outputs.
+*.pqi
+*.pqo
+*.sel
+
+# Godot (when the client is created here)
+.godot/
+*.import
+export_presets.cfg
+
+# OS noise
+.DS_Store

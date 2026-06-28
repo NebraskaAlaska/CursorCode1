@@ -65,6 +65,16 @@ MOLAR_MASSES: dict[str, float] = {
     # V 50.9415 (IUPAC 2021 abridged). Additive — the fly-ash conversions are unchanged.
     "Ti": 47.867,
     "V": 50.942,
+    # Added for the Digital Lab ICP data processor: Mg + the rare-earth / trace elements an
+    # ICP or REE-recovery study reports. IUPAC 2021 abridged, g/mol (CIAAW). Additive — every
+    # existing conversion is unchanged; this only lets `convert` serve these elements too.
+    # Mg matches materials.profile_schema._SUPPLEMENTAL_ATOMIC_WEIGHTS["Mg"] (one value, no drift).
+    "Mg": 24.305,
+    "Sc": 44.956,
+    "Y": 88.906,
+    "La": 138.905,
+    "Ce": 140.116,
+    "Nd": 144.242,
 }
 MOLAR_MASS_SOURCE = "IUPAC standard atomic weights (2021 abridged), g/mol — CIAAW"
 

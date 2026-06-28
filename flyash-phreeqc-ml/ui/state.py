@@ -54,6 +54,30 @@ MANUAL_ENTRY_FILENAME = "experimental_release_manual_entry.csv"
 LIVE_AI_KEY = "ai_live_enabled"
 LIVE_AI_WIDGET_KEY = "ai_live_enabled__toggle"
 
+
+def agent_state_key(run: str | None) -> str:
+    """Session key for the per-run agent conversation state.
+
+    Shared by the Assistant (``ui.assistant_tab``) and the Digital Lab (``ui.digital_lab``) so both
+    read/write ONE :class:`~flyash_phreeqc_ml.agent.agent_state.AgentState` per run (e.g. the
+    Digital Lab's mode toggles are visible to the Assistant's recommended-instrument card). Must
+    stay identical to ``ui.assistant_tab._state_key``.
+    """
+    return f"asst_state__{run or '_none_'}"
+
+
+def get_agent_state(run: str | None):
+    """The per-run :class:`AgentState`, created on first access (never returns ``None``)."""
+    # Imported lazily so this UI base module pulls in the (heavier) agent package only when the
+    # shared state is actually requested — and so the science→UI import arrow is never reversed.
+    from flyash_phreeqc_ml.agent import agent_state as _agent_state
+    key = agent_state_key(run)
+    cur = st.session_state.get(key)
+    if not isinstance(cur, _agent_state.AgentState):
+        cur = _agent_state.AgentState()
+        st.session_state[key] = cur
+    return cur
+
 @st.cache_data(show_spinner=False)
 def _read_csv(path_str: str, mtime: float) -> pd.DataFrame:
     """Read a CSV, cache-keyed on path + mtime so edits invalidate the cache."""

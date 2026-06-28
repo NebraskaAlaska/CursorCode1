@@ -115,7 +115,8 @@ def _render_help_tab() -> None:
     _render_valid_now_section()
     st.caption("ℹ️ " + _PRELIMINARY_CAVEAT)
     st.caption("ℹ️ **Project-specific:** " + _OA_PF_GS_CAVEAT)
-    with st.expander("Mapping status definitions"):
+    with st.container(border=True):
+        st.markdown("**Mapping status definitions**")
         _render_mapping_status_definitions()
     st.divider()
 
@@ -185,7 +186,8 @@ def _render_help_tab() -> None:
     )
 
     st.divider()
-    with st.expander("Data safety — what is kept out of version control"):
+    with st.container(border=True):
+        st.markdown("**Data safety — what is kept out of version control**")
         st.markdown(
             "- Real measured-release CSVs, uploaded Excel workbooks, generated outputs, "
             "processed CSVs, figures, `run_config.yaml`, condition/replicate mapping CSVs "
@@ -197,7 +199,8 @@ def _render_help_tab() -> None:
             "never treated as scientific output."
         )
 
-    with st.expander("Future direction — an ML *correction* layer (not yet started)"):
+    with st.container(border=True):
+        st.markdown("**Future direction — an ML *correction* layer (not yet started)**")
         st.markdown(
             "The long-term aim is an ML layer that learns **where the model disagrees with "
             "experiment** — a correction on top of the chemistry, **not** a blind "

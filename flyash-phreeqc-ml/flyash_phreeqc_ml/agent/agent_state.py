@@ -240,6 +240,14 @@ class AgentState:
     # advisory council review (a CouncilReview; duck-typed so this module imports no AI/council)
     last_council: object = None
 
+    # Digital-lab cross-cutting modes (design/state support — never fake certainty, never auto-run).
+    # validation_mode: only a comparison with MEASURED data counts; a simulation alone is never
+    #   "validated". uncertainty_mode: suggest sensitivity variables, no fabricated statistics.
+    # evidence_mode: prefer sourced literature/evidence. All default off → no behavior change.
+    validation_mode: bool = False
+    uncertainty_mode: bool = False
+    evidence_mode: bool = False
+
     # audit
     provenance: list = field(default_factory=list)         # list[ProvenanceEvent]
 
