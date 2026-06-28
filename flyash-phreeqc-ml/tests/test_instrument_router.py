@@ -14,6 +14,7 @@ import re
 
 from flyash_phreeqc_ml.instruments import instrument_registry as reg
 from flyash_phreeqc_ml.instruments import instrument_router as router
+from flyash_phreeqc_ml.instruments import xrd_advisory as xrd
 
 
 def _route(prompt, **kw):
@@ -122,3 +123,52 @@ def test_routing_text_carries_no_secret():
     rr = _route("I measured ICP Ca 2.1 mM, compare with PHREEQC")
     blob = " ".join([rr.objective, rr.next_action, rr.rationale, *rr.warnings])
     assert not _SECRET_RE.search(blob)
+
+
+# --------------------------------------------------------------------------- #
+# XRD Advisory v2 — the prompt routes to XRD AND the right sub-mode is detected.
+# --------------------------------------------------------------------------- #
+def test_xrd_expected_peaks_prompt_routes_to_expected_mode():
+    rr = _route("simulate expected XRD peaks for calcite quartz and portlandite")
+    assert rr.primary == reg.XRD_ADVISORY
+    assert rr.xrd_mode == xrd.MODE_EXPECTED_PEAKS
+
+
+def test_xrd_measured_peaks_prompt_routes_to_match_mode():
+    rr = _route("I measured XRD peaks at 26.6, 29.4, and 34.1 degrees 2theta. What phases might match?")
+    assert rr.primary == reg.XRD_ADVISORY
+    assert rr.xrd_mode == xrd.MODE_MATCH_MEASURED
+    assert rr.xrd_request["measured_2theta"] == [26.6, 29.4, 34.1]
+    assert "tentative" in rr.next_action.lower()           # matching, not identification
+
+
+def test_xrd_phreeqc_prediction_prompt_routes_to_checklist_mode():
+    rr = _route("PHREEQC predicted calcite saturation, what should I check in XRD?")
+    assert rr.primary == reg.XRD_ADVISORY
+    assert rr.xrd_mode == xrd.MODE_PHREEQC_CHECKLIST
+    assert reg.PHREEQC_LEACHING in rr.instruments           # PHREEQC supplies the candidate
+    blob = " ".join([rr.rationale, rr.next_action, *rr.warnings]).lower()
+    assert "not xrd validation" in blob                     # saturation ≠ XRD validation
+
+
+def test_xrd_context_checklist_after_leaching_keeps_phreeqc_context():
+    rr = _route("what XRD phases should I check after NaOH leaching of Class C fly ash?")
+    assert rr.primary == reg.XRD_ADVISORY                    # XRD intent beats the leaching domain
+    assert rr.xrd_mode == xrd.MODE_CONTEXT_CHECKLIST
+    assert reg.PHREEQC_LEACHING in rr.instruments
+
+
+def test_xrd_routes_never_auto_run_across_modes():
+    for prompt in ("expected XRD peaks for calcite",
+                   "match measured XRD peaks at 26.6 29.4 2theta",
+                   "PHREEQC predicted calcite saturation, check by XRD"):
+        rr = _route(prompt)
+        assert rr.primary == reg.XRD_ADVISORY
+        assert rr.auto_run is False
+
+
+def test_xrd_mode_surfaces_in_to_card():
+    card = _route("I measured XRD peaks at 26.6 and 29.4 2theta, what matches?").to_card()
+    assert card["primary"] == reg.XRD_ADVISORY
+    assert card["xrd_mode"] == xrd.MODE_MATCH_MEASURED
+    assert card["auto_run"] is False
