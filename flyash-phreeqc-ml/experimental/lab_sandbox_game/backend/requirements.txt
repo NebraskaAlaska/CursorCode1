@@ -1,0 +1,10 @@
+# OPTIONAL dependencies for the experimental 2D Lab Sandbox backend ONLY.
+# These are intentionally NOT added to the main platform's requirements.txt — the sandbox is an
+# isolated side project and must not change the Streamlit app's dependency surface.
+#
+# The route logic (routes_*.py) and the test suite run WITHOUT any of these. You only need them to
+# serve the scaffold over HTTP via `uvicorn main:app`.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+# pydantic is pulled in by fastapi; pinned here only for clarity.
+pydantic>=2.0

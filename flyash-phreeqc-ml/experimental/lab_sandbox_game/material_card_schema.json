@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi-materials.local/experimental/lab_sandbox_game/material_card.schema.json",
+  "title": "Material Card",
+  "description": "An inventory item the player carries between lab stations in the 2D Lab Sandbox. The card is self-describing and honest: it always declares WHAT KIND of data it is (data_status), whether a crystal structure is actually known (structure_source), and which stations it is honestly eligible for (allowed_lab_stations). This JSON Schema is the language-agnostic contract the game client reads; backend/schemas.py enforces the same rules in Python and a test checks the two agree.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "material_id",
+    "display_name",
+    "data_status",
+    "structure_source",
+    "phases",
+    "allowed_lab_stations",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version the card was minted against."
+    },
+    "material_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Deterministic id (readable slug + short hash of the inputs). Same input => same id."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-facing name shown on the card in the game."
+    },
+    "data_status": {
+      "type": "string",
+      "description": "The epistemic status of the card's data. NEVER omitted. 'measured' is real lab data and is never invented by the sandbox.",
+      "enum": [
+        "measured",
+        "simulated",
+        "predicted",
+        "reference",
+        "synthetic_demo",
+        "assumed",
+        "cached",
+        "unknown",
+        "missing",
+        "formula_only",
+        "user_provided"
+      ]
+    },
+    "data_status_label": {
+      "type": "string",
+      "description": "Short human label for the HUD (derived from data_status)."
+    },
+    "formula": {
+      "type": ["string", "null"],
+      "description": "Chemical formula if known/parseable; null otherwise. Stoichiometry only — a formula is NOT a phase identity."
+    },
+    "phases": {
+      "type": "array",
+      "description": "Known crystalline phases. EMPTY unless a structure source genuinely provides them. A formula or composition alone never populates this.",
+      "items": {
+        "type": "object",
+        "required": ["name", "source"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "formula": { "type": "string" },
+          "source": {
+            "type": "string",
+            "description": "Where the phase identity came from (e.g. 'reference_database', 'user_supplied')."
+          },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "composition": {
+      "type": ["object", "null"],
+      "description": "Composition with its own basis and status, or null. A composition is not a phase identity.",
+      "properties": {
+        "basis": {
+          "type": "string",
+          "enum": [
+            "oxide_wt_percent",
+            "element_mol_ratio",
+            "element_wt_percent",
+            "solution_concentration"
+          ]
+        },
+        "values": { "type": "object" },
+        "status": {
+          "type": "string",
+          "description": "data_status that applies specifically to the composition (e.g. synthetic_demo, user_provided, formula_only)."
+        },
+        "note": { "type": "string" },
+        "molar_mass_g_per_mol": { "type": ["number", "null"] }
+      }
+    },
+    "structure_source": {
+      "type": "string",
+      "description": "Whether a crystal structure / phase identity is actually known. XRD eligibility depends on this.",
+      "enum": [
+        "reference_database",
+        "user_supplied",
+        "none"
+      ]
+    },
+    "provenance": {
+      "type": "string",
+      "description": "Short machine tag for where the card came from (e.g. 'reference_catalog', 'user_formula', 'user_composition', 'synthetic_demo', 'unresolved')."
+    },
+    "uncertainty_notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Plain-language caveats about what is and isn't known."
+    },
+    "allowed_lab_stations": {
+      "type": "array",
+      "description": "One entry per station with an honest eligibility flag and reason — INCLUDING stations you cannot use yet, and why. XRD is never eligible without phases+structure; ICP is never eligible from a solid card.",
+      "items": {
+        "type": "object",
+        "required": ["station_id", "eligible", "reason"],
+        "properties": {
+          "station_id": {
+            "type": "string",
+            "enum": ["synthesizer", "xrd", "phreeqc", "icp"]
+          },
+          "display_name": { "type": "string" },
+          "eligible": { "type": "boolean" },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honesty warnings the game surfaces on the card (e.g. 'SYNTHETIC DEMO', 'UNKNOWN material — nothing invented')."
+    }
+  }
+}
