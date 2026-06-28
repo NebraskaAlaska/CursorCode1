@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from ..agent import domains
 from . import instrument_registry as reg
 from . import lab_modes
+from . import xrd_advisory
 
 # --------------------------------------------------------------------------- #
 # Intent signals (deterministic).
@@ -74,6 +75,8 @@ class RoutingResult:
     uncertainty_options: tuple = ()
     evidence_suggested: bool = False
     rationale: str = ""
+    xrd_mode: str = ""                       # which XRD Advisory v2 mode the prompt wants (if XRD)
+    xrd_request: dict = field(default_factory=dict)  # detected XRD inputs (measured 2θ, phases)
     auto_run: bool = field(default=False)    # INVARIANT: routing never triggers a run
 
     def instrument_specs(self) -> list:
@@ -100,6 +103,8 @@ class RoutingResult:
             "uncertainty_options": list(self.uncertainty_options),
             "evidence_suggested": self.evidence_suggested,
             "rationale": self.rationale,
+            "xrd_mode": self.xrd_mode,
+            "xrd_request": dict(self.xrd_request),
             "auto_run": self.auto_run,
         }
 
@@ -141,7 +146,7 @@ def route(prompt, *, state=None, ml_model_available: bool = False,
     evidence = bool(evidence_mode or _LIT_RE.search(low))
 
     def _result(objective, primary, instruments, *, next_action, rationale,
-                warnings=(), validation=False, missing=None):
+                warnings=(), validation=False, missing=None, xrd_mode="", xrd_request=None):
         validation_opts = ()
         if validation or validation_mode:
             validation_opts = ("provide measured ICP / pH data to compare",
@@ -151,26 +156,66 @@ def route(prompt, *, state=None, ml_model_available: bool = False,
             missing_inputs=tuple(missing) if missing is not None else _missing_for(primary, state),
             next_action=next_action, warnings=tuple(warnings),
             validation=bool(validation or validation_mode), validation_options=validation_opts,
-            uncertainty_options=uncertainty_opts, evidence_suggested=evidence, rationale=rationale)
+            uncertainty_options=uncertainty_opts, evidence_suggested=evidence, rationale=rationale,
+            xrd_mode=xrd_mode, xrd_request=dict(xrd_request or {}))
 
     leaching = domain == domains.LEACHING_GEOCHEMISTRY or bool(
         re.search(r"\bleach\w*|naoh|koh|hcl|dissolv\w*", low))
 
-    # 1) Explicit XRD intent → XRD Advisory (PHREEQC as context if also leaching). ---------- #
+    # 1) Explicit XRD intent → XRD Advisory v2 (sub-mode detected; PHREEQC as context). ----- #
     if _XRD_RE.search(text):
+        xrd_req = xrd_advisory.classify_request(text)
+        mode = xrd_req["mode"]
         instruments = [reg.XRD_ADVISORY]
-        rationale = "Prompt asks about XRD phases / diffraction peaks — an advisory planning task."
-        next_action = ("Open Digital Lab → XRD Advisory: list the expected phases to see "
-                       "approximate reference peaks, then compare with your measured XRD.")
+        if mode == xrd_advisory.MODE_MATCH_MEASURED:
+            objective = "XRD measured-peak matching (tentative)"
+            next_action = ("Open Digital Lab → XRD Advisory → Match Measured Peaks: enter your 2θ "
+                           "positions to get TENTATIVE possible phases (never an identification).")
+            rationale = ("Prompt gives measured 2θ peaks and asks what phases might match — a "
+                         "tentative, position-only matching task, not an identification.")
+            missing = ("measured 2θ peak positions (degrees, Cu Kα)",)
+        elif mode == xrd_advisory.MODE_PHREEQC_CHECKLIST:
+            objective = "XRD phase checklist from a PHREEQC prediction"
+            next_action = ("Open Digital Lab → XRD Advisory → PHREEQC Phase Checklist: PHREEQC-"
+                           "suggested phases to CHECK by XRD. A saturation prediction is not XRD "
+                           "validation.")
+            rationale = ("Prompt references PHREEQC-predicted / saturated phases — these become "
+                         "candidate phases to check by XRD, not observed phases.")
+            missing = ("the PHREEQC-predicted / saturated phase names",)
+        elif mode == xrd_advisory.MODE_CONTEXT_CHECKLIST:
+            objective = "XRD phase checklist (leaching context)"
+            next_action = ("Open Digital Lab → XRD Advisory → Expected Peaks: use the suggested "
+                           "context checklist of phases to look for, then compare with measured XRD.")
+            rationale = ("Leaching / fly-ash context — an advisory checklist of phases worth checking "
+                         "by XRD (planning, not observed phases).")
+            missing = ("(optional) the specific phases you expect",)
+        elif mode == xrd_advisory.MODE_REFERENCE_NOTES:
+            objective = "XRD reference-data coverage"
+            next_action = ("Open Digital Lab → XRD Advisory → Reference Data Notes: see which phases "
+                           "the internal approximate table covers and which need external data.")
+            rationale = "Prompt asks which phases the internal reference table covers."
+            missing = ()
+        else:
+            objective = "XRD expected-peak planning"
+            next_action = ("Open Digital Lab → XRD Advisory → Expected Peaks: list the phases to see "
+                           "approximate reference peaks, then compare with your measured XRD.")
+            rationale = ("Prompt asks about expected XRD peaks for named phases — advisory planning, "
+                         "not identification.")
+            missing = ("a list of expected phases (or PHREEQC-predicted phases)",)
+
         warns = ()
-        if leaching:
-            instruments.append(reg.PHREEQC_LEACHING)
-            rationale += (" Leaching context detected — PHREEQC can predict candidate precipitates "
-                          "to add to the XRD checklist (after confirmation).")
-            warns = ("PHREEQC-predicted phases are model candidates — confirm by measured XRD.",)
-        return _result("XRD phase / peak planning", reg.XRD_ADVISORY, instruments,
-                       next_action=next_action, rationale=rationale, warnings=warns,
-                       missing=("a list of expected phases (or PHREEQC-predicted phases)",))
+        # PHREEQC context: explicit (the prompt names a PHREEQC prediction) or implied by leaching.
+        if mode == xrd_advisory.MODE_PHREEQC_CHECKLIST or leaching:
+            if reg.PHREEQC_LEACHING not in instruments:
+                instruments.append(reg.PHREEQC_LEACHING)
+            warns = ("PHREEQC-predicted / saturated phases are MODEL candidates — a saturation index "
+                     "is not XRD validation; confirm each by measured XRD.",)
+            if mode not in (xrd_advisory.MODE_PHREEQC_CHECKLIST,):
+                rationale += (" Leaching context detected — PHREEQC can predict candidate precipitates "
+                              "to add to the XRD checklist (after confirmation).")
+        return _result(objective, reg.XRD_ADVISORY, instruments, next_action=next_action,
+                       rationale=rationale, warnings=warns, missing=missing,
+                       xrd_mode=mode, xrd_request=xrd_req)
 
     # 2) Explicit ICP / measured-concentration intent → ICP Data Processor. ---------------- #
     if _icp_intent(text):
