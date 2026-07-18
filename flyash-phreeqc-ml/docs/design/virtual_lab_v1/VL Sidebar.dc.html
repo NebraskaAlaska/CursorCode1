@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/styles.css">
+<script src="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/_ds_bundle.js"></script>
+<style>
+:root{--color-bg:#0d141b;--color-surface:#141e29;--color-text:#e7ecf2;--color-accent:#94bce3;--color-divider:color-mix(in srgb,#b5d9fd 20%,transparent);--color-accent-100:#1f3145;--color-accent-200:#2c455d;--color-accent-600:#b5d9fd;--color-accent-700:#d6ebff;--color-accent-800:#d6ebff;--color-accent-900:#eef6ff;--color-accent-2-100:#22364b;--color-accent-2-800:#d0e6fa;--color-neutral-100:#1a232d;--color-neutral-200:#232e3a;--color-neutral-300:#2e3a47;--color-neutral-800:#cfd6de;--color-neutral-900:#eef1f5;--shadow-sm:0 1px 2px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.45);--shadow-lg:0 18px 44px rgba(0,0,0,.55);--vl-ok:#8fc7a2;--vl-ok-bg:rgba(126,192,153,.12);--vl-warn:#d8b46e;--vl-warn-bg:rgba(216,180,110,.10);--vl-err:#d98d80;--vl-err-bg:rgba(217,141,128,.10);--vl-ml:#b3a6dd;--vl-ml-bg:rgba(179,166,221,.12);--vl-dim:rgba(231,236,242,.60);--vl-faint:rgba(231,236,242,.38);--vl-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+body{margin:0;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body)}
+a{color:var(--color-accent)}a:hover{color:var(--color-accent-600)}
+[data-vlnav]{display:flex;align-items:center;gap:10px;padding:7px 10px;margin:1px 0;font-size:13.5px;color:rgba(231,236,242,.64);text-decoration:none;border-left:2px solid transparent}
+[data-vlnav]:hover{background:rgba(148,188,227,.06);color:#e7ecf2}
+[data-vlnav="on"]{background:rgba(148,188,227,.09);color:#eaf2fa;border-left-color:var(--color-accent)}
+[data-vlnav="on"] svg{color:var(--color-accent)}
+[data-vlnav] svg{color:rgba(231,236,242,.45)}
+</style>
+</helmet>
+<div style="height:100%;min-height:640px;display:flex;flex-direction:column;background:#101923;border-right:1px solid var(--color-divider)">
+  <div style="display:flex;align-items:center;gap:11px;padding:18px 16px 14px;flex:none">
+    <div class="blueprint" style="width:34px;height:34px;flex:none;display:grid;place-items:center;border-color:rgba(181,217,253,.45)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i><span style="font-family:var(--font-heading);font-weight:600;font-size:15px;letter-spacing:.08em;color:var(--color-accent)">VL</span></div>
+    <div style="min-width:0">
+      <div style="font-family:var(--font-heading);font-weight:600;font-size:17px;letter-spacing:.14em;line-height:1.1">VIRTUAL LAB</div>
+      <div style="font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--vl-faint);margin-top:2px">AI-assisted materials research</div>
+    </div>
+  </div>
+  <div style="height:1px;background:var(--color-divider);margin:0 14px;flex:none"></div>
+  <div style="flex:1;overflow:auto;padding:6px 10px 10px">
+    <sc-for list="{{ groups }}" as="g" hint-placeholder-count="4">
+      <div style="font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--vl-faint);padding:14px 10px 5px">{{ g.label }}</div>
+      <sc-for list="{{ g.items }}" as="item" hint-placeholder-count="2">
+        <a data-vlnav="{{ item.state }}" href="#">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex:none"><path d="{{ item.d }}"></path></svg>
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ item.label }}</span>
+        </a>
+      </sc-for>
+    </sc-for>
+  </div>
+  <div style="flex:none;padding:12px 14px 14px;border-top:1px solid var(--color-divider);display:flex;flex-direction:column;gap:10px">
+    <div>
+      <div style="font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--vl-faint)">Current project</div>
+      <div style="font-size:12.5px;color:#dfe7ef;margin-top:3px;line-height:1.35">{{ project }}</div>
+      <div style="font-family:var(--vl-mono);font-size:10.5px;color:var(--color-accent);margin-top:3px">{{ material }}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--vl-dim)">
+      <div style="display:flex;align-items:center;gap:7px"><span style="width:6px;height:6px;background:var(--vl-ok);flex:none"></span>AI assistant · available</div>
+      <div style="display:flex;align-items:center;gap:7px"><span style="width:6px;height:6px;background:var(--vl-ok);flex:none"></span>PHREEQC engine · available</div>
+    </div>
+    <div style="font-family:var(--vl-mono);font-size:9.5px;color:var(--vl-faint)">Virtual LAB v0.4 · private beta</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:236,&quot;height&quot;:900},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;home&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;projects&quot;,&quot;material&quot;,&quot;machines&quot;,&quot;results&quot;,&quot;validation&quot;,&quot;evidence&quot;,&quot;runs&quot;,&quot;settings&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Navigation&quot;},&quot;project&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Class C Fly Ash Leaching Study&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Context&quot;},&quot;material&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;CFA-2026-011&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Context&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const active = this.props.active ?? "home";
+    const I = {
+      home: "M3 10.5 12 3l9 7.5M5 9.5V21h14V9.5M9.5 21v-6h5v6",
+      folder: "M3 6a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
+      layers: "M12 3 3 7.5l9 4.5 9-4.5ZM3 12l9 4.5 9-4.5M3 16.5 12 21l9-4.5",
+      cpu: "M8 8h8v8H8ZM5 5h14v14H5ZM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3",
+      chart: "M4 4v15a1 1 0 0 0 1 1h15M8 16v-4M12.5 16V8M17 16v-6",
+      target: "M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5ZM12 2v2M12 20v2M2 12h2M20 12h2",
+      book: "M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2ZM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7Z",
+      history: "M4 12a8 8 0 1 0 2.34-5.66L4 8.5M4 4v4.5h4.5M12 8v4.5l3 1.8",
+      sliders: "M21 6h-7M10 6H3M21 12h-9M8 12H3M21 18h-5M12 18H3M14 4v4M8 10v4M16 16v4"
+    };
+    const mk = (id, label, d) => ({ id, label, d, state: active === id ? "on" : "off" });
+    return {
+      project: this.props.project ?? "Class C Fly Ash Leaching Study",
+      material: this.props.material ?? "CFA-2026-011",
+      groups: [
+        { label: "Overview", items: [mk("home", "Home", I.home), mk("projects", "Projects", I.folder)] },
+        { label: "Research", items: [mk("material", "Material Workspace", I.layers), mk("machines", "Machines", I.cpu), mk("results", "Results", I.chart)] },
+        { label: "Rigor", items: [mk("validation", "Validation & Uncertainty", I.target), mk("evidence", "Evidence Library", I.book), mk("runs", "Run History", I.history)] },
+        { label: "System", items: [mk("settings", "Settings & Diagnostics", I.sliders)] }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

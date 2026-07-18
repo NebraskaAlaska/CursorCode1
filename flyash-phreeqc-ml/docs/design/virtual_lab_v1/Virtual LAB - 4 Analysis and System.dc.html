@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/styles.css">
+<script src="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/_ds_bundle.js"></script>
+<style>
+:root{--color-bg:#0d141b;--color-surface:#141e29;--color-text:#e7ecf2;--color-accent:#94bce3;--color-divider:color-mix(in srgb,#b5d9fd 20%,transparent);--color-accent-100:#1f3145;--color-accent-200:#2c455d;--color-accent-600:#b5d9fd;--color-accent-700:#d6ebff;--color-accent-800:#d6ebff;--color-accent-900:#eef6ff;--color-accent-2-100:#22364b;--color-accent-2-800:#d0e6fa;--color-neutral-100:#1a232d;--color-neutral-200:#232e3a;--color-neutral-300:#2e3a47;--color-neutral-800:#cfd6de;--color-neutral-900:#eef1f5;--shadow-sm:0 1px 2px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.45);--shadow-lg:0 18px 44px rgba(0,0,0,.55);--vl-ok:#8fc7a2;--vl-ok-bg:rgba(126,192,153,.12);--vl-warn:#d8b46e;--vl-warn-bg:rgba(216,180,110,.10);--vl-err:#d98d80;--vl-err-bg:rgba(217,141,128,.10);--vl-ml:#b3a6dd;--vl-ml-bg:rgba(179,166,221,.12);--vl-dim:rgba(231,236,242,.60);--vl-faint:rgba(231,236,242,.38);--vl-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+body{margin:0;background:#151b23;color:var(--color-text);font-family:var(--font-body)}
+a{color:var(--color-accent)}a:hover{color:var(--color-accent-600)}
+.vlk{font-family:var(--font-heading);font-weight:600;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--vl-faint)}
+.vlmono{font-family:var(--vl-mono);font-size:11.5px}
+.vlb{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.09em;text-transform:uppercase;padding:2px 8px;border:1px solid transparent;white-space:nowrap}
+.vlb-user{color:var(--vl-dim);border-color:rgba(231,236,242,.28)}
+.vlb-demo{color:var(--vl-warn);border-color:var(--vl-warn);border-style:dashed}
+.vlb-lit{color:#c9d9ea;border-color:rgba(201,217,234,.42)}
+.vlb-measured{color:var(--vl-ok);border-color:color-mix(in srgb,var(--vl-ok) 45%,transparent);background:var(--vl-ok-bg)}
+.vlb-sim{color:var(--color-accent);border-color:color-mix(in srgb,var(--color-accent) 45%,transparent);background:rgba(148,188,227,.10)}
+.vlb-ml{color:var(--vl-ml);border-color:color-mix(in srgb,var(--vl-ml) 45%,transparent);background:var(--vl-ml-bg)}
+.vlb-adv{color:var(--vl-warn);border-color:color-mix(in srgb,var(--vl-warn) 45%,transparent);background:var(--vl-warn-bg)}
+.vlb-valid{color:#0d141b;border-color:var(--vl-ok);background:var(--vl-ok)}
+.vlb-missing{color:var(--vl-err);border-color:color-mix(in srgb,var(--vl-err) 55%,transparent);border-style:dashed}
+.vlb-err{color:var(--vl-err);border-color:color-mix(in srgb,var(--vl-err) 45%,transparent);background:var(--vl-err-bg)}
+.vlb-ready{color:var(--vl-ok);border-color:color-mix(in srgb,var(--vl-ok) 45%,transparent)}
+.vlb-activeb{color:var(--color-accent);border-color:color-mix(in srgb,var(--color-accent) 45%,transparent)}
+.vlb-req{color:var(--vl-dim);border-color:rgba(231,236,242,.25);background:rgba(231,236,242,.05)}
+.vlwarn{display:flex;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb,var(--vl-warn) 40%,transparent);background:var(--vl-warn-bg);padding:9px 12px;font-size:12.5px;line-height:1.45;color:#e8dcbf}
+.vlnote{display:flex;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb,var(--color-accent) 35%,transparent);background:rgba(148,188,227,.07);padding:9px 12px;font-size:12.5px;line-height:1.45;color:#cfe0f1}
+.vlchip{display:inline-flex;font-size:10.5px;border:1px solid rgba(231,236,242,.2);padding:1px 7px;color:var(--vl-dim);white-space:nowrap}
+.dv-turn{padding:36px 44px 30px;border-bottom:1px solid rgba(255,255,255,.07);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 18px}
+.dv-tid{font:600 10px var(--vl-mono);padding:3px 7px;background:#e7ecf2;color:#0d141b;text-decoration:none}
+.dv-tname{font:600 14px/1.2 var(--font-body);color:#e7ecf2;letter-spacing:.02em}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;max-width:100%;display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px var(--vl-mono);padding:3px 7px;background:rgba(148,188,227,.14);color:#94bce3;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:10px;font:400 12px/1.3 var(--font-body);color:rgba(231,236,242,.55)}
+.dv-card{max-width:100%;background:var(--color-bg);border:1px solid rgba(181,217,253,.16);box-shadow:var(--shadow-lg);overflow:visible}
+.dv-opt:target .dv-oid{background:#94bce3;color:#0d141b}
+.dv-next{margin:22px 0 0;font:12px/1.5 var(--font-body);color:rgba(231,236,242,.45)}
+</style>
+</helmet>
+
+<div style="padding:36px 44px 8px;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+  <h2 style="margin:0;letter-spacing:.06em">VIRTUAL LAB — PART 4</h2>
+  <span style="font-size:12.5px;color:var(--vl-dim)">Results · Validation &amp; Uncertainty · Evidence Library · Run History · Settings &amp; Diagnostics · narrow widths</span>
+  <span style="flex:1"></span>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 3 Instruments.dc.html">← Part 3</a>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 5 Demo and Handoff.dc.html">Part 5 →</a>
+</div>
+
+<section class="dv-turn" id="t4">
+  <div class="dv-thd"><a class="dv-tid" href="#t4">4</a><span class="dv-tname">Analysis &amp; system screens</span></div>
+  <div class="dv-opts">
+
+    <div class="dv-opt" id="4a">
+      <div class="dv-olabel"><a class="dv-oid" href="#4a">4a</a><span>Screen 06 · Results — unified history, filterable by data type</span><span class="vlmono" style="color:var(--vl-faint)">1440w</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="width:1440px;display:flex;align-items:stretch;background:var(--color-bg)" data-screen-label="06 Results">
+        <dc-import name="VL Sidebar" active="results" hint-size="236px,900px" style="width:236px;flex:none"></dc-import>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--color-divider)">
+            <span class="vlk">Class C Fly Ash Leaching Study</span><span style="color:var(--vl-faint)">/</span><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Results</span>
+            <div style="flex:1"></div>
+            <input class="input" style="width:240px;min-height:32px" placeholder="Search results…" value="">
+          </div>
+          <div style="padding:20px 26px 28px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="seg" style="font-size:12px"><label class="seg-opt"><input type="radio" name="rf" checked>All</label><label class="seg-opt"><input type="radio" name="rf">Simulation</label><label class="seg-opt"><input type="radio" name="rf">Measured</label><label class="seg-opt"><input type="radio" name="rf">Prediction</label><label class="seg-opt"><input type="radio" name="rf">Advisory</label><label class="seg-opt"><input type="radio" name="rf">Evidence</label><label class="seg-opt"><input type="radio" name="rf">Validated</label></div>
+              <div style="flex:1"></div>
+              <span style="font-size:11.5px;color:var(--vl-faint)">5 results · all projects</span>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="vlmono" style="color:var(--color-accent)">R-0142</span>
+                <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Leachate speciation estimate</span>
+                <span class="vlb vlb-sim">Simulation / model estimate</span><span class="vlb vlb-demo" style="font-size:9px">Demo</span>
+                <div style="flex:1"></div>
+                <span class="vlmono" style="color:var(--vl-faint)">18 Jul 09:12</span>
+                <a class="btn btn-secondary" style="font-size:11.5px" href="Virtual LAB - 2 Machines.dc.html#2e">View</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;font-size:12px;color:var(--vl-dim);flex-wrap:wrap">
+                <span>PHREEQC Leaching Simulator</span><span>·</span><span>Class C Fly Ash Leaching Study</span><span>·</span><span class="vlmono">CFA-2026-011</span>
+                <span style="flex:1"></span>
+                <span class="vlb vlb-req" style="font-size:9px">3 assumptions</span><span class="vlb vlb-adv" style="font-size:9px">2 warnings</span><span class="vlb vlb-req" style="font-size:9px">No measured comparison</span>
+              </div>
+              <div style="font-size:12px;color:var(--vl-faint)">Predicted pH 12.3 · 14 elements · 6 phases SI &gt; 0 — verify by pH + ICP under matching conditions · provenance: engine 3.7.6, minteq.v4</div>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="vlmono" style="color:var(--color-accent)">B-07</span>
+                <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">ICP-OES leachate batch, corrected</span>
+                <span class="vlb vlb-measured">Measured lab data</span><span class="vlb vlb-demo" style="font-size:9px">Demo</span>
+                <div style="flex:1"></div>
+                <span class="vlmono" style="color:var(--vl-faint)">17 Jul 15:40</span>
+                <a class="btn btn-secondary" style="font-size:11.5px" href="Virtual LAB - 3 Instruments.dc.html#3b">View</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;font-size:12px;color:var(--vl-dim);flex-wrap:wrap">
+                <span>ICP-OES / ICP-MS Data Processor</span><span>·</span><span>Class C Fly Ash Leaching Study</span><span>·</span><span class="vlmono">CFA-2026-011</span>
+                <span style="flex:1"></span>
+                <span class="vlb vlb-adv" style="font-size:9px">1 QC flag</span><span class="vlb vlb-req" style="font-size:9px">1 BDL</span><span class="vlb vlb-activeb" style="font-size:9px">Can validate R-0142</span>
+              </div>
+              <div style="font-size:12px;color:var(--vl-faint)">14 elements · blanks + dilution applied · provenance: icp_b07.csv, uploaded 17 Jul, operator initials on file</div>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="vlmono" style="color:var(--color-accent)">X-011</span>
+                <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Expected-peak plan · leach residue</span>
+                <span class="vlb vlb-adv">Advisory interpretation</span>
+                <div style="flex:1"></div>
+                <span class="vlmono" style="color:var(--vl-faint)">15 Jul 11:05</span>
+                <a class="btn btn-secondary" style="font-size:11.5px" href="Virtual LAB - 3 Instruments.dc.html#3a">View</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;font-size:12px;color:var(--vl-dim);flex-wrap:wrap">
+                <span>XRD Advisory / Pattern Planning</span><span>·</span><span>Class C Fly Ash Leaching Study</span><span>·</span><span class="vlmono">CFA-2026-011</span>
+                <span style="flex:1"></span>
+                <span class="vlb vlb-req" style="font-size:9px">Reference gaps: 2</span><span class="vlb vlb-req" style="font-size:9px">Not a phase ID</span>
+              </div>
+              <div style="font-size:12px;color:var(--vl-faint)">Scan-range plan for ettringite / calcite / portlandite — verify with a measured pattern</div>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="vlmono" style="color:var(--color-accent)">E-033</span>
+                <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Ca / S release ranges from literature</span>
+                <span class="vlb vlb-lit">Literature evidence</span>
+                <div style="flex:1"></div>
+                <span class="vlmono" style="color:var(--vl-faint)">14 Jul 17:22</span>
+                <a class="btn btn-secondary" style="font-size:11.5px" href="#4c">View</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;font-size:12px;color:var(--vl-dim);flex-wrap:wrap">
+                <span>Literature Evidence Engine</span><span>·</span><span>Class C Fly Ash Leaching Study</span><span>·</span><span class="vlmono">CFA-2026-011</span>
+                <span style="flex:1"></span>
+                <span class="vlb vlb-adv" style="font-size:9px">3 unreviewed</span><span class="vlb vlb-req" style="font-size:9px">Context, not measurement</span>
+              </div>
+              <div style="font-size:12px;color:var(--vl-faint)">12 evidence items with DOI + table/figure provenance · human review pending on 3</div>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="vlmono" style="color:var(--color-accent)">M-021</span>
+                <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">28-day compressive strength, Mix A vs B</span>
+                <span class="vlb vlb-measured">Measured lab data</span><span class="vlb vlb-demo" style="font-size:9px">Demo</span>
+                <div style="flex:1"></div>
+                <span class="vlmono" style="color:var(--vl-faint)">09 Jul 10:02</span>
+                <a class="btn btn-secondary" style="font-size:11.5px" href="Virtual LAB - 3 Instruments.dc.html#3f">View</a>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;font-size:12px;color:var(--vl-dim);flex-wrap:wrap">
+                <span>Mechanical Testing Processor</span><span>·</span><span>Cementitious Materials Screening</span><span>·</span><span class="vlmono">MIX-A / MIX-B</span>
+                <span style="flex:1"></span>
+                <span class="vlb vlb-adv" style="font-size:9px">Low replicates (Mix B)</span>
+              </div>
+              <div style="font-size:12px;color:var(--vl-faint)">Mix A 39.1 ± 1.0 MPa (n=3) · Mix B 35.2 ± 2.3 MPa (n=2) — add a third Mix B replicate before comparing</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="4b">
+      <div class="dv-olabel"><a class="dv-oid" href="#4b">4b</a><span>Screen 07 · Validation &amp; Uncertainty — simulation vs measured, side by side</span><span class="vlmono" style="color:var(--vl-faint)">1440w</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="width:1440px;display:flex;align-items:stretch;background:var(--color-bg)" data-screen-label="07 Validation and Uncertainty">
+        <dc-import name="VL Sidebar" active="validation" hint-size="236px,1120px" style="width:236px;flex:none"></dc-import>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--color-divider)">
+            <span class="vlk">Class C Fly Ash Leaching Study</span><span style="color:var(--vl-faint)">/</span><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Validation &amp; Uncertainty</span>
+            <div style="flex:1"></div>
+            <span style="display:flex;gap:6px;align-items:center;font-size:10.5px;color:var(--vl-faint)">states:</span>
+            <span class="vlb vlb-req" style="font-size:9px">No measured data</span><span class="vlb vlb-activeb" style="font-size:9px">Comparison available</span><span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span><span class="vlb vlb-valid" style="font-size:9px">Validated</span>
+          </div>
+          <div style="padding:20px 26px 28px;display:flex;flex-direction:column;gap:16px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div class="card blueprint" style="padding:14px 16px;gap:8px;border-color:color-mix(in srgb,var(--color-accent) 45%,transparent)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlk" style="color:var(--color-accent)">Left · simulation or prediction</span><div style="flex:1"></div><span class="vlb vlb-sim">Simulation</span></div>
+                <select class="input"><option>R-0142 · PHREEQC leachate speciation · 18 Jul</option><option>R-0139 · PHREEQC dilute acid scenario · 11 Jul</option></select>
+                <div style="font-size:11.5px;color:var(--vl-faint)">L/S 10 · DI water · 25 °C · total-release · minteq.v4 · <span class="vlb vlb-demo" style="font-size:9px">Demo</span></div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:8px;border-color:color-mix(in srgb,var(--vl-ok) 45%,transparent)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlk" style="color:var(--vl-ok)">Right · measured experiment</span><div style="flex:1"></div><span class="vlb vlb-measured">Measured</span></div>
+                <select class="input"><option>B-07 · ICP-OES leachate batch · 17 Jul</option></select>
+                <div style="font-size:11.5px;color:var(--vl-faint)">L/S 10 · DI water · contact time <span style="color:var(--vl-err)">missing</span> · blanks + dilution applied</div>
+              </div>
+            </div>
+            <div class="card blueprint" style="padding:14px 16px;gap:9px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="vlk" style="color:var(--color-accent)">Variable mapping &amp; residuals</span>
+                <div style="flex:1"></div>
+                <span style="font-size:11px;color:var(--vl-faint)">criteria: majors |%err| ≤ 25 · trace ≤ 50 · pH ± 0.5 (project setting)</span>
+              </div>
+              <table class="table" style="font-size:12.5px">
+                <thead><tr><th>Variable</th><th>Unit</th><th style="text-align:right">Simulated</th><th style="text-align:right">Measured</th><th style="text-align:right">Residual</th><th style="text-align:right">Abs. error</th><th style="text-align:right">% error</th><th>Within criteria</th></tr></thead>
+                <tbody>
+                  <tr><td>pH</td><td style="color:var(--vl-dim)">—</td><td class="vlmono" style="text-align:right">12.3</td><td class="vlmono" style="text-align:right;color:var(--vl-err)">not measured</td><td class="vlmono" style="text-align:right">—</td><td class="vlmono" style="text-align:right">—</td><td class="vlmono" style="text-align:right">—</td><td><span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span></td></tr>
+                  <tr><td>Ca</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">168</td><td class="vlmono" style="text-align:right">158.6</td><td class="vlmono" style="text-align:right">−9.4</td><td class="vlmono" style="text-align:right">9.4</td><td class="vlmono" style="text-align:right">5.9</td><td><span class="vlb vlb-ready" style="font-size:9px">Within</span></td></tr>
+                  <tr><td>S (SO₄)</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">64</td><td class="vlmono" style="text-align:right">57.7</td><td class="vlmono" style="text-align:right">−6.3</td><td class="vlmono" style="text-align:right">6.3</td><td class="vlmono" style="text-align:right">10.9</td><td><span class="vlb vlb-ready" style="font-size:9px">Within</span></td></tr>
+                  <tr><td>Al</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">3.0</td><td class="vlmono" style="text-align:right">3.0</td><td class="vlmono" style="text-align:right">0.0</td><td class="vlmono" style="text-align:right">0.04</td><td class="vlmono" style="text-align:right">1.2</td><td><span class="vlb vlb-ready" style="font-size:9px">Within</span></td></tr>
+                  <tr><td>Si</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">2.4</td><td class="vlmono" style="text-align:right">2.6</td><td class="vlmono" style="text-align:right">+0.2</td><td class="vlmono" style="text-align:right">0.2</td><td class="vlmono" style="text-align:right">8.7</td><td><span class="vlb vlb-ready" style="font-size:9px">Within</span></td></tr>
+                  <tr><td>Cr</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">0.06</td><td class="vlmono" style="text-align:right">0.03</td><td class="vlmono" style="text-align:right">−0.03</td><td class="vlmono" style="text-align:right">0.03</td><td class="vlmono" style="text-align:right">100</td><td><span class="vlb vlb-err" style="font-size:9px">Outside</span></td></tr>
+                  <tr><td>As</td><td style="color:var(--vl-dim)">mg/L</td><td class="vlmono" style="text-align:right">0.002</td><td class="vlmono" style="text-align:right">&lt; DL</td><td class="vlmono" style="text-align:right">—</td><td class="vlmono" style="text-align:right">—</td><td class="vlmono" style="text-align:right">—</td><td><span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span></td></tr>
+                </tbody>
+              </table>
+              <div style="font-size:11px;color:var(--vl-faint)">unit mapping is explicit — simulated mol/L converted to mg/L for comparison · residual = measured − simulated · all values <span class="vlb vlb-demo" style="font-size:9px">Synthetic demo</span></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:start">
+              <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Validation criteria</div>
+                <div style="font-size:12px;color:var(--vl-dim);line-height:1.6">
+                  · Major elements: |% error| ≤ 25<br>· Trace elements: |% error| ≤ 50<br>· pH: within ± 0.5 units<br>· Minimum 5 mapped variables<br>· Conditions must match (L/S, leachant, time)
+                </div>
+                <div style="font-size:11px;color:var(--vl-faint)">criteria are project settings — recorded with every verdict</div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:9px;border-color:color-mix(in srgb,var(--vl-warn) 50%,transparent)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--vl-warn)">Verdict</div>
+                <span class="vlb vlb-adv" style="align-self:flex-start;font-size:11px">Insufficient data — not validated</span>
+                <div style="font-size:12.5px;color:var(--vl-dim);line-height:1.55">4 of 6 mapped variables within criteria. Blocking gaps: pH not measured · contact time missing · Cr outside criteria. <strong style="color:#e7ecf2">VALIDATED requires measured data meeting all criteria</strong> — never simulation or literature alone.</div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:8px;border-color:color-mix(in srgb,var(--color-accent) 45%,transparent);background:rgba(148,188,227,.05)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">To reach VALIDATED</div>
+                <div style="font-size:12.5px;color:var(--vl-dim);line-height:1.55">Re-run the batch leach with recorded contact time; measure pH at sampling; re-measure Cr with matrix-matched standards.</div>
+                <a class="btn btn-secondary btn-block" style="font-size:12px" href="Virtual LAB - 3 Instruments.dc.html#3j">Plan this experiment</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="4c">
+      <div class="dv-olabel"><a class="dv-oid" href="#4c">4c</a><span>Screen 08 · Evidence Library — provenance always visible</span><span class="vlmono" style="color:var(--vl-faint)">1440w</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="width:1440px;display:flex;align-items:stretch;background:var(--color-bg)" data-screen-label="08 Evidence Library">
+        <dc-import name="VL Sidebar" active="evidence" hint-size="236px,880px" style="width:236px;flex:none"></dc-import>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--color-divider)">
+            <span class="vlk">Class C Fly Ash Leaching Study</span><span style="color:var(--vl-faint)">/</span><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Evidence Library</span>
+            <div style="flex:1"></div>
+            <input class="input" style="width:280px;min-height:32px" placeholder="Search evidence — title, DOI, element…" value="">
+          </div>
+          <div style="padding:20px 26px 28px;display:grid;grid-template-columns:250px 1fr;gap:20px;align-items:start">
+            <div class="card blueprint" style="padding:14px;gap:10px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="vlk" style="color:var(--color-accent)">Filters</div>
+              <div class="field"><label>Material</label><select class="input"><option>CFA-2026-011</option><option>All materials</option></select></div>
+              <div class="field"><label>Machine</label><select class="input"><option>All</option><option>PHREEQC</option><option>XRD Advisory</option></select></div>
+              <div class="field"><label>Property</label><select class="input"><option>Leachate concentration</option><option>Phase occurrence</option><option>Strength</option></select></div>
+              <div class="field"><label>Element</label><select class="input"><option>Ca</option><option>S</option><option>Al</option><option>Cr</option></select></div>
+              <div class="field"><label>Year</label><div style="display:flex;gap:6px"><input class="input" value="2015"><input class="input" value="2026"></div></div>
+              <div class="field"><label>Evidence status</label><select class="input"><option>All</option><option>Candidate</option><option>AI extracted</option><option>Approved</option></select></div>
+              <div class="field"><label>Review status</label><select class="input"><option>All</option><option>Unreviewed</option><option>Human reviewed</option></select></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--vl-dim)">12 items · sorted by relevance to Ca leaching</span><div style="flex:1"></div><a class="btn btn-primary" style="font-size:12px" href="#4c">＋ Add evidence</a></div>
+              <div style="border:1px solid rgba(201,217,234,.35);padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:flex-start;gap:10px">
+                  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Leaching behaviour of Ca and S from high-calcium fly ashes in batch tests</div>
+                  <div style="font-size:11.5px;color:var(--vl-dim);margin-top:2px">Sato, Lindqvist, Moreno · 2023 · J. Mater. Cycles Waste Manag. · DOI 10.1007/s10163-023-01611-w</div></div>
+                  <span class="vlb vlb-lit">Literature evidence</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--vl-faint)"><span class="vlmono">p. 1142 · Table 4</span><span>·</span><span>Ca 140–190 mg/L @ L/S 10, 24 h</span><span>·</span><span>confidence: medium</span><div style="flex:1"></div><span class="vlb vlb-lit" style="font-size:9px">AI extracted</span><span class="vlb vlb-adv" style="font-size:9px">Unreviewed</span></div>
+              </div>
+              <div style="border:1px solid rgba(201,217,234,.35);padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:flex-start;gap:10px">
+                  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Ettringite control of Al solubility in alkaline ash leachates</div>
+                  <div style="font-size:11.5px;color:var(--vl-dim);margin-top:2px">Bianchi, Ortega · 2021 · Cem. Concr. Res. · DOI 10.1016/j.cemconres.2021.106- (p. 14, Fig. 7)</div></div>
+                  <span class="vlb vlb-lit">Literature evidence</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--vl-faint)"><span class="vlmono">Fig. 7 · digitized curve</span><span>·</span><span>Al vs pH trend, 11 &lt; pH &lt; 13</span><span>·</span><span>confidence: high</span><div style="flex:1"></div><span class="vlb vlb-activeb" style="font-size:9px">Human reviewed</span><span class="vlb vlb-measured" style="font-size:9px">Approved</span></div>
+              </div>
+              <div style="border:1px solid rgba(201,217,234,.35);padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:flex-start;gap:10px">
+                  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Trace Cr and As release from coal combustion products — a review</div>
+                  <div style="font-size:11.5px;color:var(--vl-dim);margin-top:2px">Petersen et al. · 2019 · Fuel · DOI 10.1016/j.fuel.2019.05- (pp. 220–224, Table 2)</div></div>
+                  <span class="vlb vlb-lit">Literature evidence</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--vl-faint)"><span class="vlmono">Table 2 · range rows</span><span>·</span><span>Cr 0.01–0.4 mg/L across 31 ashes</span><span>·</span><span>confidence: medium</span><div style="flex:1"></div><span class="vlb vlb-req" style="font-size:9px">Candidate</span></div>
+              </div>
+              <div class="vlnote" style="font-size:11.5px"><span>Evidence supports interpretation and planning. It is never counted as measured data and never triggers a VALIDATED state.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="4d">
+      <div class="dv-olabel"><a class="dv-oid" href="#4d">4d</a><span>Screen 09 · Run History — project → material → runs → results → comparisons</span><span class="vlmono" style="color:var(--vl-faint)">1440w</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="width:1440px;display:flex;align-items:stretch;background:var(--color-bg)" data-screen-label="09 Run History">
+        <dc-import name="VL Sidebar" active="runs" hint-size="236px,900px" style="width:236px;flex:none"></dc-import>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--color-divider)">
+            <span class="vlk">Class C Fly Ash Leaching Study</span><span style="color:var(--vl-faint)">/</span><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Run History</span>
+            <div style="flex:1"></div>
+            <div class="seg" style="font-size:12px"><label class="seg-opt"><input type="radio" name="hf" checked>Timeline</label><label class="seg-opt"><input type="radio" name="hf">Table</label></div>
+          </div>
+          <div style="padding:20px 26px 28px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--color-divider);padding:10px 14px">
+              <span class="vlk">Project</span><span style="font-family:var(--font-heading);font-weight:600;font-size:15px">Class C Fly Ash Leaching Study</span>
+              <span style="color:var(--vl-faint)">→</span><span class="vlk">Material</span><span class="vlmono" style="color:var(--color-accent)">CFA-2026-011</span>
+              <div style="flex:1"></div><span style="font-size:11.5px;color:var(--vl-faint)">6 events · 02 Jun – 18 Jul 2026</span>
+            </div>
+            <div style="display:flex;flex-direction:column">
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border:1px solid rgba(231,236,242,.4);background:var(--color-bg);flex:none;margin-top:4px"></span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+                <div style="flex:1;padding-bottom:16px;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">02 Jun 09:30</span>
+                  <span style="font-size:13px">Material record created · composition entered from XRF sheet</span>
+                  <span class="vlb vlb-user" style="font-size:9px">User provided</span>
+                  <div style="flex:1"></div><a href="Virtual LAB - 1 Core Screens.dc.html#1c" style="font-size:11.5px">material</a>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border:1px solid rgba(201,217,234,.5);background:var(--color-bg);flex:none;margin-top:4px"></span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+                <div style="flex:1;padding-bottom:16px;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">14 Jul 17:22</span>
+                  <span style="font-size:13px">Literature Evidence Engine · 12 items extracted <span class="vlmono" style="color:var(--vl-faint)">E-033</span></span>
+                  <span class="vlb vlb-lit" style="font-size:9px">Literature</span>
+                  <div style="flex:1"></div><a href="#4c" style="font-size:11.5px">evidence</a>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border:1px solid var(--vl-warn);background:var(--color-bg);flex:none;margin-top:4px"></span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+                <div style="flex:1;padding-bottom:16px;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">15 Jul 11:05</span>
+                  <span style="font-size:13px">XRD Advisory · expected-peak plan <span class="vlmono" style="color:var(--vl-faint)">X-011</span></span>
+                  <span class="vlb vlb-adv" style="font-size:9px">Advisory</span>
+                  <div style="flex:1"></div><a href="Virtual LAB - 3 Instruments.dc.html#3a" style="font-size:11.5px">result</a>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;background:var(--vl-ok);flex:none;margin-top:4px"></span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+                <div style="flex:1;padding-bottom:16px;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">17 Jul 15:40</span>
+                  <span style="font-size:13px">ICP-OES batch processed · 14 elements corrected <span class="vlmono" style="color:var(--vl-faint)">B-07</span></span>
+                  <span class="vlb vlb-measured" style="font-size:9px">Measured</span>
+                  <div style="flex:1"></div><a href="Virtual LAB - 3 Instruments.dc.html#3b" style="font-size:11.5px">measurement</a>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;background:var(--color-accent);flex:none;margin-top:4px"></span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+                <div style="flex:1;padding-bottom:16px;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">18 Jul 09:12</span>
+                  <span style="font-size:13px">PHREEQC simulation · confirmed by user, then run <span class="vlmono" style="color:var(--vl-faint)">R-0142</span></span>
+                  <span class="vlb vlb-sim" style="font-size:9px">Simulation</span>
+                  <div style="flex:1"></div><a href="Virtual LAB - 2 Machines.dc.html#2e" style="font-size:11.5px">result</a>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border:1px dashed var(--vl-warn);background:var(--color-bg);flex:none;margin-top:4px"></span></div>
+                <div style="flex:1;display:flex;align-items:center;gap:10px">
+                  <span class="vlmono" style="color:var(--vl-faint);width:88px;flex:none">18 Jul 10:01</span>
+                  <span style="font-size:13px">Validation comparison drafted · R-0142 ↔ B-07</span>
+                  <span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span>
+                  <span style="font-size:11.5px;color:var(--vl-faint)">pH + contact time still needed</span>
+                  <div style="flex:1"></div><a href="#4b" style="font-size:11.5px">comparison</a>
+                </div>
+              </div>
+            </div>
+            <div class="vlnote" style="font-size:11.5px"><span>Every event links to its artifact. The chain project → material → run → result → measurement → comparison is the audit trail a reviewer follows.</span></div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="4e">
+      <div class="dv-olabel"><a class="dv-oid" href="#4e">4e</a><span>Screen 10 · Settings &amp; Diagnostics — safe statuses only, no secrets</span><span class="vlmono" style="color:var(--vl-faint)">1440w</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div style="width:1440px;display:flex;align-items:stretch;background:var(--color-bg)" data-screen-label="10 Settings and Diagnostics">
+        <dc-import name="VL Sidebar" active="settings" hint-size="236px,960px" style="width:236px;flex:none"></dc-import>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--color-divider)">
+            <span class="vlk">Virtual LAB</span><span style="color:var(--vl-faint)">/</span><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">Settings &amp; Diagnostics</span>
+            <div style="flex:1"></div>
+            <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--vl-dim)"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>All systems nominal</span>
+          </div>
+          <div style="padding:20px 26px 28px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:start">
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div class="card blueprint" style="padding:14px 16px;gap:9px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Simulation engines</div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:6px;height:6px;background:var(--vl-ok)"></span><span style="flex:1">PHREEQC available</span><span class="vlmono" style="color:var(--vl-faint)">v3.7.6</span></div>
+                <div style="border-top:1px solid var(--color-divider);padding-top:8px" class="vlk">Thermodynamic databases</div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class="vlmono" style="flex:1">minteq.v4.dat</span><span class="vlb vlb-ready" style="font-size:9px">Loaded</span><span class="vlmono" style="font-size:10px;color:var(--vl-faint)">sha1 9f3a…c21</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class="vlmono" style="flex:1">phreeqc.dat</span><span class="vlb vlb-ready" style="font-size:9px">Loaded</span><span class="vlmono" style="font-size:10px;color:var(--vl-faint)">sha1 41bd…08</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span class="vlmono" style="flex:1">llnl.dat</span><span class="vlb vlb-missing" style="font-size:9px">Not installed</span></div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:9px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">AI assistant</div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:6px;height:6px;background:var(--vl-ok)"></span><span style="flex:1">Assistant available</span><span class="vlb vlb-ready" style="font-size:9px">Yes</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="flex:1">API credential</span><span class="vlb vlb-req" style="font-size:9px">Configured — never displayed</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="flex:1">Role</span><span style="font-size:11.5px;color:var(--vl-dim)">drafting, extraction, planning — never invents data</span></div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div class="card blueprint" style="padding:14px 16px;gap:9px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Server / runtime</div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:6px;height:6px;background:var(--vl-ok)"></span><span style="flex:1">Docker container</span><span class="vlmono" style="color:var(--vl-faint)">running · up 6 d</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:6px;height:6px;background:var(--vl-ok)"></span><span style="flex:1">Streamlit server</span><span class="vlmono" style="color:var(--vl-faint)">healthy</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:6px;height:6px;background:var(--vl-ok)"></span><span style="flex:1">Storage</span><span class="vlmono" style="color:var(--vl-faint)">12% used</span></div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Machine availability</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px 14px;font-size:12px">
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>PHREEQC</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>ICP processor</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-warn)"></span>XRD advisory</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>FTIR / Raman</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>SEM-EDS</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>TGA / DSC</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>Mechanical</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-err)"></span>ML surrogate</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>Literature</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>Sustainability</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>Exp. design</span>
+                  <span style="display:flex;gap:7px;align-items:center"><span style="width:6px;height:6px;background:var(--vl-ok)"></span>Validation</span>
+                </div>
+                <div style="font-size:10.5px;color:var(--vl-faint)">amber = reference data gaps · red = trained model required</div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Model registry</div>
+                <div style="border:1px dashed rgba(231,236,242,.25);padding:12px;text-align:center;font-size:12px;color:var(--vl-dim)">0 trained models registered<br><span style="font-size:11px;color:var(--vl-faint)">ML Surrogate stays disabled until one exists</span></div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div class="card blueprint" style="padding:14px 16px;gap:9px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlk" style="color:var(--color-accent)">Developer mode</span><div style="flex:1"></div><label class="radio" style="font-size:12px"><input type="checkbox"><span class="dot" style="border-radius:0"></span>Off</label></div>
+                <div style="font-size:11.5px;color:var(--vl-faint)">exposes raw engine I/O and timing panels on every machine — read-only, never bypasses confirmation gates</div>
+              </div>
+              <div class="card blueprint" style="padding:14px 16px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlk" style="color:var(--color-accent)">Diagnostics</span><div style="flex:1"></div><a class="btn btn-secondary" style="font-size:11.5px" href="#4e">Run checks</a></div>
+                <div class="vlmono" style="background:#0a1016;border:1px solid var(--color-divider);padding:12px;font-size:10.5px;line-height:1.9;color:#9fb2c4">09:41:02 engine check … <span style="color:var(--vl-ok)">ok</span> (PHREEQC 3.7.6)<br>09:41:02 database checksums … <span style="color:var(--vl-ok)">ok</span> (2 verified)<br>09:41:03 assistant reachability … <span style="color:var(--vl-ok)">ok</span> (credential configured)<br>09:41:03 model registry … <span style="color:var(--vl-warn)">empty</span><br>09:41:04 storage integrity … <span style="color:var(--vl-ok)">ok</span> (last snapshot 08:00)</div>
+                <div style="font-size:10.5px;color:var(--vl-faint)">logs show statuses only — keys, tokens and file paths outside the workspace are never printed</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="4f">
+      <div class="dv-olabel"><a class="dv-oid" href="#4f">4f</a><span>Narrow width · 768 px — sidebar collapses to a top bar, rails stack under main content</span></div>
+      <div style="display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap">
+        <div class="dv-card blueprint" style="width:768px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="background:var(--color-bg)" data-screen-label="Home at 768">
+            <div style="height:50px;display:flex;align-items:center;gap:11px;padding:0 18px;border-bottom:1px solid var(--color-divider)">
+              <span style="display:flex;flex-direction:column;gap:3px;width:16px"><span style="height:1.5px;background:var(--vl-dim)"></span><span style="height:1.5px;background:var(--vl-dim)"></span><span style="height:1.5px;background:var(--vl-dim)"></span></span>
+              <div class="blueprint" style="width:26px;height:26px;display:grid;place-items:center;border-color:rgba(181,217,253,.45)"><span style="font-family:var(--font-heading);font-weight:600;font-size:11px;color:var(--color-accent)">VL</span></div>
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:14px;letter-spacing:.1em">VIRTUAL LAB</span>
+              <div style="flex:1"></div>
+              <span class="vlk">Fly Ash Study</span>
+              <div class="blueprint" style="width:26px;height:26px;display:grid;place-items:center;border-color:rgba(231,236,242,.25)"><span style="font-size:10px;color:var(--vl-dim)">RN</span></div>
+            </div>
+            <div style="padding:16px 18px 22px;display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;align-items:flex-end;gap:10px"><div><div class="vlk">Home</div><h4 style="margin:2px 0 0">Laboratory cockpit</h4></div><div style="flex:1"></div><a class="btn btn-primary" style="font-size:12px" href="#4f">Run a machine</a></div>
+              <div class="vlnote" style="font-size:11.5px"><span><strong>Simulation and prediction are not validation.</strong> Validation requires measured experimental data.</span></div>
+              <div class="card blueprint" style="padding:13px 14px;gap:8px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlk" style="color:var(--color-accent)">Current material</span><div style="flex:1"></div><span class="vlb vlb-user" style="font-size:9px">User provided</span><span class="vlb vlb-demo" style="font-size:9px">Demo</span></div>
+                <div style="display:flex;align-items:baseline;gap:8px"><span style="font-family:var(--font-heading);font-weight:600;font-size:18px">Class C fly ash — Lot 7</span><span class="vlmono" style="color:var(--color-accent);font-size:10.5px">CFA-2026-011</span></div>
+                <div style="font-size:11.5px;color:var(--vl-dim)">9 oxides · Σ 97.7 wt% · confirmed 12 Jul · <span style="color:var(--vl-err)">no XRD pattern</span></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div class="card blueprint" style="padding:13px 14px;gap:7px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div class="vlk" style="color:var(--color-accent)">Next machine</div>
+                  <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.2">Validation &amp; Uncertainty Assistant</div>
+                  <a class="btn btn-primary btn-block" style="font-size:11.5px" href="#4b">Open</a>
+                </div>
+                <div class="card blueprint" style="padding:13px 14px;gap:7px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="display:flex;gap:8px;align-items:center"><span class="vlk" style="color:var(--vl-warn)">Missing inputs</span><span class="vlb vlb-adv" style="font-size:9px">4</span></div>
+                  <div style="font-size:11.5px;color:var(--vl-dim);line-height:1.6">Leachant chemistry · particle size · XRD pattern · contact time</div>
+                  <a href="#4f" style="font-size:11px">Resolve →</a>
+                </div>
+              </div>
+              <div class="card blueprint" style="padding:13px 14px;gap:7px;border-color:color-mix(in srgb,var(--color-accent) 45%,transparent);background:rgba(148,188,227,.05)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="vlk" style="color:var(--color-accent)">Recommended next physical experiment</div>
+                <div style="font-size:12.5px;line-height:1.5">Batch leach · L/S 10 · 24 h · DI water → measure pH + ICP-OES</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dv-card blueprint" style="width:768px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="background:var(--color-bg)" data-screen-label="PHREEQC results at 768">
+            <div style="height:50px;display:flex;align-items:center;gap:11px;padding:0 18px;border-bottom:1px solid var(--color-divider)">
+              <span style="display:flex;flex-direction:column;gap:3px;width:16px"><span style="height:1.5px;background:var(--vl-dim)"></span><span style="height:1.5px;background:var(--vl-dim)"></span><span style="height:1.5px;background:var(--vl-dim)"></span></span>
+              <span class="vlk">Machines / PHREEQC</span>
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:14px">R-0142 · Results</span>
+              <div style="flex:1"></div>
+              <a class="btn btn-secondary" style="font-size:11px" href="#4f">Export</a>
+            </div>
+            <div style="padding:16px 18px 22px;display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="vlb vlb-sim" style="font-size:9px">PHREEQC simulation / model estimate</span><span class="vlb vlb-demo" style="font-size:9px">Synthetic demo</span><span class="vlb vlb-req" style="font-size:9px">No measured comparison</span></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div class="card blueprint" style="padding:13px 14px;gap:4px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div class="vlk" style="color:var(--color-accent)">Predicted pH</div>
+                  <span class="vlmono" style="font-size:30px;color:#eaf2fa">12.3</span>
+                  <span style="font-size:10px;color:var(--vl-faint)">model estimate — not a measurement</span>
+                </div>
+                <div class="card blueprint" style="padding:13px 14px;gap:5px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div class="vlk" style="color:var(--color-accent)">Phases to check by XRD</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:5px"><span class="vlchip">Ettringite</span><span class="vlchip">Calcite</span><span class="vlchip">Portlandite</span></div>
+                  <span style="font-size:10px;color:var(--vl-faint)">saturation ≠ XRD validation</span>
+                </div>
+              </div>
+              <table class="table" style="font-size:12px">
+                <thead><tr><th>Element</th><th style="text-align:right">mol/L</th><th style="text-align:right">mg/L</th></tr></thead>
+                <tbody>
+                  <tr><td>Ca</td><td class="vlmono" style="text-align:right">4.2e−3</td><td class="vlmono" style="text-align:right">168</td></tr>
+                  <tr><td>S (SO₄)</td><td class="vlmono" style="text-align:right">2.0e−3</td><td class="vlmono" style="text-align:right">64</td></tr>
+                  <tr><td>Al</td><td class="vlmono" style="text-align:right">1.1e−4</td><td class="vlmono" style="text-align:right">3.0</td></tr>
+                </tbody>
+              </table>
+              <div class="vlnote" style="font-size:11.5px"><span><strong>How to verify:</strong> measure pH + solution chemistry by ICP under matching conditions.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:var(--vl-faint);max-width:1100px;line-height:1.6">Responsive rules (full spec in <a class="dv-oid" href="Virtual LAB - 5 Demo and Handoff.dc.html">Part 5</a>): below ~1100 px the sidebar collapses behind a menu button and the right rail stacks under the main column; below ~820 px stat grids drop to two columns and tables shed tertiary columns; badges never wrap mid-label. Maps directly to Streamlit's collapsed sidebar + single-column reflow.</div>
+    </div>
+
+  </div>
+  <p class="dv-next">Finale in <a class="dv-oid" href="Virtual LAB - 5 Demo and Handoff.dc.html">Part 5 — professor demo flow, component inventory, handoff spec</a>. Reference <a class="dv-oid" href="#4a">4a</a>–<a class="dv-oid" href="#4f">4f</a> in chat.</p>
+</section>
+</x-dc>
+</body>
+</html>

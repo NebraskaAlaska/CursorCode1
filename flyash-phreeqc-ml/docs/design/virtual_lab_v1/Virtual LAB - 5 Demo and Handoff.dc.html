@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/styles.css">
+<script src="_ds/industry-201803a9-c955-4ec0-9edb-6324803d38e5/_ds_bundle.js"></script>
+<style>
+:root{--color-bg:#0d141b;--color-surface:#141e29;--color-text:#e7ecf2;--color-accent:#94bce3;--color-divider:color-mix(in srgb,#b5d9fd 20%,transparent);--color-accent-100:#1f3145;--color-accent-200:#2c455d;--color-accent-600:#b5d9fd;--color-accent-700:#d6ebff;--color-accent-800:#d6ebff;--color-accent-900:#eef6ff;--color-accent-2-100:#22364b;--color-accent-2-800:#d0e6fa;--color-neutral-100:#1a232d;--color-neutral-200:#232e3a;--color-neutral-300:#2e3a47;--color-neutral-800:#cfd6de;--color-neutral-900:#eef1f5;--shadow-sm:0 1px 2px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.45);--shadow-lg:0 18px 44px rgba(0,0,0,.55);--vl-ok:#8fc7a2;--vl-ok-bg:rgba(126,192,153,.12);--vl-warn:#d8b46e;--vl-warn-bg:rgba(216,180,110,.10);--vl-err:#d98d80;--vl-err-bg:rgba(217,141,128,.10);--vl-ml:#b3a6dd;--vl-ml-bg:rgba(179,166,221,.12);--vl-dim:rgba(231,236,242,.60);--vl-faint:rgba(231,236,242,.38);--vl-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+body{margin:0;background:#151b23;color:var(--color-text);font-family:var(--font-body)}
+a{color:var(--color-accent)}a:hover{color:var(--color-accent-600)}
+.vlk{font-family:var(--font-heading);font-weight:600;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--vl-faint)}
+.vlmono{font-family:var(--vl-mono);font-size:11.5px}
+.vlb{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.09em;text-transform:uppercase;padding:2px 8px;border:1px solid transparent;white-space:nowrap}
+.vlb-user{color:var(--vl-dim);border-color:rgba(231,236,242,.28)}
+.vlb-demo{color:var(--vl-warn);border-color:var(--vl-warn);border-style:dashed}
+.vlb-lit{color:#c9d9ea;border-color:rgba(201,217,234,.42)}
+.vlb-measured{color:var(--vl-ok);border-color:color-mix(in srgb,var(--vl-ok) 45%,transparent);background:var(--vl-ok-bg)}
+.vlb-sim{color:var(--color-accent);border-color:color-mix(in srgb,var(--color-accent) 45%,transparent);background:rgba(148,188,227,.10)}
+.vlb-ml{color:var(--vl-ml);border-color:color-mix(in srgb,var(--vl-ml) 45%,transparent);background:var(--vl-ml-bg)}
+.vlb-adv{color:var(--vl-warn);border-color:color-mix(in srgb,var(--vl-warn) 45%,transparent);background:var(--vl-warn-bg)}
+.vlb-valid{color:#0d141b;border-color:var(--vl-ok);background:var(--vl-ok)}
+.vlb-missing{color:var(--vl-err);border-color:color-mix(in srgb,var(--vl-err) 55%,transparent);border-style:dashed}
+.vlb-err{color:var(--vl-err);border-color:color-mix(in srgb,var(--vl-err) 45%,transparent);background:var(--vl-err-bg)}
+.vlb-ready{color:var(--vl-ok);border-color:color-mix(in srgb,var(--vl-ok) 45%,transparent)}
+.vlb-activeb{color:var(--color-accent);border-color:color-mix(in srgb,var(--color-accent) 45%,transparent)}
+.vlb-req{color:var(--vl-dim);border-color:rgba(231,236,242,.25);background:rgba(231,236,242,.05)}
+.vlwarn{display:flex;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb,var(--vl-warn) 40%,transparent);background:var(--vl-warn-bg);padding:9px 12px;font-size:12.5px;line-height:1.45;color:#e8dcbf}
+.vlnote{display:flex;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb,var(--color-accent) 35%,transparent);background:rgba(148,188,227,.07);padding:9px 12px;font-size:12.5px;line-height:1.45;color:#cfe0f1}
+.vlchip{display:inline-flex;font-size:10.5px;border:1px solid rgba(231,236,242,.2);padding:1px 7px;color:var(--vl-dim);white-space:nowrap}
+.dv-turn{padding:36px 44px 30px;border-bottom:1px solid rgba(255,255,255,.07);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 18px}
+.dv-tid{font:600 10px var(--vl-mono);padding:3px 7px;background:#e7ecf2;color:#0d141b;text-decoration:none}
+.dv-tname{font:600 14px/1.2 var(--font-body);color:#e7ecf2;letter-spacing:.02em}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;max-width:100%;display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px var(--vl-mono);padding:3px 7px;background:rgba(148,188,227,.14);color:#94bce3;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:10px;font:400 12px/1.3 var(--font-body);color:rgba(231,236,242,.55)}
+.dv-card{max-width:100%;background:var(--color-bg);border:1px solid rgba(181,217,253,.16);box-shadow:var(--shadow-lg);overflow:visible}
+.dv-opt:target .dv-oid{background:#94bce3;color:#0d141b}
+.dv-next{margin:22px 0 0;font:12px/1.5 var(--font-body);color:rgba(231,236,242,.45)}
+.hs{border-top:1px solid var(--color-divider);padding-top:18px;margin-top:22px}
+.hs h5{margin:0 0 8px;letter-spacing:.05em}
+.hs .table{font-size:12px}
+</style>
+</helmet>
+
+<div style="padding:36px 44px 8px;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+  <h2 style="margin:0;letter-spacing:.06em">VIRTUAL LAB — PART 5</h2>
+  <span style="font-size:12.5px;color:var(--vl-dim)">Professor demo flow · reusable component inventory · Streamlit handoff specification</span>
+  <span style="flex:1"></span>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 1 Core Screens.dc.html">Part 1</a>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 2 Machines.dc.html">Part 2</a>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 3 Instruments.dc.html">Part 3</a>
+  <a class="vlb vlb-req" style="text-decoration:none" href="Virtual LAB - 4 Analysis and System.dc.html">← Part 4</a>
+</div>
+
+<section class="dv-turn" id="t5">
+  <div class="dv-thd"><a class="dv-tid" href="#t5">5</a><span class="dv-tname">Demo flow · components · handoff</span></div>
+  <div class="dv-opts">
+
+    <div class="dv-opt" id="5a" style="width:840px">
+      <div class="dv-olabel"><a class="dv-oid" href="#5a">5a</a><span>Professor demo flow — Class C Fly Ash Leaching Study, end to end</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div style="padding:22px 24px;display:flex;flex-direction:column;gap:0;background:var(--color-bg)" data-screen-label="Professor demo flow">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <span style="font-family:var(--font-heading);font-weight:600;font-size:19px">Screen and estimate first. Verify with targeted experiments.</span>
+            <div style="flex:1"></div><span style="font-size:11px;color:var(--vl-faint)">~8 min walkthrough</span>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid rgba(231,236,242,.35)">1</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Open the project</div><div style="font-size:11.5px;color:var(--vl-dim)">Class C Fly Ash Leaching Study — description, materials, prior activity</div></div>
+              <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1b">1b</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid rgba(231,236,242,.35)">2</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Review the material card</div><div style="font-size:11.5px;color:var(--vl-dim)">Composition confirmed; XRD pattern visibly missing — nothing auto-filled</div></div>
+              <span class="vlb vlb-user" style="font-size:9px">User provided</span><span class="vlb vlb-demo" style="font-size:9px">Synthetic demo</span>
+              <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1c">1c</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--color-accent);color:var(--color-accent)">3</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Configure PHREEQC</div><div style="font-size:11.5px;color:var(--vl-dim)">DI water · total-release · L/S 10 · 25 °C · minteq.v4</div></div>
+              <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2c">2c</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--color-accent);color:var(--color-accent)">4</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Preview the generated input</div><div style="font-size:11.5px;color:var(--vl-dim)">Read-only PHREEQC file · nothing has executed</div></div>
+              <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2d">2d</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--color-accent);color:var(--color-accent)">5</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Explicit confirmation gate</div><div style="font-size:11.5px;color:var(--vl-dim)">"Review and confirm simulation assumptions" — Run enables only after the checkbox</div></div>
+              <span class="vlb vlb-activeb" style="font-size:9px">Gate</span>
+              <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2d">2d</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--color-accent);color:var(--color-accent)">6</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Simulation results · R-0142</div><div style="font-size:11.5px;color:var(--vl-dim)">Predicted pH, concentrations, saturation indices — every value labeled</div></div>
+              <span class="vlb vlb-sim" style="font-size:9px">Simulation / model estimate</span>
+              <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2e">2e</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--vl-warn);color:var(--vl-warn)">7</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">XRD phases to check</div><div style="font-size:11.5px;color:var(--vl-dim)">Checklist from SI &gt; 0 — "saturation is not XRD validation"</div></div>
+              <span class="vlb vlb-adv" style="font-size:9px">Advisory</span>
+              <a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html#3a">3a</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;background:var(--vl-ok);color:#0d141b">8</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Process measured ICP batch B-07</div><div style="font-size:11.5px;color:var(--vl-dim)">Blanks, dilution, QC flags — the platform processes, never fabricates</div></div>
+              <span class="vlb vlb-measured" style="font-size:9px">Measured lab data</span>
+              <a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html#3b">3b</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid rgba(231,236,242,.35)">9</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Measured vs simulated</div><div style="font-size:11.5px;color:var(--vl-dim)">Variable mapping, residuals, % error against project criteria</div></div>
+              <a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4b">4b</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--vl-warn);color:var(--vl-warn)">10</span><span style="width:1px;flex:1;background:var(--color-divider)"></span></div>
+            <div style="flex:1;padding-bottom:12px;display:flex;align-items:center;gap:10px;border-bottom:1px dashed rgba(231,236,242,.08);margin-bottom:12px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Validation verdict</div><div style="font-size:11.5px;color:var(--vl-dim)">Honest outcome: INSUFFICIENT DATA — pH unmeasured, Cr outside criteria. The system shows exactly what VALIDATED requires</div></div>
+              <span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span>
+              <a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4b">4b</a>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px"><div style="display:flex;flex-direction:column;align-items:center;width:26px;flex:none"><span class="vlmono" style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--color-accent);color:var(--color-accent)">11</span></div>
+            <div style="flex:1;display:flex;align-items:center;gap:10px">
+              <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Recommended next physical experiment</div><div style="font-size:11.5px;color:var(--vl-dim)">Repeat batch leach with recorded time + pH at sampling — the smallest experiment that closes the loop</div></div>
+              <a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html#3j">3j</a>
+            </div>
+          </div>
+          <div class="vlnote" style="margin-top:16px;font-size:11.5px"><span>The four kinds of data stay visually distinct the whole way: <span class="vlb vlb-demo" style="font-size:9px">Synthetic demo</span> <span class="vlb vlb-sim" style="font-size:9px">Simulation</span> <span class="vlb vlb-measured" style="font-size:9px">Measured</span> <span class="vlb vlb-valid" style="font-size:9px">Validated</span> — and the demo deliberately ends short of VALIDATED, because the data doesn't earn it yet.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="5b" style="width:760px">
+      <div class="dv-olabel"><a class="dv-oid" href="#5b">5b</a><span>Reusable components — states rendered live</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div style="padding:22px 24px;display:flex;flex-direction:column;gap:14px;background:var(--color-bg)" data-screen-label="Component inventory">
+          <div>
+            <div class="vlk" style="color:var(--color-accent);margin-bottom:8px">Data / epistemic labels</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="vlb vlb-user">User provided</span><span class="vlb vlb-demo">Synthetic demo</span><span class="vlb vlb-lit">Literature</span><span class="vlb vlb-measured">Measured</span><span class="vlb vlb-sim">Simulation / model estimate</span><span class="vlb vlb-ml">ML prediction</span><span class="vlb vlb-adv">Advisory interpretation</span><span class="vlb vlb-valid">Validated against measured data</span><span class="vlb vlb-missing">Missing</span></div>
+          </div>
+          <div>
+            <div class="vlk" style="color:var(--color-accent);margin-bottom:8px">Machine maturity badges</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="vlb vlb-ready">Ready</span><span class="vlb vlb-activeb">Active</span><span class="vlb vlb-adv">Advisory</span><span class="vlb vlb-req">Measured data required</span><span class="vlb vlb-req">Trained model required</span><span class="vlb vlb-req">Reference data required</span></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Warning banner</div>
+              <div class="vlwarn"><span style="flex:none;font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.08em;border:1px solid currentColor;padding:1px 5px;margin-top:1px">WARN</span><span>Composition not normalized (Σ 97.7 wt%).</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Science note / verification panel</div>
+              <div class="vlnote"><span style="flex:none;font-family:var(--font-heading);font-weight:600;font-size:10px;letter-spacing:.08em;border:1px solid currentColor;padding:1px 5px;margin-top:1px">VERIFY</span><span>Measure pH + ICP under matching conditions.</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Missing-input row</div>
+              <div style="border:1px solid var(--color-divider);padding:10px 12px;display:flex;align-items:center;gap:9px;font-size:12.5px"><span style="width:7px;height:7px;border:1px dashed var(--vl-warn);flex:none"></span><span style="flex:1">Particle size distribution<br><span style="font-size:11px;color:var(--vl-faint)">affects release assumption</span></span><a href="#5b" style="font-size:11.5px">Provide</a></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Provenance panel</div>
+              <div style="border:1px solid var(--color-divider);padding:10px 12px" class="vlmono"><span style="font-size:10.5px;color:var(--vl-dim);line-height:1.8;display:block">engine&nbsp;&nbsp;PHREEQC 3.7.6<br>database minteq.v4 · sha1 9f3a…c21<br>run&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;18 Jul 09:12 · R. Novak</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Validation status chip set</div>
+              <div style="border:1px solid var(--color-divider);padding:10px 12px;display:flex;gap:6px;flex-wrap:wrap"><span class="vlb vlb-req" style="font-size:9px">No measured data</span><span class="vlb vlb-activeb" style="font-size:9px">Comparison available</span><span class="vlb vlb-adv" style="font-size:9px">Insufficient data</span><span class="vlb vlb-valid" style="font-size:9px">Validated</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Next-experiment card</div>
+              <div class="card blueprint" style="padding:11px 12px;gap:5px;border-color:color-mix(in srgb,var(--color-accent) 45%,transparent);background:rgba(148,188,227,.05)"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i><div class="vlk" style="color:var(--color-accent)">Recommended next experiment</div><div style="font-size:12px">Batch leach · L/S 10 · 24 h → pH + ICP</div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Loading state — staged, honest</div>
+              <div style="border:1px solid var(--color-divider);padding:10px 12px;display:flex;flex-direction:column;gap:7px">
+                <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--vl-dim)"><span style="width:6px;height:6px;background:var(--color-accent);flex:none"></span>Running PHREEQC · writing selected output…</div>
+                <div style="height:3px;background:rgba(231,236,242,.1)"><div style="height:3px;width:64%;background:var(--color-accent)"></div></div>
+                <div class="vlmono" style="font-size:10px;color:var(--vl-faint)">stage 2 of 3 · elapsed 1.8 s</div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Empty state — never fake content</div>
+              <div style="border:1px dashed rgba(231,236,242,.28);padding:14px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center">
+                <span class="vlb vlb-req" style="font-size:9px">Trained model required</span>
+                <span style="font-size:11.5px;color:var(--vl-dim)">No prediction is shown without a model.</span>
+                <a href="#5b" style="font-size:11px">Register a model</a>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--vl-err)">Error state — state preserved</div>
+              <div style="border:1px solid color-mix(in srgb,var(--vl-err) 50%,transparent);background:var(--vl-err-bg);padding:11px 12px;display:flex;flex-direction:column;gap:5px">
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlb vlb-err" style="font-size:9px">Engine unavailable</span><span style="font-size:12px;color:#eed1c9">PHREEQC did not respond.</span></div>
+                <div style="font-size:11px;color:var(--vl-dim)">Your configuration is saved — nothing was run. Retry, or check Settings → Diagnostics.</div>
+                <div style="display:flex;gap:8px"><a class="btn btn-secondary" style="font-size:11px" href="#5b">Retry</a><a class="btn btn-ghost" style="font-size:11px" href="Virtual LAB - 4 Analysis and System.dc.html#4e">Diagnostics</a></div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="vlk" style="color:var(--color-accent)">Result card (compact)</div>
+              <div class="card blueprint" style="padding:11px 12px;gap:5px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;gap:8px"><span class="vlmono" style="color:var(--color-accent)">R-0142</span><span style="font-size:12.5px;flex:1">Leachate speciation</span><span class="vlb vlb-sim" style="font-size:9px">Simulation</span></div>
+                <div style="font-size:10.5px;color:var(--vl-faint)">PHREEQC · CFA-2026-011 · 18 Jul 09:12 · 2 warnings</div>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--vl-faint)">Navigation, machine card and material card are shown in situ: <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1a">1a</a> <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2a">2a</a> <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1c">1c</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dv-opt" id="5c" style="width:1160px">
+      <div class="dv-olabel"><a class="dv-oid" href="#5c">5c</a><span>Handoff specification — for the Streamlit implementation agent</span></div>
+      <div class="dv-card blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div style="padding:26px 30px 30px;background:var(--color-bg);font-size:13px;line-height:1.6" data-screen-label="Handoff specification">
+          <h3 style="margin:0">Virtual LAB — handoff specification</h3>
+          <div style="font-size:12px;color:var(--vl-dim)">Target: existing Python Streamlit app with working scientific backends. This spec defines presentation only — no scientific logic. Values in the mockups are SYNTHETIC DEMO placeholders; bind real backend outputs 1:1.</div>
+
+          <div class="hs"><h5>1 · Navigation</h5>
+          <div style="color:var(--vl-dim)">Persistent left sidebar, 236 px, order fixed: Home · Projects · Material Workspace · Machines · Results · Validation &amp; Uncertainty · Evidence Library · Run History · Settings &amp; Diagnostics — grouped under kickers OVERVIEW / RESEARCH / RIGOR / SYSTEM. Footer: current project, material ID, engine + assistant status dots, version. Active item: 2 px accent left rule + 9% accent tint. Individual scientific machines are never top-level nav — they live inside Machines. Streamlit: <span class="vlmono">st.sidebar</span> with a custom option list (or streamlit-option-menu); status footer via markdown; Lucide icons at stroke 1.5.</div></div>
+
+          <div class="hs"><h5>2 · Screen inventory</h5>
+          <table class="table"><thead><tr><th>#</th><th>Screen</th><th>Purpose</th><th>Mockup</th></tr></thead><tbody>
+            <tr><td>01</td><td>Home cockpit</td><td>state of research + next best action</td><td><a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1a">1a</a> <a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4f">4f</a></td></tr>
+            <tr><td>02</td><td>Projects</td><td>create/open, per-project counts</td><td><a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1b">1b</a></td></tr>
+            <tr><td>03</td><td>Material Workspace</td><td>single source of truth per material</td><td><a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1c">1c</a></td></tr>
+            <tr><td>04</td><td>Machines gallery</td><td>12 machines, maturity explicit</td><td><a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2a">2a</a></td></tr>
+            <tr><td>05</td><td>Machine workspace</td><td>shared frame Z1–Z11, all machines</td><td><a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2b">2b</a>, PHREEQC <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2c">2c</a>–<a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html#2e">2e</a>, others <a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html#3a">3a</a>–<a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html#3j">3j</a></td></tr>
+            <tr><td>06</td><td>Results</td><td>unified filterable history</td><td><a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4a">4a</a></td></tr>
+            <tr><td>07</td><td>Validation &amp; Uncertainty</td><td>sim/pred vs measured, verdicts</td><td><a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4b">4b</a></td></tr>
+            <tr><td>08</td><td>Evidence Library</td><td>searchable, provenance-first</td><td><a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4c">4c</a></td></tr>
+            <tr><td>09</td><td>Run History</td><td>audit timeline of artifacts</td><td><a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4d">4d</a></td></tr>
+            <tr><td>10</td><td>Settings &amp; Diagnostics</td><td>safe statuses, never secrets</td><td><a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4e">4e</a></td></tr>
+          </tbody></table></div>
+
+          <div class="hs"><h5>3 · Component inventory</h5>
+          <div style="color:var(--vl-dim)">Sidebar nav · top context bar · machine card · material card · result card · epistemic label · maturity badge · warning banner · science note · verification panel · missing-inputs panel · provenance panel · validation chip set · next-experiment card · stepper · mode tabs · timeline row · evidence card · stat cell · loading / empty / error states (<a class="dv-oid" href="#5b">5b</a>). Implement each once as a Python render helper (e.g. <span class="vlmono">ui.badge(kind)</span>, <span class="vlmono">ui.card(...)</span>) emitting HTML via <span class="vlmono">st.markdown(unsafe_allow_html=True)</span>, backed by one injected CSS block.</div></div>
+
+          <div class="hs"><h5>4 · Color tokens (dark lab theme)</h5>
+          <table class="table"><thead><tr><th>Token</th><th>Value</th><th>Role</th></tr></thead><tbody>
+            <tr><td class="vlmono">--vl-bg</td><td class="vlmono">#0d141b</td><td>app ground</td></tr>
+            <tr><td class="vlmono">--vl-panel</td><td class="vlmono">#101923</td><td>sidebar / code blocks (#0a1016)</td></tr>
+            <tr><td class="vlmono">--vl-surface</td><td class="vlmono">#141e29</td><td>inputs</td></tr>
+            <tr><td class="vlmono">--vl-ink</td><td class="vlmono">#e7ecf2</td><td>primary text</td></tr>
+            <tr><td class="vlmono">--vl-dim / --vl-faint</td><td class="vlmono">ink @ 60% / 38%</td><td>secondary / tertiary text</td></tr>
+            <tr><td class="vlmono">--vl-accent</td><td class="vlmono">#94bce3</td><td>steel blue — actions, simulation, active</td></tr>
+            <tr><td class="vlmono">--vl-line</td><td class="vlmono">#b5d9fd @ 20%</td><td>hairlines, card borders</td></tr>
+            <tr><td class="vlmono">--vl-ok</td><td class="vlmono">#8fc7a2</td><td>measured, validated, healthy</td></tr>
+            <tr><td class="vlmono">--vl-warn</td><td class="vlmono">#d8b46e</td><td>advisory, demo, missing-input</td></tr>
+            <tr><td class="vlmono">--vl-err</td><td class="vlmono">#d98d80</td><td>errors, missing data, out of criteria</td></tr>
+            <tr><td class="vlmono">--vl-ml</td><td class="vlmono">#b3a6dd</td><td>ML prediction only</td></tr>
+            <tr><td class="vlmono">--vl-lit</td><td class="vlmono">#c9d9ea</td><td>literature evidence only</td></tr>
+          </tbody></table>
+          <div style="font-size:11.5px;color:var(--vl-faint);margin-top:6px">Tint fills = color @ 10–12% alpha; borders = color @ 40–55%. Light "projector mode": revert to the Industry base tokens (bg #f2f2f3, text #1d1f20, accent #5980a6) — semantics unchanged. Status colors are functional only; no decorative color beyond steel blue.</div></div>
+
+          <div class="hs"><h5>5 · Typography</h5>
+          <table class="table"><thead><tr><th>Use</th><th>Font</th><th>Size / weight</th></tr></thead><tbody>
+            <tr><td>Screen titles</td><td>Barlow Condensed</td><td>25 px / 600</td></tr>
+            <tr><td>Card titles</td><td>Barlow Condensed</td><td>16–22 px / 600</td></tr>
+            <tr><td>Kickers</td><td>Barlow Condensed, caps, +0.15em</td><td>10.5 px / 600</td></tr>
+            <tr><td>Badges</td><td>Barlow Condensed, caps, +0.09em</td><td>10 px / 600</td></tr>
+            <tr><td>Body / rows</td><td>Barlow</td><td>12.5–13.5 px / 400–500</td></tr>
+            <tr><td>Captions</td><td>Barlow</td><td>11 px @ 38–60% ink</td></tr>
+            <tr><td>IDs, values, code</td><td>ui-monospace stack</td><td>10.5–13 px; hero stats 30–44 px</td></tr>
+          </tbody></table>
+          <div style="font-size:11.5px;color:var(--vl-faint);margin-top:6px">Google Fonts: Barlow 400/500/700 + Barlow Condensed 400/600. Numbers are always mono and right-aligned in tables.</div></div>
+
+          <div class="hs"><h5>6 · Spacing</h5>
+          <div style="color:var(--vl-dim)">Base grid ≈ 4 px: 4 / 8 / 12 / 16 / 20 / 28. Card padding 14–16 px · grid gaps 16 px · page padding 22–28 px · top bar 52 px · sidebar 236 px · right rail 340–380 px. Section rhythm inside cards: 8–10 px. Never center whole pages; content is left-anchored on a 12-col, 1440 px reference frame.</div></div>
+
+          <div class="hs"><h5>7 · Cards</h5>
+          <div style="color:var(--vl-dim)">Blueprint grammar: transparent background, 1 px hairline border, <strong style="color:#e7ecf2">square corners (radius 0)</strong>, four "+" registration marks at the corners (11 px, ink @ 55%). Emphasis variants: accent border (recommended actions), amber border (warnings), green border (measured), red (errors); highlight cards add a 5% accent tint. Nested sub-panels: plain hairline, no marks. Streamlit: bordered containers + injected CSS; marks via ::before/::after or an SVG corner sprite on the container class.</div></div>
+
+          <div class="hs"><h5>8 · Status badges</h5>
+          <div style="color:var(--vl-dim)">Three families, one shape (square, condensed caps, 2×8 px padding): <strong style="color:#e7ecf2">Epistemic</strong> — outline = origin (USER PROVIDED, LITERATURE; SYNTHETIC DEMO is dashed amber), tint = machine output (MEASURED green, SIMULATION steel, ML PREDICTION violet, ADVISORY amber), solid green = VALIDATED AGAINST MEASURED DATA (the only filled badge); MISSING is dashed red. <strong style="color:#e7ecf2">Maturity</strong> — READY / ACTIVE outlined green/steel; ADVISORY amber tint; *_REQUIRED neutral tint. <strong style="color:#e7ecf2">QC</strong> — BDL neutral, blank-ratio amber, within/outside criteria green/red. A value without its badge is a bug.</div></div>
+
+          <div class="hs"><h5>9 · Buttons</h5>
+          <div style="color:var(--vl-dim)">Primary: accent fill, dark text, square — one per view, reserved for the main forward action (Run, Open machine). Secondary: hairline outline. Ghost: accent text only. Sizes 12–13 px, padding ~6×14. Disabled = 45% opacity — Run is <em>always</em> rendered disabled until its confirmation checkbox is checked. Focus: 2 px accent outline, offset 2. Hover: primary lightens one ramp step; secondary gets 7% ink tint.</div></div>
+
+          <div class="hs"><h5>10 · Forms</h5>
+          <div style="color:var(--vl-dim)">Inputs/selects: surface fill #141e29, hairline border, square, 36 px min-height, 14 px text; labels 12 px @ 70% ink above. Radio/checkbox: square 16 px marks (dot radius 0). Segmented control for exclusive filters. Unconfirmed defaults carry an inline amber note ("default assumed — confirm"). Units render beside the field, never inside the value. Streamlit: native widgets restyled via CSS; the confirmation gate is <span class="vlmono">st.checkbox</span> controlling the Run button's disabled prop.</div></div>
+
+          <div class="hs"><h5>11 · Tables</h5>
+          <div style="color:var(--vl-dim)">Headers: 11 px caps @ 60% ink, hairline underline. Rows: 12–12.5 px, hairline @ 8% between, hover 4% ink tint. Numbers mono, right-aligned; units in a dim column or the header, never appended to values. QC / verdict chips inline in the last column. BDL rendered as "&lt; DL", never 0. Streamlit: <span class="vlmono">st.dataframe</span> column_config for plain data; HTML tables for chip columns.</div></div>
+
+          <div class="hs"><h5>12 · Warning patterns</h5>
+          <div style="color:var(--vl-dim)">Amber panel (border 40%, fill 10%, text #e8dcbf) = scientific caution: unconfirmed defaults, low replicates, database coverage, non-normalized sums. Steel panel = method notes and HOW-TO-VERIFY. Red is reserved for errors, missing data and out-of-criteria verdicts. Warnings never block; gates block. Every machine result repeats its warnings in the Results feed row.</div></div>
+
+          <div class="hs"><h5>13 · Empty states</h5>
+          <div style="color:var(--vl-dim)">Dashed hairline panel + status badge + one-line reason + one action. The reason names the missing prerequisite (TRAINED MODEL REQUIRED, "No measured XRD pattern"). Never render sample/fake content in an empty slot; never hide the section — absence is information.</div></div>
+
+          <div class="hs"><h5>14 · Error states</h5>
+          <div style="color:var(--vl-dim)">Red hairline panel: what failed (plain language) + what is preserved ("configuration saved — nothing was run") + Retry + Diagnostics link. Engine unavailability also downgrades the machine's card in the gallery (dot in Settings matrix). Errors never fabricate partial results.</div></div>
+
+          <div class="hs"><h5>15 · Loading states</h5>
+          <div style="color:var(--vl-dim)">Staged and honest: named stage ("writing selected output…"), thin determinate bar when stages are known, mono elapsed time. Skeletons only for layout-known fetches (card outlines at 10% ink). No indeterminate spinners for engine runs. Streamlit: <span class="vlmono">st.status</span> with staged updates.</div></div>
+
+          <div class="hs"><h5>16 · Responsive rules</h5>
+          <div style="color:var(--vl-dim)">≥1280: sidebar + main + right rail. 1100–1280: rail narrows to 300 px. &lt;1100: sidebar collapses behind menu button (top bar appears); rail stacks under main. &lt;820: stat grids 2-up → 1-up; tables shed tertiary columns (keep value + unit + QC); stepper compresses to numbers. Badges never truncate mid-label — wrap whole. Reference frames: 1440 (<a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1a">1a</a>) and 768 (<a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4f">4f</a>). In Streamlit this is the built-in sidebar collapse + column reflow.</div></div>
+
+          <div class="hs"><h5>17 · Interaction behavior</h5>
+          <div style="color:var(--vl-dim)">· No machine executes automatically — configure → preview → review assumptions → explicit confirmation → run, always.<br>
+          · Run buttons stay visibly disabled until confirmation; the gate text is "Review and confirm simulation assumptions."<br>
+          · Every displayed value carries its epistemic badge; every result panel shows assumptions, warnings, provenance, validation status, HOW TO VERIFY, and a recommended next experiment.<br>
+          · Missing inputs are listed, linked and blocking where scientific — never silently defaulted (defaults that do exist are marked "assumed — confirm").<br>
+          · VALIDATED appears only from the Validation machine after measured data meets criteria; simulation, ML and literature can never produce it.<br>
+          · Artifacts cross-link: run → result → measurement → comparison → next experiment (see Run History <a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html#4d">4d</a>).<br>
+          · Hovers: rows 4% tint, buttons one ramp step; keyboard focus 2 px accent ring; ::selection accent @ 30%.</div></div>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <p class="dv-next">Full set: <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html">Part 1</a> · <a class="dv-oid" href="Virtual LAB - 2 Machines.dc.html">Part 2</a> · <a class="dv-oid" href="Virtual LAB - 3 Instruments.dc.html">Part 3</a> · <a class="dv-oid" href="Virtual LAB - 4 Analysis and System.dc.html">Part 4</a> · this file. Try next: "make a light projector-mode variant of <a class="dv-oid" href="Virtual LAB - 1 Core Screens.dc.html#1a">1a</a>" · "expand the ML machine into a full screen with a registered model".</p>
+</section>
+</x-dc>
+</body>
+</html>
