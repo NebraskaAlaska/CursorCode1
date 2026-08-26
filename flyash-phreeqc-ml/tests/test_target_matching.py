@@ -9,6 +9,8 @@ spec landing in run provenance. One AppTest renders the Simulate Step-10 section
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -293,7 +295,7 @@ def test_simulate_tab_renders_target_matching_section(monkeypatch, tmp_path):
     from flyash_phreeqc_ml import config
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
 
-    at = AppTest.from_file("app.py", default_timeout=120).run()
+    at = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=120).run()
     assert not at.exception
     # The Simulate workflow lives in the Workspace section (the assistant is the default).
     at.session_state["nav_section"] = "Workspace"

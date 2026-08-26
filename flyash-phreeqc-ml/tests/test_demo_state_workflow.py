@@ -182,7 +182,7 @@ def test_phreeqc_env_ready_in_settings_and_assistant_ui(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "PHREEQC_EXE_PATH", str(exe))
     monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", str(db))
 
-    at = AppTest.from_file("app.py", default_timeout=120).run()
+    at = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=120).run()
     _goto(at, "Settings")
     assert _no_exc(at)
     assert "configured and ready" in _text(at)               # the shared availability hint
@@ -359,7 +359,7 @@ def test_result_visible_in_assistant_and_results(monkeypatch, tmp_path):
         element_totals_mM={"Ca": 5.0, "Si": 2.0})
     key = assistant_tab._state_key(None)
 
-    at = AppTest.from_file("app.py", default_timeout=120).run()
+    at = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=120).run()
     at.session_state[key] = state
 
     _goto(at, "Assistant")
@@ -450,7 +450,7 @@ def test_chat_composition_autofills_advanced_details_in_ui(monkeypatch, tmp_path
     from ui import assistant_tab
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
 
-    at = AppTest.from_file("app.py", default_timeout=120).run()
+    at = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=120).run()
     _goto(at, "Assistant")
     assert _no_exc(at)
 

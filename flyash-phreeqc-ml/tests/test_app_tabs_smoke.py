@@ -11,6 +11,8 @@ section renders, in the no-run and populated-run states.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -19,7 +21,7 @@ from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
-APP = "app.py"
+APP = Path(__file__).resolve().parents[1] / "app.py"
 SECTIONS = ["Assistant", "Workspace", "Results", "Data & Validation", "Projects",
             "Evidence Library", "Prediction Models", "Engine Library", "Digital Lab", "Settings"]
 DATA_SUBTABS = ["Import", "Validate", "Match", "Compare"]

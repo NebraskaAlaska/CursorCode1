@@ -15,6 +15,8 @@ No real AI call is made (the orchestrator or the AI client is mocked).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import types
 
 import pytest
@@ -24,7 +26,7 @@ from flyash_phreeqc_ml.ai import config as ai_config
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
-APP = "app.py"
+APP = Path(__file__).resolve().parents[1] / "app.py"
 PERSIST_KEY = "ai_live_enabled"            # the plain key the Assistant reads (survives reruns)
 WIDGET_KEY = "ai_live_enabled__toggle"     # the Settings toggle widget's own key
 SECRET = "sk-ant-TESTKEY-not-real-do-not-leak-0001"
