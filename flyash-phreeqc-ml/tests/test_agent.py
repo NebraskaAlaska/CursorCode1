@@ -20,7 +20,8 @@ from flyash_phreeqc_ml.agent import agent_orchestrator as orch
 from flyash_phreeqc_ml.agent import agent_policy, agent_state, domains
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.materials import profile_schema as mp
-from flyash_phreeqc_ml.simulation import phreeqc_executor, run_registry, source_terms
+from flyash_phreeqc_ml.simulation import (phreeqc_executor, phreeqc_run_contract,
+                                          run_registry, source_terms)
 
 
 # --------------------------------------------------------------------------- #
@@ -46,6 +47,16 @@ class FakeClient:
 def _action(name, **arguments):
     return {"assistant_message": f"doing {name}", "reasoning_summary": "ok", "confidence": 0.8,
             "action": {"action_name": name, "arguments": arguments}}
+
+
+def _mock_execution_environment(monkeypatch):
+    file_identity = phreeqc_run_contract.FileIdentity("/mock", "a" * 64, 1, 1, 0o755)
+    environment = phreeqc_run_contract.ExecutionEnvironmentIdentity(
+        file_identity, file_identity)
+    availability = phreeqc_executor.PhreeqcAvailability(
+        True, True, True, True, "/mock/phreeqc", "/mock/database.dat", "ready",
+        environment_identity=environment)
+    monkeypatch.setattr(phreeqc_executor, "check_availability", lambda **kwargs: availability)
 
 
 @pytest.fixture(autouse=True)
@@ -318,6 +329,7 @@ def test_confirmed_scenario_builds_preview_via_existing_builder(usable_profile, 
 # 7) Confirmed execution routes through the EXISTING executor path
 # --------------------------------------------------------------------------- #
 def test_confirmed_execution_uses_existing_executor(usable_profile, release_model, monkeypatch):
+    _mock_execution_environment(monkeypatch)
     s = _ready_state(usable_profile, release_model)
     orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
                  material_profile=usable_profile, release_model=release_model)
@@ -350,6 +362,7 @@ def test_confirmed_execution_uses_existing_executor(usable_profile, release_mode
 # 8) The result explanation always carries the not-validated caveat
 # --------------------------------------------------------------------------- #
 def test_explanation_includes_not_validated_warning(usable_profile, release_model, monkeypatch):
+    _mock_execution_environment(monkeypatch)
     s = _ready_state(usable_profile, release_model)
     orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
                  material_profile=usable_profile, release_model=release_model)
@@ -418,6 +431,7 @@ def test_forbidden_arguments_are_stripped():
 # 11) A saved run never stores the raw model response / hidden reasoning
 # --------------------------------------------------------------------------- #
 def test_saved_run_does_not_store_raw_llm_response(usable_profile, release_model, monkeypatch):
+    _mock_execution_environment(monkeypatch)
     s = _ready_state(usable_profile, release_model)
     orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
                  material_profile=usable_profile, release_model=release_model)

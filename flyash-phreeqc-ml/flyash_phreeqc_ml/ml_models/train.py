@@ -54,6 +54,10 @@ class NoUsableFeaturesError(MLModelError):
     """No feature column carries any observed value — nothing to learn from."""
 
 
+class DemoTrainingDataError(MLModelError):
+    """``demo=True`` was requested with one or more non-synthetic training rows."""
+
+
 class InsufficientTrainingDataError(MLModelError):
     """Fewer than :data:`MIN_REAL_TRAINING_ROWS` eligible rows for a real model."""
 
@@ -172,6 +176,7 @@ def _training_provenance(rows) -> dict:
 
 def train_model(rows, *, target: str = model_schema.DEFAULT_TARGET,
                 model_type: str = model_schema.DEFAULT_MODEL_TYPE, demo: bool = False,
+                exploratory: bool = False,
                 seed: int = 0, date: str | None = None, name: str | None = None,
                 source_type: str | None = None) -> model_schema.TrainedModel:
     """Train and return a :class:`~model_schema.TrainedModel` for ``target`` (never auto-saved).
@@ -187,6 +192,10 @@ def train_model(rows, *, target: str = model_schema.DEFAULT_TARGET,
     require_sklearn()
 
     rows = list(rows or [])
+    if demo and any(row.source_type != training_data.SOURCE_DEMO for row in rows):
+        raise DemoTrainingDataError(
+            "demo=True is restricted to datasets where every row is synthetic_demo; approved "
+            "experimental/literature rows must use the ordinary or exploratory workflow.")
     labeled = [r for r in rows if training_data.target_value(r, target) is not None]
     if not labeled:
         raise NoTargetValuesError(
@@ -206,7 +215,10 @@ def train_model(rows, *, target: str = model_schema.DEFAULT_TARGET,
     pipeline.fit(x_df, y)
 
     src = source_type or training_data.infer_dataset_source_type(labeled)
-    validation_status = (model_schema.VALIDATION_DEMO if demo
+    training_status = training_data.infer_training_data_status(
+        labeled, exploratory=exploratory)
+    validation_status = (model_schema.VALIDATION_DEMO
+                         if demo or training_status == model_schema.TRAINING_DATA_SYNTHETIC_DEMO
                          else model_schema.VALIDATION_EXPERIMENTAL)
     date = date or _dt.date.today().isoformat()
     feature_ranges = preprocessing.feature_ranges(x_df, numeric_cols)
@@ -216,24 +228,28 @@ def train_model(rows, *, target: str = model_schema.DEFAULT_TARGET,
 
     card = model_card.build_model_card(
         model_type=model_type, target=target, source_type=src,
-        validation_status=validation_status, n_train=len(y), n_validation=n_val,
+        validation_status=validation_status, training_data_status=training_status,
+        n_train=len(y), n_validation=n_val,
         numeric_features=numeric_cols, categorical_features=categorical_cols, metrics=metrics,
         feature_ranges=feature_ranges, categories_seen=categories_seen,
         training_provenance=_training_provenance(labeled), date=date,
         version=model_schema.MODEL_VERSION)
 
-    name = name or _default_name(target, model_type, validation_status)
+    name = name or _default_name(target, model_type, validation_status, training_status)
     return model_schema.TrainedModel(
         name=name, target=target, model_type=model_type,
         model_family=model_schema.MODEL_FAMILY_COMPOSITE, pipeline=pipeline,
         numeric_features=list(numeric_cols), categorical_features=list(categorical_cols),
         feature_ranges=feature_ranges, categories_seen=categories_seen, residual_sigma=sigma,
         metrics=metrics, card=card, source_type=src, validation_status=validation_status,
+        training_data_status=training_status,
         n_train=len(y), n_validation=n_val, version=model_schema.MODEL_VERSION, created=date)
 
 
-def _default_name(target, model_type, validation_status) -> str:
-    tag = "demo" if validation_status == model_schema.VALIDATION_DEMO else "exp"
+def _default_name(target, model_type, validation_status, training_data_status) -> str:
+    tag = ("demo" if validation_status == model_schema.VALIDATION_DEMO
+           else "explore" if training_data_status == model_schema.TRAINING_DATA_EXPLORATORY
+           else "exp")
     return f"{target}__{model_type}__{tag}"
 
 

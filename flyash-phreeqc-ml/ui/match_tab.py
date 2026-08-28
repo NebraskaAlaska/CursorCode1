@@ -16,6 +16,8 @@ from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
+from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402
+from flyash_phreeqc_ml.simulation import phreeqc_run_contract  # noqa: E402
 
 from ui.common import _audit_once, _render_next_step
 from ui.state import MODEL_NAME, _read_csv, _rel, _scenario_manifest
@@ -208,11 +210,15 @@ def _render_generate_simulation(run_name: str, data: pd.DataFrame,
     """
     app_ui.section_header("Generate a PHREEQC simulation",
                           "make a needs-new condition actionable")
-    configured = phreeqc_runner.is_configured()
-    if not configured:
-        st.info("PHREEQC is not configured, so simulations can be **previewed** here but not "
-                "run. Set `PHREEQC_EXE` + `PHREEQC_DATABASE` to enable running. The generated "
-                "input below is still fully readable.")
+    availability = phreeqc_executor.check_availability()
+    try:
+        execution_environment = phreeqc_runner.capture_compatible_environment(availability)
+        preview_only_reason = None
+    except phreeqc_runner.PhreeqcNotConfiguredError as exc:
+        execution_environment = None
+        preview_only_reason = str(exc)
+        st.info("PHREEQC execution is unavailable for this legacy workflow, so simulations "
+                "remain **preview-only**. " + preview_only_reason)
 
     profile = profiles.default_dataset_profile()
     ck = st.selectbox("Condition needing a new simulation",
@@ -244,18 +250,45 @@ def _render_generate_simulation(run_name: str, data: pd.DataFrame,
                 "; ".join(gi.assumptions), level="warning")
             st.code(gi.pqi_text, language="text")
 
-    if not configured:
-        app_ui.render_warning_panel("PHREEQC not configured", phreeqc_runner._SETUP_HELP,
-                                    level="error")
+    if execution_environment is None:
+        app_ui.render_warning_panel(
+            "PHREEQC execution unavailable — preview only",
+            preview_only_reason or phreeqc_runner._SETUP_HELP, level="error")
         return
 
+    preview_hash = phreeqc_run_contract.hash_input_text(
+        "\n".join(f"{gi.basename}:{gi.pqi_text}" for gi in inputs))
+    environment_hash = execution_environment.identity_hash
+    confirmed = st.checkbox(
+        f"I reviewed the exact {len(inputs)} generated input(s) above and confirm execution.",
+        key=f"gen_confirm_{run_name}_{preview_hash[:12]}_{environment_hash[:12]}")
     if st.button(f"▶️ Run PHREEQC for {len(inputs)} variant(s) & ingest",
-                 key=f"gen_run_{run_name}", type="primary"):
+                 key=f"gen_run_{run_name}_{preview_hash[:12]}_{environment_hash[:12]}",
+                 type="primary",
+                 disabled=not confirmed):
+        # Construct every review and every confirmation against the same captured identity
+        # before creating a workspace or starting the first variant.
+        try:
+            reviews = [phreeqc_runner.review_input(gi) for gi in inputs]
+            confirmations = [
+                phreeqc_runner.confirm_reviewed_input(
+                    reviewed, expected_environment=execution_environment)
+                for reviewed in reviews
+            ]
+        except (phreeqc_runner.PhreeqcRunnerError,
+                phreeqc_run_contract.RunContractError) as exc:
+            st.error("Execution blocked before any variant ran: " + str(exc).splitlines()[0])
+            return
+
         workdir = run_manager.generated_simulations_dir(run_name)
         ok = 0
-        for gi in inputs:
+        for gi, confirmation in zip(inputs, confirmations):
             try:
-                out = phreeqc_runner.run(gi.pqi_text, workdir, basename=gi.basename)
+                out = phreeqc_runner.run(
+                    gi, workdir, basename=gi.basename,
+                    exe=execution_environment.executable.resolved_path,
+                    database=execution_environment.database.resolved_path,
+                    confirmation=confirmation)
                 keys = phreeqc_runner.ingest(out, run_name,
                                              condition_key=gi.source_condition_key,
                                              metadata=gi.metadata)

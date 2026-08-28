@@ -34,11 +34,13 @@ from pathlib import Path
 from .. import config
 from ..parsers.pqo_parser import parse_pqo_file, records_to_frames
 from ..parsers.selected_output_parser import parse_selected_output
+from . import phreeqc_run_contract as _run_contract
 
 # --------------------------------------------------------------------------- #
 # Status vocabularies
 # --------------------------------------------------------------------------- #
 STATUS_NOT_RUN = "not_run"
+STATUS_BLOCKED = "not_runnable"
 STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_MISSING = "phreeqc_missing"
@@ -77,10 +79,12 @@ class PhreeqcAvailability:
     database_path: str | None
     message: str
     smoke_ok: bool | None = None        # None = smoke not attempted
+    environment_identity: _run_contract.ExecutionEnvironmentIdentity | None = None
 
     @property
     def can_run(self) -> bool:
-        return self.executable_found and self.database_found
+        return (self.executable_found and self.database_found
+                and self.environment_identity is not None)
 
 
 @dataclass
@@ -99,6 +103,7 @@ class ExecutionResult:
     timestamp: str | None = None
     phreeqc_executable: str | None = None
     database_path: str | None = None
+    input_hash: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -111,7 +116,7 @@ class ExecutionResult:
             "selected_output_path": self.selected_output_path,
             "error_message": self.error_message, "runtime_seconds": self.runtime_seconds,
             "timestamp": self.timestamp, "phreeqc_executable": self.phreeqc_executable,
-            "database_path": self.database_path,
+            "database_path": self.database_path, "input_hash": self.input_hash,
         }
 
 
@@ -200,7 +205,12 @@ def _resolve_executable(exe: str | None) -> tuple[str | None, bool]:
     if not configured:
         return None, False
     found = shutil.which(name) or (name if Path(name).is_file() else None)
-    return (str(found) if found else None), configured
+    if not found:
+        return None, configured
+    try:
+        return str(Path(found).expanduser().resolve(strict=True)), configured
+    except OSError:
+        return None, configured
 
 
 def _resolve_database(database: str | None) -> tuple[str | None, bool]:
@@ -208,8 +218,13 @@ def _resolve_database(database: str | None) -> tuple[str | None, bool]:
     configured = bool(db)
     if not configured:
         return None, False
-    path = Path(db)
-    return (str(path) if path.is_file() else None), configured
+    path = Path(db).expanduser()
+    if not path.is_file():
+        return None, configured
+    try:
+        return str(path.resolve(strict=True)), configured
+    except OSError:
+        return None, configured
 
 
 def check_availability(*, run_smoke: bool = False, exe: str | None = None,
@@ -235,19 +250,28 @@ def check_availability(*, run_smoke: bool = False, exe: str | None = None,
                         if db_conf else "database not configured (set PHREEQC_DATABASE)")
         message = NOT_CONFIGURED_MESSAGE + "  (" + "; ".join(bits) + ")"
 
+    environment = None
+    if exe_found and db_found:
+        try:
+            environment = _run_contract.build_execution_environment(exe_path, db_path)
+        except _run_contract.RunContractError as exc:
+            message = NOT_CONFIGURED_MESSAGE + f"  (could not identify configured files: {exc})"
+
     av = PhreeqcAvailability(
         executable_configured=exe_conf, database_configured=db_conf,
         executable_found=exe_found, database_found=db_found,
-        executable_path=exe_path, database_path=db_path, message=message)
+        executable_path=exe_path, database_path=db_path, message=message,
+        environment_identity=environment)
 
-    if run_smoke and av.can_run:
+    if run_smoke and av.can_run and av.environment_identity is not None:
         av.smoke_ok = smoke_test(exe=exe, database=database)
     return av
 
 
 def is_configured() -> bool:
     """True when both the executable and the database resolve (no run attempted)."""
-    return check_availability().can_run
+    av = check_availability()
+    return av.can_run and av.environment_identity is not None
 
 
 def running_in_docker() -> bool:
@@ -274,7 +298,7 @@ def availability_hint(av: PhreeqcAvailability | None = None) -> str:
     don't resolve (a deployment problem to fix in the image).
     """
     av = av if av is not None else check_availability()
-    if av.can_run:
+    if av.can_run and av.environment_identity is not None:
         return "PHREEQC is configured and ready — simulations can run after you confirm."
     if running_in_docker():
         return ("PHREEQC is not ready in this container — " + av.message
@@ -358,36 +382,58 @@ def _error_lines(*texts: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Public: execute one confirmed input preview
 # --------------------------------------------------------------------------- #
-def execute_preview(preview, *, workdir=None, exe: str | None = None,
+def execute_preview(preview, *, confirmation=None, workdir=None, exe: str | None = None,
                     database: str | None = None, timeout: float | None = None,
                     scenario_id: str | None = None) -> ExecutionResult:
-    """Run PHREEQC on a confirmed :class:`PhreeqcInputPreview`'s text.
+    """Run the exact immutable snapshot linked to ``preview`` after explicit confirmation.
 
-    Returns a structured :class:`ExecutionResult` and **never raises**: a missing binary →
-    ``phreeqc_missing``; a non-zero exit / ERROR line / no output → ``failed``; a timeout →
-    ``timeout``. The reviewed input text is run **verbatim** — it is never edited here.
+    ``confirmation`` must be a :class:`phreeqc_run_contract.ConfirmedPhreeqcInput` derived from
+    this exact preview. Missing scientific inputs, missing confirmation, or a changed preview fail
+    closed as ``not_runnable``. A missing binary/database remains ``phreeqc_missing``. The
+    confirmed snapshot text, never mutable UI/session state, is executed verbatim.
     """
     sid = scenario_id or getattr(preview, "scenario_id", "SIM")
-    input_text = getattr(preview, "phreeqc_input_text", None)
     ts = _now_iso()
 
-    if not input_text:
-        return ExecutionResult(sid, STATUS_FAILED, error_message="No PHREEQC input text to run.",
-                               timestamp=ts)
-
-    exe_path, _ = _resolve_executable(exe)
-    db_path, _ = _resolve_database(database)
-    if exe_path is None or db_path is None:
+    availability = check_availability(exe=exe, database=database)
+    readiness = _run_contract.assess_execution(preview, confirmation, availability)
+    if not (readiness.scientific_ready and readiness.reviewed and readiness.confirmed
+            and readiness.snapshot_matches):
         return ExecutionResult(
-            sid, STATUS_MISSING, error_message=NOT_CONFIGURED_MESSAGE, timestamp=ts,
-            phreeqc_executable=exe_path, database_path=db_path)
+            sid, STATUS_BLOCKED, error_message=readiness.message, timestamp=ts,
+            phreeqc_executable=availability.executable_path,
+            database_path=availability.database_path, input_hash=readiness.input_hash)
+    if not readiness.configuration_ready:
+        return ExecutionResult(
+            sid, STATUS_MISSING, error_message=availability.message, timestamp=ts,
+            phreeqc_executable=availability.executable_path,
+            database_path=availability.database_path, input_hash=readiness.input_hash)
+    if not readiness.environment_matches:
+        return ExecutionResult(
+            sid, STATUS_BLOCKED, error_message=readiness.message, timestamp=ts,
+            phreeqc_executable=availability.executable_path,
+            database_path=availability.database_path, input_hash=readiness.input_hash)
+    if scenario_id is not None and str(scenario_id) != confirmation.scenario_id:
+        return ExecutionResult(
+            sid, STATUS_BLOCKED,
+            error_message=("The execution scenario identifier differs from the reviewed "
+                           "snapshot; review and confirm that target explicitly."),
+            timestamp=ts, phreeqc_executable=availability.executable_path,
+            database_path=availability.database_path, input_hash=readiness.input_hash)
 
-    # Resolve + guard the workspace (default: outputs/simulations/).
+    exe_path = availability.executable_path
+    db_path = availability.database_path
+    input_text = confirmation.phreeqc_input_text
+    sid = scenario_id or confirmation.scenario_id
+
+    # The availability call above re-resolved and re-hashed both files for this exact execution.
+    # Do not create or resolve a writable workspace until that live identity matches confirmation.
     try:
         ws = assert_safe_workspace(workdir if workdir is not None else default_workspace())
     except ValueError as exc:
         return ExecutionResult(sid, STATUS_FAILED, error_message=str(exc), timestamp=ts,
-                               phreeqc_executable=exe_path, database_path=db_path)
+                               phreeqc_executable=exe_path, database_path=db_path,
+                               input_hash=confirmation.input_hash)
 
     stem = _safe_stem(sid)
     timeout = config.PHREEQC_RUN_TIMEOUT_S if timeout is None else timeout
@@ -397,7 +443,8 @@ def execute_preview(preview, *, workdir=None, exe: str | None = None,
         return ExecutionResult(
             sid, STATUS_FAILED, input_path=str(ws / f"{stem}.pqi"),
             error_message=f"{type(exc).__name__}: {exc}", timestamp=ts,
-            phreeqc_executable=exe_path, database_path=db_path)
+            phreeqc_executable=exe_path, database_path=db_path,
+            input_hash=confirmation.input_hash)
 
     in_path = str(ws / f"{stem}.pqi")
     sel_path = str(outcome.selected_output_path) if outcome.selected_output_path else None
@@ -406,7 +453,8 @@ def execute_preview(preview, *, workdir=None, exe: str | None = None,
             sid, STATUS_TIMEOUT, input_path=in_path, stdout_tail=_tail(outcome.stdout),
             stderr_tail=_tail(outcome.stderr), error_message=outcome.error,
             runtime_seconds=outcome.runtime_seconds, timestamp=ts,
-            phreeqc_executable=exe_path, database_path=db_path)
+            phreeqc_executable=exe_path, database_path=db_path,
+            input_hash=confirmation.input_hash)
 
     out_text = (outcome.out_path.read_text(encoding="utf-8", errors="replace")
                 if outcome.out_path else "")
@@ -420,13 +468,15 @@ def execute_preview(preview, *, workdir=None, exe: str | None = None,
             selected_output_path=sel_path, stdout_tail=_tail(outcome.stdout),
             stderr_tail=_tail(outcome.stderr), error_message=detail,
             runtime_seconds=outcome.runtime_seconds, timestamp=ts,
-            phreeqc_executable=exe_path, database_path=db_path)
+            phreeqc_executable=exe_path, database_path=db_path,
+            input_hash=confirmation.input_hash)
 
     return ExecutionResult(
         sid, STATUS_SUCCESS, input_path=in_path, output_path=str(outcome.out_path),
         selected_output_path=sel_path, stdout_tail=_tail(outcome.stdout),
         stderr_tail=_tail(outcome.stderr), runtime_seconds=outcome.runtime_seconds,
-        timestamp=ts, phreeqc_executable=exe_path, database_path=db_path)
+        timestamp=ts, phreeqc_executable=exe_path, database_path=db_path,
+        input_hash=confirmation.input_hash)
 
 
 def smoke_test(*, exe: str | None = None, database: str | None = None,

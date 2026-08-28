@@ -31,7 +31,7 @@ from flyash_phreeqc_ml.agent import agent_orchestrator as orch
 from flyash_phreeqc_ml.agent import agent_state, domains
 from flyash_phreeqc_ml.ai import config as ai_config
 from flyash_phreeqc_ml.materials import profile_schema as mp
-from flyash_phreeqc_ml.simulation import phreeqc_executor, source_terms
+from flyash_phreeqc_ml.simulation import phreeqc_executor, phreeqc_run_contract, source_terms
 
 FAKE_KEY = "sk-ant-TESTKEY-not-real-do-not-leak-demo-0001"
 
@@ -57,6 +57,16 @@ class FakeClient:
 def _action(name, **arguments):
     return {"assistant_message": f"doing {name}", "reasoning_summary": "ok", "confidence": 0.8,
             "action": {"action_name": name, "arguments": arguments}}
+
+
+def _mock_execution_environment(monkeypatch):
+    file_identity = phreeqc_run_contract.FileIdentity("/mock", "a" * 64, 1, 1, 0o755)
+    environment = phreeqc_run_contract.ExecutionEnvironmentIdentity(
+        file_identity, file_identity)
+    availability = phreeqc_executor.PhreeqcAvailability(
+        True, True, True, True, "/mock/phreeqc", "/mock/database.dat", "ready",
+        environment_identity=environment)
+    monkeypatch.setattr(phreeqc_executor, "check_availability", lambda **kwargs: availability)
 
 
 @pytest.fixture(autouse=True)
@@ -269,7 +279,8 @@ def test_changing_release_via_turn_rebuilds_with_new_release(usable_profile):
     assert "release model" in r.assistant_message.lower()      # clear reason given
     assert s.composition_usable                                # composition kept
     assert s.preview is not None and s.preview is not old_preview    # rebuilt, not stale
-    assert s.scenario_preview_signature()[1] == (source_terms.MODE_GLOBAL, 0.05)
+    release_signature = s.scenario_preview_signature()[1]
+    assert release_signature[:2] == (source_terms.MODE_GLOBAL, 0.05)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,10 +301,29 @@ def test_ready_preview_is_stored_as_pending_run(usable_profile, release_model):
     assert s.run_lifecycle == agent_state.LIFECYCLE_AWAITING_CONFIRMATION
 
 
+def test_confirmation_rechecks_external_scientific_state_change(usable_profile, release_model,
+                                                                monkeypatch):
+    s = _ready_state(usable_profile, release_model)
+    orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
+                 material_profile=usable_profile, release_model=release_model)
+    orch.respond(s, "run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
+                 material_profile=usable_profile, release_model=release_model)
+    s.release_model = source_terms.global_release(0.05)  # Advanced-details change between clicks
+    calls = []
+    monkeypatch.setattr(phreeqc_executor, "run_and_parse",
+                        lambda *a, **k: calls.append((a, k)))
+    result = orch.confirm_pending_action(s)
+    assert not result.executed
+    assert "stale" in result.assistant_message.lower()
+    assert calls == []
+    assert s.pending_action is None and s.pending_preview is None
+
+
 # --------------------------------------------------------------------------- #
 # 8) Confirmation executes the stored pending preview instead of rebuilding
 # --------------------------------------------------------------------------- #
 def test_confirmation_runs_stored_preview_not_rebuild(usable_profile, release_model, monkeypatch):
+    _mock_execution_environment(monkeypatch)
     s = _ready_state(usable_profile, release_model)
     orch.respond(s, "build the preview", client=FakeClient([_action(A.BUILD_PHREEQC_PREVIEW)]),
                  material_profile=usable_profile, release_model=release_model)
@@ -332,13 +362,12 @@ def test_missing_phreeqc_is_clear_and_does_not_crash(usable_profile, release_mod
                  material_profile=usable_profile, release_model=release_model)
     orch.respond(s, "run it", client=FakeClient([_action(A.RUN_SINGLE_SIMULATION)]),
                  material_profile=usable_profile, release_model=release_model)
-    r = orch.confirm_pending_action(s)                         # executes the (gated) run
+    r = orch.confirm_pending_action(s)
 
-    assert s.execution_result is not None                      # no crash, structured result
-    assert s.execution_result.status == phreeqc_executor.STATUS_MISSING
-    assert s.run_lifecycle == agent_state.LIFECYCLE_FAILED
+    assert s.execution_result is None                          # no run without a bindable environment
+    assert r.executed is False
     msg = r.assistant_message.lower()
-    assert "phreeqc" in msg and "preview" in msg               # clear, honest, actionable
+    assert "phreeqc" in msg and "not configured" in msg        # clear, honest, actionable
 
 
 # --------------------------------------------------------------------------- #

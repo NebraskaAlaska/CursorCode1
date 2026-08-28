@@ -12,8 +12,10 @@ from pathlib import Path
 
 import flyash_phreeqc_ml as pkg
 from flyash_phreeqc_ml.profiles import AssayValue, MaterialProfile
+from flyash_phreeqc_ml.materials import profile_schema as material_schema
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder as B
+from flyash_phreeqc_ml.simulation import source_terms
 from flyash_phreeqc_ml.simulation.scenario_schema import SimulationScenario
 
 PKG_DIR = Path(pkg.__file__).resolve().parent
@@ -95,15 +97,30 @@ def test_draft_only_for_generic_material_without_profile():
     assert pv.status == B.STATUS_DRAFT
 
 
-def test_ready_for_review_with_usable_assay():
+def test_usable_assay_without_release_remains_previewable_but_not_run_ready():
     mat = MaterialProfile(
         material_id="m", display_name="Test material", relevant_elements=("Ca",),
         candidate_phases={"Calcite": "Ca"},
         declared_assay={"Ca": AssayValue(element="Ca", value=20.0, unit="wt%",
                                          provenance="measured")})
     pv = B.build_phreeqc_input_preview(_scenario(leachant_type="NaOH"), material_profile=mat)
-    assert pv.status == B.STATUS_READY
+    assert pv.status != B.STATUS_READY
+    assert pv.phreeqc_input_text
+    assert any("release" in w.lower() or "source" in w.lower() for w in pv.warnings)
     assert "Calcite" in pv.phreeqc_input_text
+
+
+def test_ready_for_review_with_confirmed_assay_and_explicit_release():
+    mat = material_schema.MaterialProfile(
+        profile_id="m", material_name="Test material",
+        composition_basis=material_schema.BASIS_OXIDE_WT,
+        entries=material_schema.parse_composition_text("CaO 20\nSiO2 40\nAl2O3 30"),
+        verification_status=material_schema.STATUS_USER_CONFIRMED)
+    pv = B.build_phreeqc_input_preview(
+        _scenario(leachant_type="NaOH"), material_profile=mat,
+        dissolution_model=source_terms.global_release(0.01))
+    assert pv.status == B.STATUS_READY
+    assert pv.includes_source_terms
 
 
 def test_quarantined_literature_assay_is_not_used():

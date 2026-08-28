@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..simulation import phreeqc_executor, phreeqc_run_contract
 from . import agent_actions as A
 from . import (agent_council, agent_policy, agent_state, chat_setup_parser, domains,
                nlu_extractor, tool_registry)
@@ -275,6 +276,29 @@ def _process_turn(state, message, *, client, model, use_ai: bool = True, council
         # fresh rebuild from changed state). A later scenario change clears this snapshot too.
         if parked.action_name == A.RUN_SINGLE_SIMULATION and state.preview is not None:
             state.pending_preview = state.preview
+            state.pending_previews = [state.preview]
+        elif parked.action_name == A.RUN_SWEEP:
+            state.pending_previews = list(state.sweep_previews or [])
+        if parked.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP):
+            try:
+                state.pending_reviews = [phreeqc_run_contract.review_preview(p)
+                                         for p in state.pending_previews]
+            except phreeqc_run_contract.RunContractError as exc:
+                _clear_pending(state)
+                assistant_msg = _join(lead_note, _llm_lead(action), change_note, setup_note,
+                                      f"I can't run that yet — {exc}", clarify_note,
+                                      invalidate_note, limited_note)
+                awaiting = False
+                decision = agent_policy.PolicyDecision(
+                    False, False, agent_policy.BLOCK_PRECONDITION, str(exc))
+                state.add_assistant_message(assistant_msg,
+                                            reasoning_summary=action.reasoning_summary)
+                _record(state, message, applied, action, decision, None,
+                        confirmation_required=False, confirmed=False)
+                return AgentTurnResult(
+                    state=state, assistant_message=assistant_msg, action=action,
+                    policy=decision, executed=False, awaiting_confirmation=False,
+                    used_ai=used_ai)
         awaiting = True
         state.phase = (agent_state.AWAITING_EXECUTION_CONFIRMATION
                        if parked.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP)
@@ -341,6 +365,21 @@ def _execute_pending(state, *, client, model):
     if action is None:
         return _no_pending(state)
 
+    # Context can change through Advanced-details widgets between parking and clicking Confirm.
+    # Recheck the full scientific signature here; do not rely only on message-turn invalidation.
+    invalidate_note = _invalidate_preview_if_stale(state)
+    if invalidate_note:
+        msg = ("I couldn't run that — the reviewed PHREEQC input is stale. "
+               + invalidate_note.strip("()") + " Review and confirm the rebuilt input.")
+        blocked = agent_policy.PolicyDecision(
+            False, False, agent_policy.BLOCK_PRECONDITION, "reviewed input is stale")
+        state.add_assistant_message(msg)
+        _record(state, "[confirm]", {}, action, blocked, None,
+                confirmation_required=False, confirmed=False)
+        return AgentTurnResult(state=state, assistant_message=msg, action=action,
+                               policy=blocked, executed=False,
+                               awaiting_confirmation=False)
+
     decision = agent_policy.evaluate(state, action, confirmed=True)
     if decision.blocked:
         _clear_pending(state)
@@ -352,6 +391,25 @@ def _execute_pending(state, *, client, model):
                                 policy=decision, executed=False, awaiting_confirmation=False))
 
     state.phase = agent_state.RUNNING_TOOL
+    if action.action_name in (A.RUN_SINGLE_SIMULATION, A.RUN_SWEEP):
+        try:
+            availability = phreeqc_executor.check_availability(database=state.database_path)
+            if not availability.can_run or availability.environment_identity is None:
+                raise phreeqc_run_contract.RunContractError(availability.message)
+            state.pending_confirmations = [
+                phreeqc_run_contract.confirm_reviewed(r, availability.environment_identity)
+                for r in state.pending_reviews]
+        except phreeqc_run_contract.RunContractError as exc:
+            _clear_pending(state)
+            msg = f"I couldn't run that — {exc} Review the input again."
+            state.add_assistant_message(msg)
+            blocked = agent_policy.PolicyDecision(
+                False, False, agent_policy.BLOCK_PRECONDITION, str(exc))
+            _record(state, "[confirm]", {}, action, blocked, None,
+                    confirmation_required=False, confirmed=False)
+            return AgentTurnResult(state=state, assistant_message=msg, action=action,
+                                   policy=blocked, executed=False,
+                                   awaiting_confirmation=False)
     outcome = tool_registry.run(action, state)
     _clear_pending(state)
     msg = _ensure_not_validated(outcome.summary) if action.action_name in (
@@ -436,6 +494,9 @@ def _clear_pending(state) -> None:
     state.pending_action = None
     state.confirmation_required = False
     state.pending_preview = None
+    state.pending_previews = []
+    state.pending_reviews = []
+    state.pending_confirmations = []
 
 
 # Human labels for the preview-input fields, for the "I cleared the preview because … changed" note.
@@ -452,7 +513,7 @@ _PREVIEW_CHANGE_LABELS = {
 def _changed_preview_inputs(old_sig, new_sig) -> list:
     """Which named inputs differ between two preview signatures (for the clear-reason note)."""
     if not (isinstance(old_sig, tuple) and isinstance(new_sig, tuple)
-            and len(old_sig) == len(new_sig) == 4):
+            and len(old_sig) == len(new_sig) == 5):
         return []
     changed: list = []
     old_sc, new_sc = dict(old_sig[0]), dict(new_sig[0])
@@ -465,6 +526,8 @@ def _changed_preview_inputs(old_sig, new_sig) -> list:
         changed.append(_PREVIEW_CHANGE_LABELS["material_composition"])
     if old_sig[3] != new_sig[3]:
         changed.append(_PREVIEW_CHANGE_LABELS["database"])
+    if old_sig[4] != new_sig[4]:
+        changed.append("phase template")
     # de-dup, keep order
     return list(dict.fromkeys(changed))
 

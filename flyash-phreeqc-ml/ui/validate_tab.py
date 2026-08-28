@@ -21,6 +21,7 @@ from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.viz import measured_overview  # noqa: E402
+from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402
 
 from ui.common import _audit_once, _png_provenance_caption, _render_next_step
 from ui.state import MODEL_NAME, _COMPARISON_FIGURES, _PROJECT_ROOT, _read_csv
@@ -484,7 +485,6 @@ def _render_gap_attribution(selected_run: str, profile, data: pd.DataFrame,
         st.caption("Modeled attribution: **predicted to precipitate** — never 'the element "
                    "was X'. The measured gap (above) is immutable; the model only *splits* "
                    "it into attributed-to-phase vs still-unexplained.")
-        configured = phreeqc_runner.is_configured()
         rows = [r.to_dict() for _, r in data.iterrows()]
         # The first sample whose closure for this element is complete.
         target = next((r for r in rows
@@ -494,23 +494,41 @@ def _render_gap_attribution(selected_run: str, profile, data: pd.DataFrame,
             st.info(f"No complete {element} closure to attribute yet.")
             return
 
-        if not configured:
-            res = attribution.attribution_unavailable(target, element, profile=profile)
-            st.warning("⚠️ " + res["note"])
-            st.pyplot(_attribution_three_way_figure(res))
-            st.caption(attribution.attribution_caption(res))
-            return
-
-        # Configured: preview the attribution .pqi, then run + attribute on demand.
+        # Build and show the exact preview regardless of execution availability.
         inputs = attribution.build_attribution_inputs(target, profile)
         if inputs:
             with st.expander("Preview the attribution .pqi (before running)"):
                 st.code(inputs[0].pqi_text, language="text")
+        availability = phreeqc_executor.check_availability()
+        try:
+            execution_environment = phreeqc_runner.capture_compatible_environment(availability)
+        except phreeqc_runner.PhreeqcNotConfiguredError as exc:
+            res = attribution.attribution_unavailable(target, element, profile=profile)
+            st.warning("⚠️ Preview only — " + str(exc))
+            st.pyplot(_attribution_three_way_figure(res))
+            st.caption(attribution.attribution_caption(res))
+            return
+
         key = f"attr_result_{selected_run}_{element}"
+        reviewed = (phreeqc_runner.review_input(inputs[0])
+                    if inputs else None)
+        input_hash = getattr(reviewed, "input_hash", "missing")
+        environment_hash = execution_environment.identity_hash[:12]
+        confirmed = st.checkbox(
+            "I reviewed this exact attribution input and confirm PHREEQC execution.",
+            key=(f"attr_confirm_{selected_run}_{element}_{input_hash[:12]}_"
+                 f"{environment_hash}"),
+            disabled=reviewed is None)
         if st.button(f"Run PHREEQC & attribute {element} gap",
-                     key=f"attr_run_{selected_run}_{element}"):
+                     key=(f"attr_run_{selected_run}_{element}_{input_hash[:12]}_"
+                          f"{environment_hash}"),
+                     disabled=not confirmed):
             try:
-                sel = _run_attribution_and_parse(selected_run, inputs)
+                confirmation = phreeqc_runner.confirm_reviewed_input(
+                    reviewed, expected_environment=execution_environment)
+                sel = _run_attribution_and_parse(
+                    selected_run, inputs, confirmation=confirmation,
+                    execution_environment=execution_environment)
                 st.session_state[key] = attribution.attribute_gap(
                     target, element, sel, profile=profile)
             except Exception as exc:  # never crash the tab on a model failure
@@ -527,12 +545,17 @@ def _render_gap_attribution(selected_run: str, profile, data: pd.DataFrame,
         st.pyplot(_attribution_three_way_figure(res))
         st.caption(attribution.attribution_caption(res))
 
-def _run_attribution_and_parse(run_name: str, inputs):
+def _run_attribution_and_parse(run_name: str, inputs, *, confirmation,
+                               execution_environment):
     """Run the first attribution input and parse its SELECTED_OUTPUT (best-effort)."""
     from flyash_phreeqc_ml.parsers.selected_output_parser import parse_selected_output
     workdir = run_manager.generated_simulations_dir(run_name)
     gi = inputs[0]
-    pqo = phreeqc_runner.run(gi.pqi_text, workdir, basename=gi.basename)
+    pqo = phreeqc_runner.run(
+        gi, workdir, basename=gi.basename,
+        exe=execution_environment.executable.resolved_path,
+        database=execution_environment.database.resolved_path,
+        confirmation=confirmation)
     # PHREEQC writes USER_PUNCH to a sibling selected-output file.
     for cand in (pqo.with_suffix(".sel"), workdir / "selected.out",
                  pqo.parent / f"{gi.basename}.sel"):

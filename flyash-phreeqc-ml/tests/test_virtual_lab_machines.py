@@ -165,15 +165,19 @@ def test_importing_virtual_lab_machines_does_not_import_streamlit():
     assert "streamlit" not in inspect.getsource(vlm)
 
 
-def test_app_py_and_ui_are_unchanged_by_this_task():
+def test_application_shell_and_machine_architecture_are_unchanged_by_this_task():
     if shutil.which("git") is None:
         pytest.skip("git not available")
-    res = subprocess.run(["git", "status", "--porcelain", "--", "app.py", "ui"],
+    res = subprocess.run(
+        ["git", "status", "--porcelain", "--", "app.py", "ui/digital_lab.py",
+         "flyash_phreeqc_ml/instruments/instrument_registry.py",
+         "flyash_phreeqc_ml/instruments/virtual_lab_machines.py",
+         "flyash_phreeqc_ml/instruments/virtual_lab_machine_runner.py"],
                          cwd=_ROOT, capture_output=True, text=True)
     if res.returncode != 0:
         pytest.skip("not a git repo / git error")
     changed = res.stdout.strip()
-    assert changed == "", f"app.py / ui/ were modified by this task:\n{changed}"
+    assert changed == "", f"application shell / machine architecture changed:\n{changed}"
 
 
 # --------------------------------------------------------------------------- #

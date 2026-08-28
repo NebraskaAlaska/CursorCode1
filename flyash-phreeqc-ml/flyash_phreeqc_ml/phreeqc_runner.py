@@ -25,6 +25,8 @@ This is plumbing: no ML, no chemistry beyond templating the documented encoding.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -63,6 +65,9 @@ _SETUP_HELP = (
 # --------------------------------------------------------------------------- #
 # Generated input
 # --------------------------------------------------------------------------- #
+_GENERATED_INPUT_SEAL = object()
+
+
 @dataclass(frozen=True)
 class GeneratedInput:
     """One templated ``.pqi`` for a (condition, CO₂ scenario) pair."""
@@ -74,6 +79,53 @@ class GeneratedInput:
     assumptions: tuple = ()
     metadata: dict = field(default_factory=dict)  # NaOH_M, L/S, CO2_condition, temp, time
     basename: str = "gen"       # safe file stem (drives the .pqo record_key prefix)
+    scenario_id: str | None = None
+    _builder_text_hash: str | None = field(default=None, repr=False, compare=False)
+    _builder_identity_hash: str | None = field(default=None, repr=False, compare=False)
+    _builder_seal: object = field(default=None, repr=False, compare=False)
+
+    @property
+    def builder_issued(self) -> bool:
+        return bool(
+            self._builder_seal is _GENERATED_INPUT_SEAL
+            and self._builder_text_hash == hashlib.sha256(self.pqi_text.encode("utf-8")).hexdigest()
+            and self._builder_identity_hash == _generated_identity_hash(
+                model_label=self.model_label, condition_code=self.condition_code,
+                source_condition_key=self.source_condition_key, pqi_text=self.pqi_text,
+                assumptions=self.assumptions, metadata=self.metadata,
+                basename=self.basename, scenario_id=self.scenario_id)
+            and self.basename == _safe_stem(self.basename)
+            and self.scenario_id
+        )
+
+
+def _generated_identity_hash(**values) -> str:
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _issue_generated_input(*, model_label: str, condition_code: str,
+                           source_condition_key: str, pqi_text: str, assumptions=(),
+                           metadata=None, basename: str, scenario_id: str) -> GeneratedInput:
+    """Construct the immutable legacy-builder output carrying its original exact-text seal."""
+    text = str(pqi_text)
+    values = {
+        "model_label": str(model_label), "condition_code": str(condition_code),
+        "source_condition_key": str(source_condition_key), "pqi_text": text,
+        "assumptions": tuple(assumptions or ()), "metadata": dict(metadata or {}),
+        "basename": _safe_stem(basename), "scenario_id": str(scenario_id),
+    }
+    return GeneratedInput(
+        **values,
+        _builder_text_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        _builder_identity_hash=_generated_identity_hash(**values),
+        _builder_seal=_GENERATED_INPUT_SEAL,
+    )
+
+
+def is_trusted_generated_input(value) -> bool:
+    """True only for an intact object mechanically issued by this deterministic builder."""
+    return isinstance(value, GeneratedInput) and value.builder_issued
 
 
 # --------------------------------------------------------------------------- #
@@ -276,7 +328,7 @@ def build_input(condition: dict, profile=None, template=None) -> list[GeneratedI
             naoh, ls if ls is not None else float("nan"),
             temp, model_label, ph=ph, time_min=time_min, label=ckey,
         )
-        out.append(GeneratedInput(
+        out.append(_issue_generated_input(
             model_label=model_label,
             condition_code=code,
             source_condition_key=ckey,
@@ -290,8 +342,23 @@ def build_input(condition: dict, profile=None, template=None) -> list[GeneratedI
                 "time_min": time_min,
             },
             basename=f"gen_{_safe_stem(ckey)}_{model_label}",
+            scenario_id=f"{ckey}|{model_label}",
         ))
     return out
+
+
+def build_design_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: float,
+                       co2_scenario: str, *, sample_id: str) -> GeneratedInput:
+    """Issue one deterministic, provenance-sealed input for the surrogate-design workflow."""
+    text, assumptions = build_single_input(
+        naoh_m, liquid_solid_ratio, temperature_C, co2_scenario, label=str(sample_id))
+    scenario = config.CO2_SCENARIO_ALIASES.get(str(co2_scenario), str(co2_scenario))
+    return _issue_generated_input(
+        model_label=scenario, condition_code="design", source_condition_key=str(sample_id),
+        pqi_text=text, assumptions=assumptions,
+        metadata={"NaOH_M": float(naoh_m), "liquid_solid_ratio": float(liquid_solid_ratio),
+                  "CO2_condition": scenario, "temperature_C": float(temperature_C)},
+        basename=str(sample_id), scenario_id=str(sample_id))
 
 
 # --------------------------------------------------------------------------- #
@@ -352,9 +419,34 @@ def is_cemdata_compatible(database: str | None = None) -> bool:
     return database_defines_phases(REQUIRED_DATABASE_PHASES, database)
 
 
-def run(input_text: str, workdir, *, basename: str = "gen", exe: str | None = None,
-        database: str | None = None, timeout: float | None = None) -> Path:
-    """Run PHREEQC on ``input_text`` in ``workdir``; return the ``.pqo`` output path.
+def capture_compatible_environment(availability):
+    """Return one already-resolved legacy environment, or fail with preview-only guidance.
+
+    This helper performs no environment lookup.  UI callers use it to retain the single exact
+    identity they displayed before constructing confirmations for a whole input set.
+    """
+    from .simulation import phreeqc_run_contract as _contract
+    environment = getattr(availability, "environment_identity", None)
+    if (availability is None or not getattr(availability, "can_run", False)
+            or not isinstance(environment, _contract.ExecutionEnvironmentIdentity)):
+        message = getattr(availability, "message", None) or _SETUP_HELP
+        raise PhreeqcNotConfiguredError(
+            message + " Preview remains available; no review, confirmation, workspace, "
+            "ingestion, or subprocess will occur.")
+    if not is_cemdata_compatible(environment.database.resolved_path):
+        required = ", ".join(REQUIRED_DATABASE_PHASES)
+        raise PhreeqcNotConfiguredError(
+            "The configured database is not compatible with this legacy CEMDATA workflow "
+            f"because it does not define {required}. Preview remains available; select a "
+            "compatible database and review its identity before execution.")
+    return environment
+
+
+def run(generated_input: GeneratedInput, workdir, *, basename: str | None = None,
+        exe: str | None = None,
+        database: str | None = None, timeout: float | None = None,
+        confirmation=None) -> Path:
+    """Run one intact deterministic :class:`GeneratedInput`; return its ``.pqo`` path.
 
     Writes ``<basename>.pqi`` + ``<basename>.pqo`` under ``workdir`` and invokes the
     CLI as ``phreeqc <input> <output> <database>``. Raises
@@ -362,8 +454,39 @@ def run(input_text: str, workdir, *, basename: str = "gen", exe: str | None = No
     :class:`PhreeqcRunError` (carrying the PHREEQC error text) on timeout, non-zero
     exit, missing output, or an ``ERROR`` line in the output.
     """
-    exe_path = _resolve_exe(exe)
-    db_path = _resolve_database(database)
+    if not is_trusted_generated_input(generated_input):
+        raise PhreeqcRunError(
+            "PHREEQC execution blocked: input is not an intact deterministic GeneratedInput.")
+    expected_basename = generated_input.basename
+    if basename is not None and _safe_stem(basename) != expected_basename:
+        raise PhreeqcRunError(
+            "PHREEQC execution blocked: basename differs from the reviewed generated input.")
+    basename = expected_basename
+    from .simulation import phreeqc_executor as _executor
+    from .simulation import phreeqc_run_contract as _contract
+    preview = _contract.generated_text_preview(generated_input)
+    availability = _executor.check_availability(exe=exe, database=database)
+    readiness = _contract.assess_execution(preview, confirmation, availability)
+    if not availability.can_run or availability.environment_identity is None:
+        raise PhreeqcNotConfiguredError(availability.message + "\n" + _SETUP_HELP)
+    if not readiness.can_execute:
+        raise PhreeqcRunError("PHREEQC execution blocked: " + readiness.message)
+
+    # Execute the exact resolved files whose content identities passed assess_execution.
+    # The configured values may have been relative paths; carrying those earlier strings into
+    # a subprocess with ``cwd=workdir`` could select an unrelated decoy file.
+    exe_path = availability.executable_path
+    db_path = availability.database_path
+    if not exe_path or not db_path or not Path(exe_path).is_absolute() or not Path(db_path).is_absolute():
+        raise PhreeqcRunError(
+            "PHREEQC execution blocked: verified executable/database paths are not absolute.")
+    if not is_cemdata_compatible(db_path):
+        required = ", ".join(REQUIRED_DATABASE_PHASES)
+        raise PhreeqcNotConfiguredError(
+            "The legacy generated-condition runner requires a CEMDATA-compatible database "
+            f"defining {required}. Select a compatible database, review its identity, and "
+            "confirm again; no PHREEQC run was started.")
+    input_text = confirmation.phreeqc_input_text
     timeout = config.PHREEQC_RUN_TIMEOUT_S if timeout is None else timeout
 
     workdir = Path(workdir)
@@ -388,6 +511,47 @@ def run(input_text: str, workdir, *, basename: str = "gen", exe: str | None = No
                                                  or f"exit code {proc.returncode}")
         raise PhreeqcRunError(f"PHREEQC run failed:\n{detail}")
     return out_path
+
+
+def review_input(generated_input: GeneratedInput):
+    """Review only an intact deterministic builder-issued input; raw text is rejected."""
+    from .simulation import phreeqc_run_contract as _contract
+    return _contract.review_preview(_contract.generated_text_preview(generated_input))
+
+
+def confirm_reviewed_input(reviewed, *, exe: str | None = None, database: str | None = None,
+                           expected_environment=None):
+    """Bind a reviewed legacy snapshot to one exact executable/database identity.
+
+    When ``expected_environment`` is supplied, its resolved files are re-hashed immediately and
+    must still have the same identity.  The confirmation remains bound to that expected identity;
+    a later lookup can never silently substitute a different executable or database.
+    """
+    from .simulation import phreeqc_executor as _executor
+    from .simulation import phreeqc_run_contract as _contract
+    if expected_environment is not None:
+        if not isinstance(expected_environment, _contract.ExecutionEnvironmentIdentity):
+            raise PhreeqcNotConfiguredError(
+                "Expected PHREEQC execution environment is invalid; review and confirm again.")
+        exe = expected_environment.executable.resolved_path
+        database = expected_environment.database.resolved_path
+
+    availability = _executor.check_availability(exe=exe, database=database)
+    if not availability.can_run or availability.environment_identity is None:
+        raise PhreeqcNotConfiguredError(availability.message + "\n" + _SETUP_HELP)
+    current_environment = availability.environment_identity
+    if (expected_environment is not None
+            and current_environment.identity_hash != expected_environment.identity_hash):
+        raise PhreeqcNotConfiguredError(
+            "The PHREEQC executable or thermodynamic database changed after review; "
+            "execution was blocked. Review the environment identity and confirm again.")
+    if not is_cemdata_compatible(current_environment.database.resolved_path):
+        required = ", ".join(REQUIRED_DATABASE_PHASES)
+        raise PhreeqcNotConfiguredError(
+            "The legacy generated-condition runner requires a CEMDATA-compatible database "
+            f"defining {required}; review and select a compatible database before confirming.")
+    binding = expected_environment if expected_environment is not None else current_environment
+    return _contract.confirm_reviewed(reviewed, binding)
 
 
 # --------------------------------------------------------------------------- #

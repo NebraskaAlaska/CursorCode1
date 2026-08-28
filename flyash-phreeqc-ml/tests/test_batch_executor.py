@@ -17,15 +17,39 @@ import pytest
 from flyash_phreeqc_ml import config
 from flyash_phreeqc_ml.simulation import batch_executor as BE
 from flyash_phreeqc_ml.simulation import phreeqc_executor as E
+from flyash_phreeqc_ml.simulation import phreeqc_input_builder as B
+from flyash_phreeqc_ml.simulation import phreeqc_run_contract as C
+from flyash_phreeqc_ml.simulation import source_terms as ST
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def _previews(n, prefix="SIM"):
-    return [types.SimpleNamespace(scenario_id=f"{prefix}-{i:03d}",
-                                  phreeqc_input_text="SOLUTION 1\nEND\n")
+    return [B.PhreeqcInputPreview(
+                scenario_id=f"{prefix}-{i:03d}", phreeqc_input_text="SOLUTION 1\nEND\n",
+                template_type=B.TEMPLATE_NAOH, status=B.STATUS_READY,
+                includes_source_terms=True, source_term_mode=ST.MODE_GLOBAL,
+                source_term_status=ST.STATUS_RELEASE_INCLUDED)
             for i in range(1, n + 1)]
+
+
+def _confirmed(previews, *, exe=None, database=None):
+    availability = E.check_availability(exe=exe, database=database)
+    if availability.environment_identity is not None:
+        environment = availability.environment_identity
+    else:
+        file_identity = C.FileIdentity("/mock", "a" * 64, 1, 1, 0o755)
+        environment = C.ExecutionEnvironmentIdentity(file_identity, file_identity)
+    return [C.confirm_reviewed(C.review_preview(p), environment) for p in previews]
+
+
+def _run_batch(previews, **kwargs):
+    return BE.run_batch(
+        previews,
+        confirmations=_confirmed(
+            previews, exe=kwargs.get("exe"), database=kwargs.get("database")),
+        **kwargs)
 
 
 def _fake_exec(status_for):
@@ -52,7 +76,7 @@ def _fake_parse(ph=12.0, totals=None):
 def test_all_success(monkeypatch):
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(lambda s: E.STATUS_SUCCESS))
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse())
-    batch = BE.run_batch(_previews(3))
+    batch = _run_batch(_previews(3))
     assert batch.executed == 3 and batch.n_success == 3
     assert batch.status_counts() == {E.STATUS_SUCCESS: 3}
     assert not batch.truncated
@@ -64,7 +88,7 @@ def test_mixed_success_and_failure(monkeypatch):
         return E.STATUS_FAILED if sid.endswith("002") else E.STATUS_SUCCESS
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(status))
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse())
-    batch = BE.run_batch(_previews(3))
+    batch = _run_batch(_previews(3))
     assert batch.status_counts() == {E.STATUS_SUCCESS: 2, E.STATUS_FAILED: 1}
     # the failed scenario has no parsed values but is still in the batch
     failed = [r for r in batch.results if r.status == E.STATUS_FAILED][0]
@@ -74,7 +98,7 @@ def test_mixed_success_and_failure(monkeypatch):
 
 def test_phreeqc_missing_is_graceful(monkeypatch):
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(lambda s: E.STATUS_MISSING))
-    batch = BE.run_batch(_previews(3))
+    batch = _run_batch(_previews(3))
     assert batch.status_counts() == {E.STATUS_MISSING: 3}
     assert batch.n_success == 0                  # no crash, structured status
 
@@ -91,7 +115,7 @@ def test_one_failure_does_not_stop_the_batch(monkeypatch):
 
     monkeypatch.setattr(BE._exec, "execute_preview", _run)
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse())
-    batch = BE.run_batch(_previews(3))
+    batch = _run_batch(_previews(3))
     assert calls == ["SIM-001", "SIM-002", "SIM-003"]      # all attempted
     assert batch.executed == 3
     assert batch.status_counts().get(E.STATUS_FAILED) == 1
@@ -102,7 +126,7 @@ def test_default_scenario_limit_enforced(monkeypatch):
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(lambda s: E.STATUS_SUCCESS))
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse())
     n = BE.DEFAULT_MAX_SCENARIOS + 10
-    batch = BE.run_batch(_previews(n))
+    batch = _run_batch(_previews(n))
     assert batch.requested == n
     assert batch.executed == BE.DEFAULT_MAX_SCENARIOS
     assert batch.truncated
@@ -112,7 +136,7 @@ def test_progress_callback(monkeypatch):
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(lambda s: E.STATUS_SUCCESS))
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse())
     seen = []
-    BE.run_batch(_previews(2), on_progress=lambda i, n, sid, st: seen.append((i, n, sid, st)))
+    _run_batch(_previews(2), on_progress=lambda i, n, sid, st: seen.append((i, n, sid, st)))
     assert seen == [(1, 2, "SIM-001", E.STATUS_SUCCESS), (2, 2, "SIM-002", E.STATUS_SUCCESS)]
 
 
@@ -132,7 +156,7 @@ def test_result_table_has_required_columns(monkeypatch):
     monkeypatch.setattr(BE._exec, "execute_preview", _fake_exec(lambda s: E.STATUS_SUCCESS))
     monkeypatch.setattr(BE._exec, "parse_outputs", _fake_parse(totals={"Ca": 1.0, "Si": 2.0}))
     mtx = _matrix({"leachant_concentration_M": [0.1, 0.5, 1.0]})
-    batch = BE.run_batch(_previews(3))
+    batch = _run_batch(_previews(3))
     table = BE.build_result_table(batch, mtx)
     for col in ("scenario_id", "leachant_type", "leachant_concentration_M", "time_min",
                 "temperature_C", "status", "parse_status", "pH", "pe", "Ca_mM", "Si_mM",
@@ -208,7 +232,7 @@ def test_batch_does_not_touch_result_path_and_writes_only_to_workspace(monkeypat
                                            types.SimpleNamespace(returncode=0, stdout="",
                                                                  stderr=""))[1])
     exe, db = _fake_exe_db(tmp_path)
-    BE.run_batch(_previews(2), exe=exe, database=db)
+    _run_batch(_previews(2), exe=exe, database=db)
 
     after = results_csv.stat().st_mtime if results_csv.exists() else None
     assert before == after                        # result-path CSV untouched
@@ -238,18 +262,29 @@ def _sweep_app(monkeypatch, with_results):
     from streamlit.testing.v1 import AppTest
 
     from flyash_phreeqc_ml.ai import scenario_parser as sp
+    from flyash_phreeqc_ml.materials import profile_schema as MS
     from flyash_phreeqc_ml.simulation import matrix as MX, phreeqc_input_builder as PB
+    from flyash_phreeqc_ml.simulation import source_terms as ST2
     from flyash_phreeqc_ml.simulation.scenario_schema import SimulationScenario
 
     # report PHREEQC as configured so the run section (and its plots) can render
+    file_identity = C.FileIdentity("/mock", "a" * 64, 1, 1, 0o755)
+    environment = C.ExecutionEnvironmentIdentity(file_identity, file_identity)
     monkeypatch.setattr(E, "check_availability",
                         lambda **k: E.PhreeqcAvailability(True, True, True, True, "phreeqc",
-                                                          "/db.dat", "ready"))
+                                                          "/db.dat", "ready",
+                                                          environment_identity=environment))
     sc = SimulationScenario.from_flat_dict(dict(
         material_name="fly ash", solid_mass_g=2, liquid_volume_mL=10, leachant_type="NaOH",
         leachant_concentration_M=0.5, time_min=60, temperature_C=25, target_elements=["Ca"]))
     mtx = MX.build_simulation_matrix(sc, ranges={"leachant_concentration_M": [0.1, 0.5, 1.0]})
-    previews = PB.build_previews_for_matrix(sc, mtx)
+    profile = MS.MaterialProfile(
+        profile_id="sweep-test", material_name="fly ash",
+        composition_basis=MS.BASIS_OXIDE_WT,
+        entries=MS.parse_composition_text("CaO 20\nSiO2 40\nAl2O3 30"),
+        verification_status=MS.STATUS_USER_CONFIRMED)
+    previews = PB.build_previews_for_matrix(
+        sc, mtx, material_profile=profile, dissolution_model=ST2.global_release(0.01))
 
     at = AppTest.from_file(str(config.PROJECT_ROOT / "app.py"), default_timeout=60)
     at.run()

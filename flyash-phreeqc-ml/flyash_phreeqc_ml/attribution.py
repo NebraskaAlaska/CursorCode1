@@ -331,13 +331,14 @@ def build_attribution_inputs(row: dict, profile=None):
             ph=ph, time_min=time_min, label=ckey,
             material_inputs=material_inputs, candidate_phases=phases,
             selected_output_elements=elements)
-        out.append(phreeqc_runner.GeneratedInput(
+        out.append(phreeqc_runner._issue_generated_input(
             model_label=model_label, condition_code=code, source_condition_key=ckey,
             pqi_text=text, assumptions=tuple(assumptions),
             metadata={"NaOH_M": naoh, "liquid_solid_ratio": ls,
                       "CO2_condition": model_label, "temperature_C": temp,
                       "time_min": time_min, "attribution": True},
-            basename=f"attr_{phreeqc_runner._safe_stem(ckey)}_{model_label}"))
+            basename=f"attr_{phreeqc_runner._safe_stem(ckey)}_{model_label}",
+            scenario_id=f"attribution|{ckey}|{model_label}"))
     return out
 
 

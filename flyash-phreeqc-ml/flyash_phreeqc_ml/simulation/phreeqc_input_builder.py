@@ -22,6 +22,7 @@ review" comments.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from .. import config, profiles
@@ -42,6 +43,7 @@ SUPPORTED_TEMPLATES = (TEMPLATE_WATER, TEMPLATE_NAOH, TEMPLATE_HCL)
 STATUS_READY = "ready_for_review"
 STATUS_DRAFT = "draft_only"
 STATUS_NEEDS_COMPOSITION = "needs_material_composition"
+STATUS_NEEDS_SOURCE_TERM = "needs_source_term"
 STATUS_UNSUPPORTED_LEACHANT = "unsupported_leachant"
 STATUS_MISSING_FIELD = "missing_required_field"
 STATUS_TEMPLATE_WARNING = "template_warning"
@@ -90,12 +92,20 @@ class PhreeqcInputPreview:
     assumptions: list = field(default_factory=list)
     unsupported_features: list = field(default_factory=list)
     includes_source_terms: bool = False     # True when a material release model is applied
+    source_term_mode: str | None = None     # selected DissolutionModel mode
+    source_term_status: str | None = None   # computed source-term status
     phase_template_key: str | None = None   # the selected candidate-phase template (if any)
     database_report: object = None          # DatabaseCompatibilityReport (if a template was used)
+    execution_basename: str | None = None   # trusted legacy runner file identity (modern: None)
 
     @property
     def is_ready(self) -> bool:
         return self.status == STATUS_READY
+
+    @property
+    def input_hash(self) -> str:
+        """Deterministic identity of the exact reviewed text."""
+        return hashlib.sha256(self.phreeqc_input_text.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict:
         return {
@@ -106,6 +116,9 @@ class PhreeqcInputPreview:
             "assumptions": list(self.assumptions),
             "unsupported_features": list(self.unsupported_features),
             "includes_source_terms": self.includes_source_terms,
+            "source_term_mode": self.source_term_mode,
+            "source_term_status": self.source_term_status,
+            "input_hash": self.input_hash,
             "phase_template_key": self.phase_template_key,
             "phreeqc_input_text": self.phreeqc_input_text,
         }
@@ -169,12 +182,12 @@ def _usable_composition(material_profile) -> dict:
     return out
 
 
-def _required_field_issues(scenario: SimulationScenario, kind: str) -> list[str]:
+def _required_field_issues(scenario: SimulationScenario, kind: str, *, measured_liquid=False) -> list[str]:
     """Hard-required scenario fields that are missing (validation, section 6)."""
     issues: list[str] = []
-    if not (scenario.material.material_name or scenario.material.material_type):
+    if not measured_liquid and not (scenario.material.material_name or scenario.material.material_type):
         issues.append("material name/type")
-    if scenario.material.solid_mass_g is None:
+    if not measured_liquid and scenario.material.solid_mass_g is None:
         issues.append("solid mass (g)")
     if scenario.leachant.liquid_volume_mL is None:
         issues.append("liquid volume (mL)")
@@ -398,28 +411,35 @@ def build_phreeqc_input_preview(scenario: SimulationScenario, *,
         assumptions.append(f"temperature assumed {_fmt(S.ASSUMED_TEMPERATURE_C)} °C "
                            "(no explicit value)")
 
-    # --- validation + composition ----------------------------------------- #
-    missing = _required_field_issues(scenario, kind)
+    # --- composition + material source term (dissolution / release model) -- #
+    composition = _usable_composition(material_profile)
+    composition_available = bool(composition)
+
+    source_term = _source_terms.compute_source_terms(
+        dissolution_model, material_profile=material_profile,
+        solid_mass_g=scenario.material.solid_mass_g,
+        liquid_volume_mL=scenario.leachant.liquid_volume_mL,
+        target_elements=_target_elements(scenario))
+    measured_liquid = source_term.status == _source_terms.STATUS_MEASURED_LIQUID
+    missing = _required_field_issues(scenario, kind, measured_liquid=measured_liquid)
     if missing:
         warnings.append("Missing required field(s): " + ", ".join(missing)
                         + " — the draft below uses placeholders for them.")
-    composition = _usable_composition(material_profile)
-    composition_available = bool(composition)
-    if not composition_available:
+    if not composition_available and not measured_liquid:
         warnings.append(
             "Material composition is not available as an approved profile assay — a "
             "meaningful PHREEQC prediction requires a measured or literature-confirmed "
             "material composition. The draft is structural only.")
         unsupported.append("dissolved material composition (no usable declared assay)")
 
-    # --- material source term (dissolution / release model) --------------- #
-    source_term = _source_terms.compute_source_terms(
-        dissolution_model, material_profile=material_profile,
-        solid_mass_g=scenario.material.solid_mass_g,
-        liquid_volume_mL=scenario.leachant.liquid_volume_mL,
-        target_elements=_target_elements(scenario))
     assumptions += list(source_term.assumptions)
     warnings += source_term.warning_messages()
+    source_ready = source_term.status in (
+        _source_terms.STATUS_RELEASE_INCLUDED, _source_terms.STATUS_MEASURED_LIQUID)
+    if composition_available and not source_ready:
+        warnings.append(
+            "The confirmed bulk composition is previewable, but it does not enter the PHREEQC "
+            "system until an explicit usable release/source term is selected.")
 
     # --- candidate phases + database compatibility ------------------------ #
     template_phase_names = list(phase_template.phase_names()) if phase_template is not None else []
@@ -459,10 +479,14 @@ def build_phreeqc_input_preview(scenario: SimulationScenario, *,
         status = STATUS_UNSUPPORTED_LEACHANT
     elif missing:
         status = STATUS_MISSING_FIELD
-    elif composition_available:
+    elif measured_liquid:
+        status = STATUS_READY if kind == TEMPLATE_NAOH else STATUS_TEMPLATE_WARNING
+    elif (source_term.status == _source_terms.STATUS_RELEASE_INCLUDED
+          and composition_available):
         status = STATUS_READY if kind == TEMPLATE_NAOH else STATUS_TEMPLATE_WARNING
     elif material_profile is not None:
-        status = STATUS_NEEDS_COMPOSITION
+        status = (STATUS_NEEDS_SOURCE_TERM if composition_available
+                  else STATUS_NEEDS_COMPOSITION)
     else:
         status = STATUS_DRAFT
 
@@ -473,6 +497,7 @@ def build_phreeqc_input_preview(scenario: SimulationScenario, *,
         scenario_id=scenario_id, phreeqc_input_text=text, template_type=kind, status=status,
         warnings=warnings, assumptions=assumptions, unsupported_features=unsupported,
         includes_source_terms=source_term.has_source_terms,
+        source_term_mode=source_term.mode, source_term_status=source_term.status,
         phase_template_key=getattr(phase_template, "key", None),
         database_report=database_report)
 

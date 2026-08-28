@@ -81,6 +81,28 @@ VALIDATION_LABELS = {
     VALIDATION_VALIDATED: "Validated against measured experiments",
 }
 
+# Training-data provenance/status is distinct from validation status.  It records what kind of
+# rows were allowed into training and must survive persistence independently of filenames.
+TRAINING_DATA_APPROVED = "approved"
+TRAINING_DATA_EXPLORATORY = "exploratory"
+TRAINING_DATA_SYNTHETIC_DEMO = "synthetic_demo"
+TRAINING_DATA_LEGACY_UNKNOWN = "legacy_unknown"
+TRAINING_DATA_STATUSES = (
+    TRAINING_DATA_APPROVED, TRAINING_DATA_EXPLORATORY, TRAINING_DATA_SYNTHETIC_DEMO,
+    TRAINING_DATA_LEGACY_UNKNOWN,
+)
+TRAINING_DATA_LABELS = {
+    TRAINING_DATA_APPROVED: "Approved training data",
+    TRAINING_DATA_EXPLORATORY: "Exploratory training data — not approved for reliance",
+    TRAINING_DATA_SYNTHETIC_DEMO: "Synthetic demo training data — workflow testing only",
+    TRAINING_DATA_LEGACY_UNKNOWN: "Legacy model — training-data status unknown",
+}
+
+
+def normalize_training_data_status(value) -> str:
+    """Return a known status; missing/unrecognised legacy values fail conservative."""
+    return value if value in TRAINING_DATA_STATUSES else TRAINING_DATA_LEGACY_UNKNOWN
+
 
 def is_supported_target(target) -> bool:
     return target in SUPPORTED_TARGETS
@@ -125,6 +147,8 @@ class TrainedModel:
     card: dict = field(default_factory=dict)
     source_type: str = "unknown"             # literature / lab / manual / synthetic_demo / mixed
     validation_status: str = VALIDATION_EXPERIMENTAL
+    # Conservative default is intentional: old joblib artifacts lack this instance attribute.
+    training_data_status: str = TRAINING_DATA_LEGACY_UNKNOWN
     n_train: int = 0
     n_validation: int = 0
     version: str = MODEL_VERSION
@@ -132,7 +156,20 @@ class TrainedModel:
 
     @property
     def is_demo(self) -> bool:
-        return self.validation_status == VALIDATION_DEMO
+        return (self.validation_status == VALIDATION_DEMO
+                or self.training_status == TRAINING_DATA_SYNTHETIC_DEMO)
+
+    @property
+    def training_status(self) -> str:
+        return normalize_training_data_status(getattr(self, "training_data_status", None))
+
+    @property
+    def is_exploratory(self) -> bool:
+        return self.training_status == TRAINING_DATA_EXPLORATORY
+
+    @property
+    def is_legacy_unknown(self) -> bool:
+        return self.training_status == TRAINING_DATA_LEGACY_UNKNOWN
 
     @property
     def is_validated(self) -> bool:
@@ -140,5 +177,6 @@ class TrainedModel:
         return self.validation_status == VALIDATION_VALIDATED
 
     def display_label(self) -> str:
-        tag = " · DEMO" if self.is_demo else ""
+        tag = (" · DEMO" if self.is_demo else " · EXPLORATORY" if self.is_exploratory
+               else " · LEGACY/UNKNOWN" if self.is_legacy_unknown else "")
         return f"{target_display(self.target)} — {MODEL_TYPE_LABELS.get(self.model_type, self.model_type)}{tag}"

@@ -235,6 +235,32 @@ def infer_dataset_source_type(rows) -> str:
     return "mixed"
 
 
+def infer_training_data_status(rows, *, exploratory: bool = False) -> str:
+    """Classify the scientific training-data gate represented by ``rows``.
+
+    This is derived from the row-level authority (source type, review, provenance, extraction
+    confidence), not a filename or display label.  Explicit exploratory mode is durable even when
+    a particular filtered subset happens to contain only otherwise-approved rows.
+    """
+    rows = list(rows or [])
+    if rows and all(r.source_type == SOURCE_DEMO for r in rows):
+        return model_schema.TRAINING_DATA_SYNTHETIC_DEMO
+    if exploratory:
+        return model_schema.TRAINING_DATA_EXPLORATORY
+    for row in rows:
+        if row.source_type == SOURCE_DEMO:
+            return model_schema.TRAINING_DATA_EXPLORATORY
+        if row.user_review_status != REVIEW_APPROVED:
+            return model_schema.TRAINING_DATA_EXPLORATORY
+        if not row.has_provenance:
+            return model_schema.TRAINING_DATA_EXPLORATORY
+        if (row.source_type == SOURCE_LITERATURE
+                and float(row.extraction_confidence or 0.0) < DEFAULT_MIN_CONFIDENCE):
+            return model_schema.TRAINING_DATA_EXPLORATORY
+    return (model_schema.TRAINING_DATA_APPROVED if rows
+            else model_schema.TRAINING_DATA_LEGACY_UNKNOWN)
+
+
 # --------------------------------------------------------------------------- #
 # Persistence (JSONL; safe path enforced by the caller via the registry dir)
 # --------------------------------------------------------------------------- #

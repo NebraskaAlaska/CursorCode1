@@ -15,6 +15,10 @@ NOT_VALIDATED_NOTE = ("This is an experimental surrogate estimate, not a validat
                       "measurement. Validate against measured experiments before relying on it.")
 DEMO_NOTE = ("DEMO MODEL — trained on synthetic data for workflow testing only. This number is "
              "meaningless; it is not a real or validated prediction.")
+EXPLORATORY_NOTE = ("EXPLORATORY MODEL — training admitted rows outside the approved default "
+                    "eligibility gate. This is not an approved-data model.")
+LEGACY_UNKNOWN_NOTE = ("LEGACY MODEL — the saved artifact did not record training-data "
+                       "eligibility status. Treat its training provenance as unknown.")
 
 REFUSE_NO_MODEL = "no_model"
 REFUSE_UNSUPPORTED = "unsupported_target"
@@ -36,6 +40,7 @@ class Prediction:
     n_training_rows: int = 0
     source_of_model: str = ""
     status: str = ""                              # demo / experimental
+    training_data_status: str = model_schema.TRAINING_DATA_LEGACY_UNKNOWN
     is_demo: bool = False
     warnings: list = field(default_factory=list)
     refused: bool = False
@@ -90,7 +95,11 @@ def predict(model: model_schema.TrainedModel | None, features: dict) -> Predicti
     target = model.target
     if not model_schema.is_supported_target(target):
         return _refuse(target, REFUSE_UNSUPPORTED,
-                       f"Target {target!r} is not supported by this engine.")
+                       f"Target {target!r} is not supported by this engine.",
+                       model_name=model.name, model_version=model.version,
+                       n_training_rows=model.n_train, source_of_model=model.source_type,
+                       status=model.validation_status,
+                       training_data_status=model.training_status, is_demo=model.is_demo)
 
     known = _coerce_features(features)
     if not any(k in known for k in feature_schema.CORE_FEATURES):
@@ -100,7 +109,8 @@ def predict(model: model_schema.TrainedModel | None, features: dict) -> Predicti
             f"({', '.join(feature_schema.feature_label(c) for c in feature_schema.CORE_FEATURES)}).",
             model_name=model.name, model_version=model.version,
             n_training_rows=model.n_train, source_of_model=model.source_type,
-            status=model.validation_status, is_demo=model.is_demo, used_features=known)
+            status=model.validation_status, training_data_status=model.training_status,
+            is_demo=model.is_demo, used_features=known)
 
     # Build the single-row frame over the model's own feature set.
     x_df = preprocessing.single_row_frame(known, model.numeric_features, model.categorical_features)
@@ -109,6 +119,10 @@ def predict(model: model_schema.TrainedModel | None, features: dict) -> Predicti
     warnings: list = []
     if model.is_demo:
         warnings.append(DEMO_NOTE)
+    elif model.is_exploratory:
+        warnings.append(EXPLORATORY_NOTE)
+    elif model.is_legacy_unknown:
+        warnings.append(LEGACY_UNKNOWN_NOTE)
     warnings.append(NOT_VALIDATED_NOTE)
 
     # Missing model features (warn — they were median/“unknown”-imputed).
@@ -158,5 +172,6 @@ def predict(model: model_schema.TrainedModel | None, features: dict) -> Predicti
         interval_method=method, model_name=model.name, model_version=model.version,
         n_training_rows=model.n_train, source_of_model=model.source_type,
         status=model.validation_status, is_demo=model.is_demo, warnings=warnings,
+        training_data_status=model.training_status,
         used_features=known, missing_features=missing, out_of_domain=out_of_domain,
         unseen_categories=unseen)

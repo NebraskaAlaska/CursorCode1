@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ..simulation import rule_parser, safety
+from ..simulation import phreeqc_run_contract, rule_parser, safety
 from ..simulation import scenario_schema as S
 from ..simulation.scenario_schema import SimulationScenario
 from . import domains
@@ -64,10 +64,6 @@ DB_CHECKED = "checked"
 PREVIEW_NONE = "not_built"
 EXEC_NONE = "not_run"
 EXEC_DONE = "run"
-
-# Mirror the phreeqc_input_builder status values that mean "composition available → a run is
-# meaningful". Kept as local literals so this pure-data module imports no builder/executor.
-_RUNNABLE_PREVIEW_STATUSES = ("ready_for_review", "template_warning")
 
 # Explicit run lifecycle (the single answer the UI shows for "where am I in the run?").
 # missing_inputs → ready_for_review → awaiting_confirmation → (confirm) → executed | failed.
@@ -224,6 +220,9 @@ class AgentState:
     # When a RUN action is parked, the *exact* reviewed preview is snapshotted here so confirming
     # executes the stored, reviewed input — never a fresh rebuild from possibly-changed state.
     pending_preview: object = None         # phreeqc_input_builder.PhreeqcInputPreview snapshot
+    pending_previews: list = field(default_factory=list)       # exact live previews parked to run
+    pending_reviews: list = field(default_factory=list)        # immutable reviewed snapshots
+    pending_confirmations: list = field(default_factory=list)  # created only on explicit confirm
     # The signature of the inputs the current ``preview`` was built from; a mismatch on a later
     # turn means a dependency changed → invalidate the stale preview (with a clear reason).
     preview_signature: object = None
@@ -352,18 +351,9 @@ class AgentState:
 
     @property
     def preview_runnable(self) -> bool:
-        """A built preview whose composition is available (so a run is meaningful).
-
-        Uses the stored ``preview_status`` string (set by the build tool) so this pure-data
-        module never imports the builder/executor. A **parked** run also counts as runnable via
-        its preview *snapshot* (``pending_preview``) — so confirming runs the reviewed input even
-        if the live ``preview`` was meanwhile cleared. (A scenario change clears the snapshot too,
-        so a stale parked run can never run.)
-        """
-        pp = self.pending_preview
-        if pp is not None and getattr(pp, "status", None) in _RUNNABLE_PREVIEW_STATUSES:
-            return True
-        return self.preview is not None and self.preview_status in _RUNNABLE_PREVIEW_STATUSES
+        """Whether the authoritative shared scientific preview contract is satisfied."""
+        preview = self.pending_preview if self.pending_preview is not None else self.preview
+        return phreeqc_run_contract.assess_preview(preview).scientific_ready
 
     @property
     def run_lifecycle(self) -> str:
@@ -384,23 +374,54 @@ class AgentState:
         """A hashable signature of every input the PHREEQC preview is built from.
 
         Combines the preview-affecting scenario fields, the release model (mode + fraction), the
-        material profile (id + usability), and the database path. A change between turns means a
-        previously-built preview is stale and must be rebuilt — caught by the orchestrator, which
-        clears it with a clear reason. Pure; never raises.
+        material profile (id + usability), and the database path/content identity. A change
+        between turns means a previously-built preview is stale and must be rebuilt — caught by
+        the orchestrator, which clears it with a clear reason. Pure; never raises.
         """
         flat = self.scenario.to_flat_dict()
 
         def _h(v):
-            return tuple(v) if isinstance(v, (list, tuple)) else v
+            if isinstance(v, dict):
+                return tuple(sorted((str(k), _h(val)) for k, val in v.items()))
+            if isinstance(v, (list, tuple, set)):
+                return tuple(_h(x) for x in v)
+            if hasattr(v, "to_dict"):
+                try:
+                    return _h(v.to_dict())
+                except Exception:
+                    pass
+            return v
 
         sc = tuple((k, _h(flat.get(k))) for k in _PREVIEW_SIGNATURE_FIELDS)
         rm = self.release_model
-        rm_sig = ((getattr(rm, "mode", None), getattr(rm, "global_fraction", None))
-                  if rm is not None else (None, None))
+        rm_sig = ((getattr(rm, "mode", None), getattr(rm, "global_fraction", None),
+                   _h(getattr(rm, "per_element", {}) or {}),
+                   _h(getattr(rm, "measured_liquid_mM", {}) or {}),
+                   getattr(rm, "provenance", None), getattr(rm, "confirmed", False),
+                   getattr(rm, "allow_over_unity", False))
+                  if rm is not None else (None, None, (), (), None, False, False))
         mp = self.material_profile
-        mp_sig = ((getattr(mp, "profile_id", None), bool(getattr(mp, "is_usable", False)))
-                  if mp is not None else (None, False))
-        return (sc, rm_sig, mp_sig, self.database_path)
+        if mp is None:
+            mp_sig = (None, False, ())
+        else:
+            assays = []
+            for element in getattr(mp, "relevant_elements", ()) or ():
+                try:
+                    assay = mp.usable_assay(element)
+                except Exception:
+                    assay = None
+                if assay is not None:
+                    assays.append((element, getattr(assay, "value", None),
+                                   getattr(assay, "unit", None),
+                                   getattr(assay, "provenance", None)))
+            mp_sig = (getattr(mp, "profile_id", getattr(mp, "material_id", None)),
+                      bool(getattr(mp, "is_usable", False)), tuple(assays),
+                      _h(getattr(mp, "candidate_phases", {}) or {}))
+        pt = self.phase_template
+        phase_sig = (getattr(pt, "key", None), _h(getattr(pt, "phases", ()) or ()))
+        database_sig = (self.database_path,
+                        phreeqc_run_contract.optional_file_identity_hash(self.database_path))
+        return (sc, rm_sig, mp_sig, database_sig, phase_sig)
 
     @property
     def has_results(self) -> bool:

@@ -18,6 +18,7 @@ from flyash_phreeqc_ml.ai import scenario_parser as ai_scenario_parser  # noqa: 
 from flyash_phreeqc_ml.simulation import scenario_schema as sim_schema  # noqa: E402
 from flyash_phreeqc_ml.simulation import matrix as sim_matrix  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder  # noqa: E402  (deterministic .pqi preview)
+from flyash_phreeqc_ml.simulation import phreeqc_run_contract  # noqa: E402  (shared run gate)
 from flyash_phreeqc_ml.simulation import source_terms as sim_source_terms  # noqa: E402  (release model)
 from flyash_phreeqc_ml.simulation import phase_templates as sim_phase_templates  # noqa: E402
 from flyash_phreeqc_ml.simulation import database_compatibility as sim_dbcompat  # noqa: E402
@@ -79,6 +80,7 @@ _PREVIEW_STATUS_LEVEL = {
     phreeqc_input_builder.STATUS_READY: "exact",
     phreeqc_input_builder.STATUS_TEMPLATE_WARNING: "scenario-level",
     phreeqc_input_builder.STATUS_NEEDS_COMPOSITION: "preliminary",
+    phreeqc_input_builder.STATUS_NEEDS_SOURCE_TERM: "preliminary",
     phreeqc_input_builder.STATUS_DRAFT: "preliminary",
     phreeqc_input_builder.STATUS_MISSING_FIELD: "unsafe",
     phreeqc_input_builder.STATUS_UNSUPPORTED_LEACHANT: "unsafe",
@@ -548,6 +550,23 @@ def _release_model_key(model):
             tuple(sorted((getattr(model, "measured_liquid_mM", {}) or {}).items())),
             getattr(model, "allow_over_unity", False), getattr(model, "confirmed", False))
 
+
+def _material_profile_key(profile):
+    """Composition-sensitive identity so an edited profile cannot reuse an old preview."""
+    if profile is None:
+        return None
+    assays = []
+    for element in getattr(profile, "relevant_elements", ()) or ():
+        try:
+            assay = profile.usable_assay(element)
+        except Exception:
+            assay = None
+        if assay is not None:
+            assays.append((element, getattr(assay, "value", None), getattr(assay, "unit", None),
+                           getattr(assay, "provenance", None)))
+    return (getattr(profile, "profile_id", getattr(profile, "material_id", None)),
+            bool(getattr(profile, "is_usable", False)), tuple(assays))
+
 def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
                                   dissolution_model=None, phase_template=None) -> None:
     """Deterministic PHREEQC input preview from a confirmed plan — in-memory, download-only.
@@ -579,8 +598,11 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
         st.caption(f"Material profile **{material_profile.display_name}** is selected but **not "
                    "confirmed** — confirm it in Step 7 to include its composition.")
     # Stale-preview guard: rebuild if the profile, release model, or phase template changed.
-    cache_key = (mpid, _release_model_key(dissolution_model),
-                 getattr(phase_template, "key", None))
+    database_path = config.PHREEQC_DATABASE_PATH
+    database_key = (database_path,
+                    phreeqc_run_contract.optional_file_identity_hash(database_path))
+    cache_key = (_material_profile_key(material_profile), _release_model_key(dissolution_model),
+                 getattr(phase_template, "key", None), database_key)
     if st.session_state.get("sim_previews_key", cache_key) != cache_key:
         st.session_state.pop("sim_previews", None)
 
@@ -628,6 +650,7 @@ def _render_phreeqc_input_preview(scenario, matrix, material_profile=None,
 # Step 9 — Run deterministic model (gated PHREEQC execution; off the result path)
 # --------------------------------------------------------------------------- #
 _EXEC_STATUS_LEVEL = {
+    phreeqc_executor.STATUS_BLOCKED: "unsafe",
     phreeqc_executor.STATUS_SUCCESS: "exact",
     phreeqc_executor.STATUS_FAILED: "unsafe",
     phreeqc_executor.STATUS_TIMEOUT: "unsafe",
@@ -642,20 +665,8 @@ def _render_run_deterministic_model(previews, matrix=None) -> None:
     predictions, and never touch mapping / residuals / validation / the comparison.
     """
     st.markdown("#### Step 9 — Run deterministic model")
-    av = phreeqc_executor.check_availability()
-    cfg_badge = app_ui.status_badge("PHREEQC configured" if av.can_run else "PHREEQC not configured",
-                                    "exact" if av.can_run else "preliminary")
-    st.markdown(cfg_badge, unsafe_allow_html=True)
-
     if not previews:
         st.info("Generate an input preview in **Step 8** first — then you can run it here.")
-        return
-    if not av.can_run:
-        app_ui.render_warning_panel("PHREEQC execution is not configured", av.message,
-                                    level="warning")
-        st.caption("To enable execution, set `PHREEQC_EXE` (the `phreeqc` binary, or put it on "
-                   "PATH) and `PHREEQC_DATABASE` (your CEMDATA18 `.dat` file — not shipped). The "
-                   "planner, preview, and download all work fully without this.")
         return
 
     ids = [p.scenario_id for p in previews]
@@ -670,10 +681,24 @@ def _render_run_deterministic_model(previews, matrix=None) -> None:
         + app_ui.status_badge(pv.status.replace("_", " "),
                               _PREVIEW_STATUS_LEVEL.get(pv.status, "neutral")),
         unsafe_allow_html=True)
-    if pv.status != phreeqc_input_builder.STATUS_READY:
-        st.warning(f"This input is `{pv.status}` (not `ready_for_review`). You can still run it, "
-                   "but the result will reflect the input's limitations (e.g. missing material "
-                   "composition).")
+    readiness = phreeqc_run_contract.assess_preview(pv)
+    if not readiness.scientific_ready:
+        app_ui.render_warning_panel(
+            "This preview cannot execute", readiness.message
+            + " Preview and download remain available in Step 8.", level="warning")
+        return
+
+    av = phreeqc_executor.check_availability()
+    cfg_badge = app_ui.status_badge("PHREEQC configured" if av.can_run else "PHREEQC not configured",
+                                    "exact" if av.can_run else "preliminary")
+    st.markdown(cfg_badge, unsafe_allow_html=True)
+    if not av.can_run:
+        app_ui.render_warning_panel("PHREEQC execution is not configured", av.message,
+                                    level="warning")
+        st.caption("To enable execution, set `PHREEQC_EXE` (the `phreeqc` binary, or put it on "
+                   "PATH) and `PHREEQC_DATABASE` (your CEMDATA18 `.dat` file — not shipped). The "
+                   "planner, preview, and download all work fully without this.")
+        return
     app_ui.render_warning_panel(
         "This runs deterministic PHREEQC",
         "It executes the reviewed input text exactly. It is not AI-generated output and is not "
@@ -684,10 +709,16 @@ def _render_run_deterministic_model(previews, matrix=None) -> None:
                "`data/raw` or the source tree).")
 
     confirm = st.checkbox("I have reviewed this input and want to run PHREEQC on it.",
-                          key=f"sim_exec_confirm_{chosen}")
-    if st.button("Run PHREEQC", disabled=not confirm, key=f"sim_exec_btn_{chosen}"):
+                          key=(f"sim_exec_confirm_{chosen}_{pv.input_hash[:12]}_"
+                               f"{av.environment_identity.identity_hash[:12]}"))
+    if st.button("Run PHREEQC", disabled=not confirm,
+                 key=(f"sim_exec_btn_{chosen}_{pv.input_hash[:12]}_"
+                      f"{av.environment_identity.identity_hash[:12]}")):
         with st.spinner("Running PHREEQC…"):
-            result = phreeqc_executor.execute_preview(pv)
+            reviewed = phreeqc_run_contract.review_preview(pv)
+            confirmation = phreeqc_run_contract.confirm_reviewed(
+                reviewed, av.environment_identity)
+            result = phreeqc_executor.execute_preview(pv, confirmation=confirmation)
             parsed = (phreeqc_executor.parse_outputs(result)
                       if result.status == phreeqc_executor.STATUS_SUCCESS else None)
         st.session_state.setdefault("sim_exec_results", {})[chosen] = {
@@ -715,6 +746,15 @@ def _render_run_sweep(previews, matrix) -> None:
     n_run = min(n, maxn)
     st.caption(f"The plan has **{n}** scenario(s); each one invokes PHREEQC and may take a few "
                "seconds. This prototype runs small, confirmed sweeps only.")
+    blocked = [(p, phreeqc_run_contract.assess_preview(p)) for p in previews
+               if not phreeqc_run_contract.assess_preview(p).scientific_ready]
+    if blocked:
+        first, readiness = blocked[0]
+        app_ui.render_warning_panel(
+            "Sweep cannot execute",
+            f"{first.scenario_id}: {readiness.message} All sweep previews remain available for "
+            "review/download.", level="warning")
+        return
     if n > maxn:
         app_ui.render_warning_panel(
             f"Large sweep — only the first {maxn} will run",
@@ -726,17 +766,30 @@ def _render_run_sweep(previews, matrix) -> None:
         "against measured data. Outputs are simulation results, not validated predictions.",
         level="warning")
 
+    av = phreeqc_executor.check_availability()
+    if not av.can_run or av.environment_identity is None:
+        app_ui.render_warning_panel("PHREEQC execution is not configured", av.message,
+                                    level="warning")
+        return
+    environment_hash = av.environment_identity.identity_hash
+    set_hash = phreeqc_run_contract.preview_set_hash(previews)
+    st.caption(f"Reviewed preview-set identity: `{set_hash}`")
     confirm = st.checkbox(
         f"I have reviewed these inputs and want to run {n_run} PHREEQC scenario(s).",
-        key="sim_sweep_confirm")
-    if st.button("Run confirmed sweep", disabled=not confirm, key="sim_sweep_btn"):
+        key=f"sim_sweep_confirm_{set_hash[:12]}_{environment_hash[:12]}")
+    if st.button("Run confirmed sweep", disabled=not confirm,
+                 key=f"sim_sweep_btn_{set_hash[:12]}_{environment_hash[:12]}"):
         prog = st.progress(0.0, text="Starting…")
 
         def _cb(i, total, sid, status):
             prog.progress(i / max(1, total), text=f"[{i}/{total}] {sid} — {status}")
 
         with st.spinner("Running sweep…"):
-            batch = batch_executor.run_batch(previews, on_progress=_cb)
+            reviews = [phreeqc_run_contract.review_preview(p) for p in previews]
+            confirmations = [phreeqc_run_contract.confirm_reviewed(
+                r, av.environment_identity) for r in reviews]
+            batch = batch_executor.run_batch(
+                previews, confirmations=confirmations, on_progress=_cb)
         prog.empty()
         st.session_state["sim_batch_result"] = batch
         st.session_state["sim_batch_matrix"] = matrix
@@ -1419,13 +1472,33 @@ def _render_target_matching(scenario, material_profile, phase_template, base_rel
     if material_profile is None or not getattr(material_profile, "is_usable", False):
         st.warning("No confirmed material profile (Step 7) — material composition is not included, "
                    "so predicted element totals will be ~0 and element targets cannot be matched. "
-                   "Confirm a profile to make element matching meaningful (pH-only targets still "
-                   "work).")
+                   "Confirm a profile and select an explicit release/source term before running. "
+                   "The candidate inputs remain previewable.")
+
+    previews = _build_target_previews(
+        candidates, material_profile=material_profile, phase_template=phase_template,
+        base_release_model=base_release_model)
+    set_hash = phreeqc_run_contract.preview_set_hash(previews)
+    st.markdown("**Exact PHREEQC input previews for review**")
+    preview_id = st.selectbox(
+        "Candidate input", [p.scenario_id for p in previews], key="sim_tm_preview_choice")
+    preview = next(p for p in previews if p.scenario_id == preview_id)
+    st.code(preview.phreeqc_input_text, language="text")
+    st.caption(f"Preview-set identity: `{set_hash}`")
 
     # 3) run --------------------------------------------------------------- #
     st.markdown("##### 3 · Run the search")
     if not spec.is_defined:
         st.info("Define a target (step 1) before running the search.")
+        return
+    blocked = [(p, phreeqc_run_contract.assess_preview(p)) for p in previews
+               if not phreeqc_run_contract.assess_preview(p).scientific_ready]
+    if blocked:
+        first, readiness = blocked[0]
+        app_ui.render_warning_panel(
+            "Target search cannot execute",
+            f"{first.scenario_id}: {readiness.message} The candidate inputs remain previewable.",
+            level="warning")
         return
     av = phreeqc_executor.check_availability()
     if not av.can_run:
@@ -1440,18 +1513,22 @@ def _render_target_matching(scenario, material_profile, phase_template, base_rel
         "validated against measured data. Nothing runs automatically.", level="warning")
     confirm = st.checkbox(
         f"I have reviewed the target + grid and want to run {len(candidates)} PHREEQC scenario(s).",
-        key="sim_tm_confirm")
-    if st.button("Run target search", disabled=not confirm, key="sim_tm_run"):
+        key=(f"sim_tm_confirm_{set_hash[:12]}_"
+             f"{av.environment_identity.identity_hash[:12]}"))
+    if st.button("Run target search", disabled=not confirm,
+                 key=(f"sim_tm_run_{set_hash[:12]}_"
+                      f"{av.environment_identity.identity_hash[:12]}")):
         prog = st.progress(0.0, text="Starting…")
 
         def _cb(i, total, sid, status):
             prog.progress(i / max(1, total), text=f"[{i}/{total}] {sid} — {status}")
 
-        with st.spinner("Building inputs + running candidates…"):
-            previews = _build_target_previews(
-                candidates, material_profile=material_profile, phase_template=phase_template,
-                base_release_model=base_release_model)
-            batch = batch_executor.run_batch(previews, max_scenarios=cap, on_progress=_cb)
+        with st.spinner("Running the reviewed candidate inputs…"):
+            reviews = [phreeqc_run_contract.review_preview(p) for p in previews]
+            confirmations = [phreeqc_run_contract.confirm_reviewed(
+                r, av.environment_identity) for r in reviews]
+            batch = batch_executor.run_batch(
+                previews, confirmations=confirmations, max_scenarios=cap, on_progress=_cb)
         prog.empty()
         meta = sim_target.candidate_metadata_frame(candidates)
         table = batch_executor.build_result_table(batch, meta)

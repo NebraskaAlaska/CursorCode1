@@ -97,6 +97,8 @@ class ModelRegistry:
         return {
             "name": model.name, "target": model.target, "model_type": model.model_type,
             "model_family": model.model_family, "validation_status": model.validation_status,
+            "training_data_status": model.training_status,
+            "training_data_status_label": model_schema.TRAINING_DATA_LABELS[model.training_status],
             "source_type": model.source_type, "n_train": int(model.n_train),
             "n_validation": int(model.n_validation), "version": model.version,
             "date": model.created,
@@ -110,13 +112,23 @@ class ModelRegistry:
         path = self.model_dir(name) / MODEL_ARTIFACT
         if not path.exists():
             raise ModelNotFoundError(f"no saved model named {name!r}")
-        return joblib.load(path)
+        model = joblib.load(path)
+        if "training_data_status" not in getattr(model, "__dict__", {}):
+            model.training_data_status = model_schema.TRAINING_DATA_LEGACY_UNKNOWN
+        model.training_data_status = model_schema.normalize_training_data_status(
+            model.training_data_status)
+        if not isinstance(getattr(model, "card", None), dict):
+            model.card = {}
+        _apply_conservative_card_defaults(model.card, model.training_status)
+        return model
 
     def model_card(self, name: str) -> dict:
         p = self.card_path(name)
         if not p.exists():
             raise ModelNotFoundError(f"no model card for {name!r}")
-        return json.loads(p.read_text(encoding="utf-8"))
+        card = json.loads(p.read_text(encoding="utf-8"))
+        _apply_conservative_card_defaults(card, card.get("training_data_status"))
+        return card
 
     def list_models(self) -> list:
         """Index records (from ``meta.json``) for every saved model — no artifact load."""
@@ -133,6 +145,9 @@ class ModelRegistry:
             except (json.JSONDecodeError, OSError):
                 rec = {}
             rec.setdefault("name", child.name)
+            status = model_schema.normalize_training_data_status(rec.get("training_data_status"))
+            rec["training_data_status"] = status
+            rec["training_data_status_label"] = model_schema.TRAINING_DATA_LABELS[status]
             out.append(rec)
         return out
 
@@ -160,7 +175,9 @@ def available_targets(base_dir) -> set:
 def has_strength_model(base_dir, *, include_demo: bool = True) -> bool:
     """True if a trained mechanical-property (composite) model exists under ``base_dir``.
 
-    ``include_demo=False`` ignores demo models (so the assistant offers only a real surrogate).
+    ``include_demo=False`` offers only models whose persisted training-data status is approved
+    **and** whose validation status is not demo. Demo-validation, synthetic, exploratory, and
+    legacy/unknown artifacts remain discoverable but are not offered as an ordinary surrogate.
     """
     try:
         reg = ModelRegistry(base_dir)
@@ -169,7 +186,23 @@ def has_strength_model(base_dir, *, include_demo: bool = True) -> bool:
     for rec in reg.list_models():
         if rec.get("target") not in model_schema.SUPPORTED_TARGETS:
             continue
-        if not include_demo and rec.get("validation_status") == model_schema.VALIDATION_DEMO:
-            continue
+        if not include_demo:
+            if rec.get("training_data_status") != model_schema.TRAINING_DATA_APPROVED:
+                continue
+            if rec.get("validation_status") == model_schema.VALIDATION_DEMO:
+                continue
         return True
     return False
+
+
+def _apply_conservative_card_defaults(card: dict, status) -> None:
+    """Expose an explicit legacy/unknown status for cards written before this field existed."""
+    normalized = model_schema.normalize_training_data_status(status)
+    card["training_data_status"] = normalized
+    card["training_data_status_label"] = model_schema.TRAINING_DATA_LABELS[normalized]
+    if normalized == model_schema.TRAINING_DATA_LEGACY_UNKNOWN:
+        warning = ("LEGACY MODEL — training-data eligibility status was not persisted; treat its "
+                   "training provenance as unknown.")
+        limits = card.setdefault("limitations", [])
+        if warning not in limits:
+            limits.insert(0, warning)
