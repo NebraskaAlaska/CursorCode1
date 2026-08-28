@@ -161,7 +161,10 @@ def main(run_name: str | None = None) -> None:
     phreeqc_results = pd.read_csv(results_path)
 
     mapping = _load_mapping()
-    comparison = compare_measured_vs_phreeqc(measured, phreeqc_results, mapping=mapping)
+    comparison = compare_measured_vs_phreeqc(
+        measured, phreeqc_results, mapping=mapping,
+        require_explicit_icp_stage=True,
+    )
 
     # Global artifacts (the CLI-only pipeline path — always written).
     out = config.PROCESSED_DIR / config.COMPARISON_CSV

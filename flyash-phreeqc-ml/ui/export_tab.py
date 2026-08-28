@@ -165,7 +165,9 @@ def _render_help_tab() -> None:
         "`residual_X = measured − PHREEQC` (in mM for Ca/Si/Al/Fe; pH for pH). Positive means "
         "the measured value is higher than the PHREEQC prediction. Fe is often unpredicted by "
         "the CEMDATA18 runs, so `residual_Fe` may be entirely NaN — that means **unavailable**, "
-        "not 'PHREEQC predicts zero Fe'."
+        "not 'PHREEQC predicts zero Fe'. Historical ICP residuals without explicit Phase 1B "
+        "eligibility metadata are **QC unverified / legacy unknown**: they remain visible but "
+        "cannot support statistics, training, plots, or validation until the comparison is re-run."
     )
 
     st.subheader("Limitations & safety")

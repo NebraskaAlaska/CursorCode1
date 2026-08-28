@@ -52,6 +52,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from .. import profiles, replicates, scenarios
+from ..instruments import icp_processor as icp_qc
 from . import residual_stats
 
 # Data-sufficiency gate (the whole point: do not pretend to learn from too little).
@@ -204,6 +205,9 @@ def _extract_exact(comparison_df: pd.DataFrame, statuses, element: str, profile)
     if replicates.CONDITION_KEY_COLUMN not in df.columns:
         df = replicates.annotate(df, profile)
     ex = df[residual_stats.exact_mask(df, statuses).values].copy()
+    if element != "pH":
+        eligible = icp_qc.serialized_residual_eligibility_mask(ex, element)
+        ex = ex[eligible].copy()
     if ex.empty:
         return empty
     ex["__residual"] = pd.to_numeric(ex[cols["residual"]], errors="coerce")

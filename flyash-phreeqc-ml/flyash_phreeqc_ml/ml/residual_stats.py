@@ -37,6 +37,7 @@ import math
 import pandas as pd
 
 from .. import config, profiles, replicates
+from ..instruments import icp_processor as icp_qc
 
 # Minimum exact-mapped pairs before a mean bias is shown as a number (not a guess).
 DEFAULT_MIN_N = 5
@@ -109,6 +110,13 @@ def _with_condition_key(df: pd.DataFrame, profile) -> pd.DataFrame:
     return replicates.annotate(df, profile)
 
 
+def _residual_qc_mask(df: pd.DataFrame, element: str) -> pd.Series:
+    """Defense-in-depth mask for serialized ICP residual eligibility."""
+    if element == "pH":
+        return pd.Series(True, index=df.index)
+    return icp_qc.serialized_residual_eligibility_mask(df, element)
+
+
 def _stat_row(element: str, condition_key: str, series: pd.Series,
               unit: str, min_n: int) -> dict:
     """One bias-table row: count, mean, sample std (ddof=1), sem, sufficiency."""
@@ -159,9 +167,10 @@ def bias_table(comparison_df: pd.DataFrame, statuses, min_n: int = DEFAULT_MIN_N
     for element, residual_col, unit in element_specs(profile):
         if residual_col not in exact.columns:
             continue
+        eligible = exact[_residual_qc_mask(exact, element)].copy()
         sub = pd.DataFrame({
-            "condition_key": exact[replicates.CONDITION_KEY_COLUMN].astype(str),
-            "residual": pd.to_numeric(exact[residual_col], errors="coerce"),
+            "condition_key": eligible[replicates.CONDITION_KEY_COLUMN].astype(str),
+            "residual": pd.to_numeric(eligible[residual_col], errors="coerce"),
         }).dropna(subset=["residual"])
         if sub.empty:
             continue
@@ -188,6 +197,7 @@ def exact_residuals(comparison_df: pd.DataFrame, statuses, element: str,
         return empty
     df = _with_condition_key(comparison_df.copy(), profile)
     exact = df[exact_mask(df, statuses).values]
+    exact = exact[_residual_qc_mask(exact, element)]
     if exact.empty:
         return empty
     out = pd.DataFrame({

@@ -20,10 +20,12 @@ from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
+from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
 from flyash_phreeqc_ml.viz import measured_overview  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402
 
-from ui.common import _audit_once, _png_provenance_caption, _render_next_step
+from ui.common import (_audit_once, _png_provenance_caption,
+                       _render_legacy_icp_qc_warning, _render_next_step)
 from ui.state import MODEL_NAME, _COMPARISON_FIGURES, _PROJECT_ROOT, _read_csv
 
 # Processed CSVs surfaced first in the data viewer.
@@ -87,6 +89,15 @@ def _render_basic_validation_summary(run_name: str) -> None:
     else:
         report = pd.DataFrame(real)[["severity", "check", "column", "message"]]
         st.dataframe(report, use_container_width=True, height=200)
+
+    qc_table = icp_qc.wide_qc_table(data)
+    if not qc_table.empty:
+        st.markdown("**ICP row eligibility (invalid/censored rows remain visible)**")
+        display = qc_table.copy()
+        display.insert(0, "QC", display["qc_status"].map(icp_qc.qc_display_label))
+        st.dataframe(display, use_container_width=True, height=260, hide_index=True)
+        st.caption("Only ✓ usable rows can enter an ordinary measured-vs-predicted residual. "
+                   "<DL/censored, review-required, and excluded rows remain evidence, not zeros.")
 
 def _render_overview_plot(ov: dict, variable: str, overlay: bool,
                           err_kind: str = "std") -> list[str]:
@@ -255,6 +266,7 @@ def _render_residual_audit() -> None:
         return
 
     comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    legacy_icp_count = _render_legacy_icp_qc_warning(comp)
     audit = calculations.audit_comparison(comp)
     if audit.empty:
         st.info("Comparison file has no residual columns to audit yet.")
@@ -272,10 +284,16 @@ def _render_residual_audit() -> None:
             "At least one stored residual does **not** match a fresh recomputation. "
             "Investigate the mapping / units before trusting the comparison."
         )
-    else:
+    elif not legacy_icp_count:
         st.success(
             "Every re-derivable residual matches the stored value within tolerance "
             f"(pass ≤ {calculations.PASS_TOL:g}, warning ≤ {calculations.WARN_TOL:g})."
+        )
+    else:
+        st.info(
+            "The arithmetic audit can re-derive stored values, but arithmetic agreement "
+            "does not establish ICP QC eligibility. Legacy/unknown ICP residuals remain "
+            "validation-ineligible until the comparison is regenerated."
         )
 
     display = audit.copy()
@@ -283,7 +301,8 @@ def _render_residual_audit() -> None:
     st.dataframe(display, use_container_width=True, height=300)
     st.caption(
         "`input_1 − input_2` is recomputed and compared to the stored residual. "
-        "'not available' means a required input (or the stored value) is blank."
+        "'not available' means a required input (or the stored value) is blank. This is "
+        "an arithmetic-integrity check, not an ICP validation-eligibility decision."
     )
 
 def _render_unit_registry() -> None:

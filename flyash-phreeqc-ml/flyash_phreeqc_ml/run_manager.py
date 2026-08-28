@@ -457,6 +457,19 @@ def _append_row(path: Path, row: dict, columns: list[str]) -> Path:
     return path
 
 
+def _frame_has_icp_evidence(frame: pd.DataFrame) -> bool:
+    """True when a wide frame supplies any ICP token, including invalid text."""
+    icp_columns = [
+        col for col in ("Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM")
+        if col in frame.columns
+    ]
+    for col in icp_columns:
+        supplied = frame[col].notna() & frame[col].astype(str).str.strip().ne("")
+        if bool(supplied.any()):
+            return True
+    return False
+
+
 def append_lab_row(run_name: str, row: dict) -> Path:
     """Append a measured-release row to a lab-type run (pH-only or full ICP).
 
@@ -464,7 +477,23 @@ def append_lab_row(run_name: str, row: dict) -> Path:
     runs.
     """
     path = lab_release_path(run_name)
-    return _append_row(path, row, config.EXPERIMENTAL_RELEASE_COLUMNS)
+    aligned = {col: ("" if row.get(col) is None else row.get(col))
+               for col in config.EXPERIMENTAL_RELEASE_COLUMNS}
+    frame = pd.DataFrame([aligned], columns=config.EXPERIMENTAL_RELEASE_COLUMNS)
+    from .instruments import icp_processor as icp_qc
+    if _frame_has_icp_evidence(frame):
+        frame = icp_qc.annotate_wide_final_concentrations(
+            frame, role=icp_qc.MEASURED, require_explicit_stage=True)
+    if path.exists():
+        existing = pd.read_csv(path)
+        columns = list(dict.fromkeys([*existing.columns, *frame.columns]))
+        frame = pd.concat(
+            [existing.reindex(columns=columns), frame.reindex(columns=columns)],
+            ignore_index=True,
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+    return path
 
 
 def append_literature_row(run_name: str, row: dict) -> Path:
@@ -526,9 +555,13 @@ def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace",
     extra = [c for c in df.columns if c not in config.EXPERIMENTAL_RELEASE_COLUMNS]
     ordered = list(config.EXPERIMENTAL_RELEASE_COLUMNS) + extra
     out = df.reindex(columns=ordered)
+    from .instruments import icp_processor as icp_qc
+    if _frame_has_icp_evidence(out):
+        out = icp_qc.annotate_wide_final_concentrations(
+            out, role=icp_qc.MEASURED, require_explicit_stage=True)
     if mode == "append" and path.exists():
         existing = pd.read_csv(path)
-        cols = ordered + [c for c in existing.columns if c not in ordered]
+        cols = list(dict.fromkeys([*ordered, *out.columns, *existing.columns]))
         out = pd.concat(
             [existing.reindex(columns=cols), out.reindex(columns=cols)],
             ignore_index=True,

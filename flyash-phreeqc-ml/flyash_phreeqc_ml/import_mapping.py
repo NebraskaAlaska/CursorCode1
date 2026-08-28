@@ -36,6 +36,7 @@ import pandas as pd
 
 from . import config, profiles, units
 from .calculations import ATOMIC_MASSES  # back-compat re-export (== units.MOLAR_MASSES)
+from .instruments import icp_processor as icp_qc
 
 
 class ImportMappingError(Exception):
@@ -50,7 +51,15 @@ class ImportMappingError(Exception):
 # tooling that reads the fixed schema is unaffected — see run_manager).
 LEACHANT_COLUMN = "leachant"
 ACID_M_COLUMN = "acid_M"
-MAPPING_TARGETS = list(config.EXPERIMENTAL_RELEASE_COLUMNS) + [LEACHANT_COLUMN, ACID_M_COLUMN]
+_ICP_CONTROL_COLUMNS = {
+    config.ICP_INPUT_STAGE_COLUMN,
+    config.ICP_STAGE_CONFIRMED_COLUMN,
+    config.ICP_ROLE_COLUMN,
+    config.ICP_RESOLUTION_PROVENANCE_COLUMN,
+}
+MAPPING_TARGETS = [
+    c for c in config.EXPERIMENTAL_RELEASE_COLUMNS if c not in _ICP_CONTROL_COLUMNS
+] + [LEACHANT_COLUMN, ACID_M_COLUMN]
 
 # Schema chemistry columns that can be unit-converted, mapped to their element key
 # in ATOMIC_MASSES. Sc/REE are intentionally absent (kept in ppb).
@@ -433,6 +442,10 @@ def build_schema_frame(
     sheet_name: str = "",
     import_timestamp: str | None = None,
     default_leachant: str = "NaOH",
+    icp_input_stage: str = icp_qc.UNKNOWN_STAGE,
+    icp_stage_confirmed: bool = False,
+    icp_role: str = icp_qc.MEASURED,
+    icp_resolution_provenance: str = "",
     profile=None,
 ) -> pd.DataFrame:
     """Transform a raw upload into a release-schema frame with provenance.
@@ -445,6 +458,10 @@ def build_schema_frame(
       wrong conversion is auditable later. Values already in mM get
       ``conversion_id == "identity"``. The unit is validated against the dataset
       profile's accepted set first (an undeclared unit is refused, not guessed).
+    * Wide chemistry values are explicitly described as final corrected
+      concentrations (or left unconfirmed/review-required).  Per-analyte QC and
+      correction-provenance columns are appended through the authoritative ICP
+      contract; a missing raw dilution is never represented as a measured ``1.0``.
     * ``leachant``/``acid_M`` are filled from their mapped columns or the
       ``default_leachant``; rows whose leachant looks like an acid get ``NaOH_M``
       blanked and an ``import_warning`` (acids are never forced into ``NaOH_M``).
@@ -512,6 +529,15 @@ def build_schema_frame(
     out[LEACHANT_COLUMN] = leachant.to_numpy()
     out[ACID_M_COLUMN] = acid_m.to_numpy() if hasattr(acid_m, "to_numpy") else list(acid_m)
 
+    # This wide schema receives concentrations that are already final/reduced.  It
+    # is not the raw-reading processor, so no blank or dilution value is invented.
+    # The UI makes the confirmation explicit; programmatic callers must choose the
+    # corresponding arguments deliberately.
+    out[config.ICP_INPUT_STAGE_COLUMN] = icp_input_stage
+    out[config.ICP_STAGE_CONFIRMED_COLUMN] = bool(icp_stage_confirmed)
+    out[config.ICP_ROLE_COLUMN] = icp_qc.canonical_role(icp_role) or str(icp_role or "")
+    out[config.ICP_RESOLUTION_PROVENANCE_COLUMN] = icp_resolution_provenance
+
     out["original_file_name"] = filename
     out["original_sheet_name"] = sheet_name
     out["original_row_number"] = [i + 2 for i in range(n)]  # header is row 1
@@ -526,12 +552,18 @@ def build_schema_frame(
     for col in unmapped_columns(raw, mapping):
         out[f"{EXTRA_COLUMN_PREFIX}{col}"] = raw[col].values
 
+    out = icp_qc.annotate_wide_final_concentrations(
+        out, role=icp_qc.MEASURED, require_explicit_stage=True)
+
     ordered = (
         list(config.EXPERIMENTAL_RELEASE_COLUMNS)
         + [LEACHANT_COLUMN, ACID_M_COLUMN]
         + PROVENANCE_COLUMNS
         + list(conversion_companions.keys())
-        + [c for c in out.columns if c.startswith(EXTRA_COLUMN_PREFIX)]
+        + [c for c in out.columns if c not in config.EXPERIMENTAL_RELEASE_COLUMNS
+           and c not in (LEACHANT_COLUMN, ACID_M_COLUMN)
+           and c not in PROVENANCE_COLUMNS
+           and c not in conversion_companions]
     )
     return out.reindex(columns=ordered)
 
@@ -575,6 +607,7 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
             "converted_columns": {},
             "classifications": {},
             "co2_unresolved": 0,
+            "icp_qc_counts": {},
         }
 
     df = schema_df.reset_index(drop=True)
@@ -635,6 +668,12 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
         present = vals[(vals != "") & (vals.str.lower() != "nan")]
         co2_unresolved = int((~present.isin(allowed)).sum())
 
+    qc_table = icp_qc.wide_qc_table(df)
+    icp_qc_counts = (
+        {str(k): int(v) for k, v in qc_table["qc_status"].value_counts().items()}
+        if not qc_table.empty else {}
+    )
+
     return {
         "n_rows": len(df),
         "missing_required_columns": missing_cols,
@@ -646,4 +685,5 @@ def summarize_import(schema_df: pd.DataFrame, units: dict[str, str] | None = Non
         "converted_columns": converted,
         "classifications": classifications,
         "co2_unresolved": co2_unresolved,
+        "icp_qc_counts": icp_qc_counts,
     }

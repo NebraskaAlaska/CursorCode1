@@ -24,22 +24,31 @@ from .state import get_agent_state
 # A representative demo ICP table: measured (with dilution/blank/detection-limit) + predicted, so
 # the residual table and the QC flags are both exercised. Synthetic demo values, clearly labelled.
 _ICP_DEMO_ROWS = [
-    {"sample_id": "L1", "element": "Ca", "concentration": 84, "unit": "mg/L",
+    {"row_id": "valid-ca", "sample_id": "L1", "element": "Ca", "concentration": 84, "unit": "mg/L",
      "dilution_factor": 10, "blank_value": 0.5, "detection_limit": 0.05,
      "measured_or_predicted": "measured"},
-    {"sample_id": "L1", "element": "Si", "concentration": 28, "unit": "mg/L",
+    {"row_id": "valid-si", "sample_id": "L1", "element": "Si", "concentration": 28, "unit": "mg/L",
      "dilution_factor": 10, "measured_or_predicted": "measured"},
-    {"sample_id": "L1", "element": "Ca", "concentration": 21, "unit": "mM",
+    {"row_id": "pred-ca", "sample_id": "L1", "element": "Ca", "concentration": 21, "unit": "mM",
+     "dilution_factor": 1.0,
      "measured_or_predicted": "predicted"},
-    {"sample_id": "L1", "element": "Si", "concentration": 9.5, "unit": "mM",
+    {"row_id": "pred-si", "sample_id": "L1", "element": "Si", "concentration": 9.5, "unit": "mM",
+     "dilution_factor": 1.0,
      "measured_or_predicted": "predicted"},
-    {"sample_id": "L1", "element": "Sc", "concentration": 0.02, "unit": "ppb",
-     "detection_limit": 0.05, "measured_or_predicted": "measured"},
+    {"row_id": "below-dl", "sample_id": "L1", "element": "Sc", "concentration": 0.02, "unit": "ppb",
+     "dilution_factor": 1.0, "detection_limit": 0.05,
+     "measured_or_predicted": "measured"},
+    {"row_id": "hard-invalid", "sample_id": "L2", "element": "Ca", "concentration": -1.0,
+     "unit": "mg/L", "dilution_factor": 1.0, "measured_or_predicted": "measured"},
 ]
 
-_CORRECTED_COLS = ["sample_id", "element", "role", "input_value", "input_unit", "dilution_factor",
-                   "blank_value", "corrected_value", "value_mM", "below_detection_limit",
-                   "conversion_id"]
+_CORRECTED_COLS = [
+    "row_id", "sample_id", "element", "role", "supplied_concentration", "supplied_unit",
+    "supplied_dilution_factor", "supplied_blank_value", "blank_correction_applied",
+    "blank_corrected_value", "corrected_value", "value_mM", "supplied_detection_limit",
+    "below_detection_limit", "below_blank", "conversion_id", "conversion_authority",
+    "qc_display", "qc_status", "qc_codes", "qc_reasons", "validation_eligible", "resolutions",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -138,7 +147,8 @@ def _render_icp_module() -> None:
                         key="lab_icp_unit")
     dil = q4.number_input("Dilution ×", min_value=0.0, value=1.0, step=1.0, key="lab_icp_dil")
     quick = icp.process([{"sample_id": "quick", "element": element, "concentration": value,
-                          "unit": unit, "dilution_factor": dil}])
+                          "unit": unit, "dilution_factor": dil,
+                          "measured_or_predicted": "measured"}])
     qrow = quick.corrected[0]
     if qrow.value_mM is not None:
         st.success(f"{value:g} {unit} {element} (×{dil:g}) = **{qrow.value_mM:.4g} mM** "
@@ -146,18 +156,68 @@ def _render_icp_module() -> None:
     else:
         st.warning("; ".join(qrow.warnings) or "could not convert this value.")
 
-    st.markdown("**Demo table** — dilution + blank correction, below-detection flagging, and a "
-                "measured-vs-predicted residual table (synthetic demo values):")
-    st.dataframe(pd.DataFrame(_ICP_DEMO_ROWS), use_container_width=True, hide_index=True)
-    result = icp.process(_ICP_DEMO_ROWS)
+    st.markdown("**QC work table** — editable synthetic examples. Invalid and censored rows stay "
+                "visible but cannot enter a residual:")
+    base_rows = st.session_state.get("lab_icp_resolved_rows", _ICP_DEMO_ROWS)
+    edited = st.data_editor(
+        pd.DataFrame(base_rows), num_rows="dynamic", use_container_width=True,
+        hide_index=True, key="lab_icp_rows_editor")
+    rows = edited.to_dict("records")
+
+    with st.expander("Resolve a reviewable metadata issue", expanded=False):
+        st.caption("Only unit, dilution, role, element, or sample ID can be corrected here. "
+                   "Negative/non-finite concentrations, invalid blanks, and invalid detection "
+                   "limits cannot be approved anyway.")
+        row_ids = [str(r.get("row_id") or "") for r in rows if str(r.get("row_id") or "")]
+        if row_ids:
+            c1, c2 = st.columns(2)
+            selected_id = c1.selectbox("Row ID", row_ids, key="lab_icp_resolution_row")
+            field = c2.selectbox("Reviewable field",
+                                 ["dilution_factor", "unit", "role", "element", "sample_id"],
+                                 key="lab_icp_resolution_field")
+            replacement = c1.text_input("Corrected/replacement value",
+                                        key="lab_icp_resolution_value")
+            resolved_by = c2.text_input("Resolved by", value="user",
+                                        key="lab_icp_resolution_by")
+            reason = st.text_input("Reason / evidence", key="lab_icp_resolution_reason")
+            if st.button("Apply explicit QC correction", key="lab_icp_resolution_apply"):
+                try:
+                    rows = [
+                        icp.resolve_reviewable_issue(
+                            row, field=field, replacement_value=replacement,
+                            resolved_by=resolved_by, reason=reason)
+                        if str(row.get("row_id")) == selected_id else row
+                        for row in rows
+                    ]
+                    st.session_state["lab_icp_resolved_rows"] = rows
+                    st.success("Correction recorded with original and replacement provenance.")
+                except icp.QcResolutionError as exc:
+                    st.error(str(exc))
+        else:
+            st.caption("Add a stable row_id before recording a correction.")
+
+    result = icp.process(rows)
     _render_icp_result(result)
 
 
 def _render_icp_result(result) -> None:
-    st.markdown("**Corrected concentrations**")
-    rows = [{c: r.to_dict().get(c) for c in _CORRECTED_COLS} for r in result.corrected]
+    st.markdown("**Processed concentrations and QC eligibility**")
+    rows = []
+    for corrected in result.corrected:
+        record = corrected.to_dict()
+        record["qc_display"] = icp.qc_display_label(corrected.qc_status)
+        record["qc_codes"] = " | ".join(corrected.qc_codes)
+        record["qc_reasons"] = " | ".join(corrected.qc_reasons)
+        rows.append({c: record.get(c) for c in _CORRECTED_COLS})
     st.dataframe(pd.DataFrame(rows, columns=_CORRECTED_COLS), use_container_width=True,
                  hide_index=True)
+    st.download_button(
+        "Download processed ICP QC table (CSV)",
+        data=pd.DataFrame(result.corrected_export_table()).to_csv(index=False).encode("utf-8"),
+        file_name="processed_icp_qc.csv", mime="text/csv", key="lab_icp_qc_download")
+    summary = result.qc_summary()
+    st.caption("QC status — " + " · ".join(
+        f"{icp.qc_display_label(status)}: {summary[status]}" for status in icp.QC_STATUSES))
     if result.residuals:
         st.markdown("**Validation residuals** (measured − predicted)")
         st.dataframe(pd.DataFrame(result.residual_table()), use_container_width=True,

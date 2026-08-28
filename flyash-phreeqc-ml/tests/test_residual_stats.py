@@ -28,6 +28,7 @@ def _row(sid, residual_ca, *, residual_ph=None, source_type=None, **extra):
         "time_min": 10,
         "liquid_solid_ratio": 5,
         "residual_Ca": residual_ca,
+        "residual_Ca_validation_eligible": True,
     }
     if residual_ph is not None:
         row["residual_pH"] = residual_ph

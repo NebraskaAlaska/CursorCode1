@@ -28,6 +28,7 @@ import re
 import pandas as pd
 
 from . import profiles, scenarios
+from .instruments import icp_processor as icp_qc
 
 # Measured columns summarised / compared, mapped to their manifest prediction col.
 VALUE_COLUMNS = ["final_pH", "Ca_mM", "Si_mM", "Al_mM"]
@@ -76,6 +77,28 @@ _REPLICATE_RE = re.compile(r"(?:^|[-_ ])(?:R|REP|REPLICATE|BATCH)\s*[-_]?\s*(\d+
 # --------------------------------------------------------------------------- #
 def _to_float(value):
     return scenarios._to_float(value)
+
+
+def _mask_ineligible_icp_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Blank only the arithmetic copy of QC-blocked ICP values; source rows remain visible."""
+    if df is None:
+        return pd.DataFrame()
+    out = df.copy()
+    require_stage = any(
+        c in out.columns for c in (
+            "icp_input_stage", "Ca_mM_qc_status", "Si_mM_qc_status", "Al_mM_qc_status"))
+    for element in ("Ca", "Si", "Al", "Fe"):
+        col = f"{element}_mM"
+        if col not in out.columns:
+            continue
+        for idx, row in out.iterrows():
+            decision = icp_qc.decision_from_wide_row(
+                row.to_dict(), col, role=icp_qc.MEASURED, element=element,
+                require_explicit_stage=require_stage,
+            )
+            if not decision.validation_eligible:
+                out.at[idx, col] = float("nan")
+    return out
 
 
 def _num(value) -> str:
@@ -269,7 +292,7 @@ def replicate_summary(df: pd.DataFrame, profile=None) -> pd.DataFrame:
     selects the grouping (and, for a non-fly-ash profile, the value columns); it defaults
     to the fly-ash profile so existing callers are unchanged.
     """
-    ann = annotate(df, profile)
+    ann = annotate(_mask_ineligible_icp_values(df), profile)
     # Fly-ash default keeps the canonical pH/Ca/Si/Al stat columns; a non-fly-ash
     # profile summarises its own variable columns instead.
     if profile is None or getattr(profile, "grouping", "generic") == "fly_ash":
@@ -313,10 +336,13 @@ def _mapping_dict(condition_map) -> dict[str, str]:
                 if not _is_blank(k) and not _is_blank(v)}
     out: dict[str, str] = {}
     if isinstance(condition_map, pd.DataFrame) and CONDITION_KEY_COLUMN in condition_map.columns:
-        for _, r in condition_map.iterrows():
+        keys = condition_map[CONDITION_KEY_COLUMN].astype(str).str.strip()
+        counts = keys.value_counts(dropna=False)
+        for idx, r in condition_map.iterrows():
             ck = str(r.get(CONDITION_KEY_COLUMN, "")).strip()
             key = str(r.get("phreeqc_record_key", "")).strip()
-            if ck and key and key.lower() != "nan":
+            if (ck and key and key.lower() != "nan"
+                    and int(counts.get(ck, 0)) == 1):
                 out[ck] = key
     return out
 
@@ -385,10 +411,14 @@ def expand_replicate_solution_mapping(df: pd.DataFrame, condition_map,
 def _manifest_predictions(manifest: pd.DataFrame) -> dict[str, dict]:
     if manifest is None or manifest.empty or "phreeqc_record_key" not in manifest.columns:
         return {}
-    out: dict[str, dict] = {}
-    for _, r in manifest.iterrows():
-        out[str(r.get("phreeqc_record_key", "")).strip()] = r.to_dict()
-    return out
+    normalized = manifest.reset_index(drop=True)
+    keys = normalized["phreeqc_record_key"].astype(str).str.strip()
+    counts = keys.value_counts(dropna=False)
+    return {
+        key: normalized.loc[idx].to_dict()
+        for idx, key in keys.items()
+        if key and key.lower() != "nan" and int(counts.get(key, 0)) == 1
+    }
 
 
 def condition_mean_comparison(df: pd.DataFrame, condition_map, manifest: pd.DataFrame) -> pd.DataFrame:
@@ -423,6 +453,11 @@ def condition_mean_comparison(df: pd.DataFrame, condition_map, manifest: pd.Data
             mean = _to_float(s[f"mean_{c}"])
             std = _to_float(s[f"std_{c}"])
             pcol = _to_float(pred.get(PREDICTION_COLUMN[c]))
+            if c.endswith("_mM"):
+                predicted_qc = icp_qc.assess_final_concentration(
+                    pcol, role=icp_qc.PREDICTED,
+                    element=RESIDUAL_LABEL[c], unit="mM")
+                pcol = predicted_qc.numeric_value if predicted_qc.validation_eligible else None
             resid = (mean - pcol) if (mean is not None and pcol is not None) else None
             row[f"mean_{c}"] = s[f"mean_{c}"]
             row[f"std_{c}"] = s[f"std_{c}"]
@@ -445,12 +480,17 @@ def condition_mean_comparison(df: pd.DataFrame, condition_map, manifest: pd.Data
 def individual_replicate_comparison(df: pd.DataFrame, sample_mapping: pd.DataFrame,
                                     manifest: pd.DataFrame) -> pd.DataFrame:
     """Per-replicate comparison: each measured row vs its mapped PHREEQC solution."""
-    ann = annotate(df)
+    ann = annotate(_mask_ineligible_icp_values(df))
     preds = _manifest_predictions(manifest)
     smap: dict[str, str] = {}
     if sample_mapping is not None and not sample_mapping.empty and "sample_id" in sample_mapping.columns:
-        for _, m in sample_mapping.iterrows():
-            smap[str(m.get("sample_id", "")).strip()] = str(m.get("phreeqc_record_key", "")).strip()
+        normalized_mapping = sample_mapping.reset_index(drop=True)
+        sample_ids = normalized_mapping["sample_id"].astype(str).str.strip()
+        sample_counts = sample_ids.value_counts(dropna=False)
+        for idx, sid in sample_ids.items():
+            if sid and sid.lower() != "nan" and int(sample_counts.get(sid, 0)) == 1:
+                smap[sid] = str(
+                    normalized_mapping.loc[idx].get("phreeqc_record_key", "")).strip()
 
     cols = (["sample_id", "condition_key", "replicate_id", "phreeqc_record_key"]
             + [c for c in VALUE_COLUMNS]
@@ -468,6 +508,11 @@ def individual_replicate_comparison(df: pd.DataFrame, sample_mapping: pd.DataFra
                 label = RESIDUAL_LABEL[c]
                 meas = _to_float(r.get(c))
                 pcol = _to_float(pred.get(PREDICTION_COLUMN[c]))
+                if c.endswith("_mM"):
+                    predicted_qc = icp_qc.assess_final_concentration(
+                        pcol, role=icp_qc.PREDICTED,
+                        element=label, unit="mM")
+                    pcol = predicted_qc.numeric_value if predicted_qc.validation_eligible else None
                 row[c] = r.get(c, "")
                 row[f"phreeqc_{label}"] = pcol if pcol is not None else float("nan")
                 row[f"residual_{label}"] = (meas - pcol) if (meas is not None and pcol is not None) else float("nan")

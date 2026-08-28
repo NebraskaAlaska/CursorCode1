@@ -20,9 +20,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .. import config
+from ..instruments import icp_processor as icp_qc
 
 VALIDATION_REPORT_COLUMNS = ["source", "severity", "check", "column", "n_affected", "message"]
 
@@ -149,10 +151,29 @@ def validate_experimental_df(df: pd.DataFrame, *, source: str = "<dataframe>") -
     for col in _CONCENTRATION_COLUMNS:
         series = _numeric(df, col)
         if series is not None:
+            nonfinite = int((series.notna() & ~np.isfinite(series)).sum())
+            if nonfinite:
+                add("error", "concentration_finite",
+                    f"{nonfinite} row(s) have NaN/infinite {col}",
+                    column=col, n_affected=nonfinite)
             bad = int((series < 0).sum())
             if bad:
                 add("error", "concentration_nonnegative",
                     f"{bad} row(s) have negative {col}", column=col, n_affected=bad)
+
+    # The same authoritative per-analyte eligibility contract used by comparison.
+    qc_table = icp_qc.wide_qc_table(df)
+    if not qc_table.empty:
+        blocked = qc_table[qc_table["qc_status"] != icp_qc.QC_USABLE]
+        for status, group in blocked.groupby("qc_status", sort=True):
+            severity = "error" if status == icp_qc.QC_EXCLUDED else "warning"
+            reasons = sorted({str(v) for v in group["qc_reasons"] if str(v) and str(v) != "nan"})
+            add(
+                severity, f"icp_qc_{status}",
+                f"{len(group)} ICP analyte row(s) are {status} and validation-ineligible"
+                + (f": {'; '.join(reasons[:3])}" if reasons else ""),
+                column="ICP QC", n_affected=len(group),
+            )
 
     # --- soft warnings ----------------------------------------------------- #
     present_chem = [c for c in _CHEMISTRY_COLUMNS if c in df.columns]

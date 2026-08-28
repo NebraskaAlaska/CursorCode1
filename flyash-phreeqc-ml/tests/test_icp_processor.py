@@ -16,7 +16,13 @@ from flyash_phreeqc_ml.instruments import icp_processor as icp
 
 
 def _one(rows, **kw):
-    return icp.process(rows, **kw).corrected[0]
+    complete = []
+    for supplied in rows:
+        row = dict(supplied)
+        row.setdefault("dilution_factor", 1.0)
+        row.setdefault("measured_or_predicted", "measured")
+        complete.append(row)
+    return icp.process(complete, **kw).corrected[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -71,10 +77,13 @@ def test_blank_correction_can_be_disabled():
     assert row.value_mM == pytest.approx(10.0)
 
 
-def test_blank_above_signal_clamps_to_zero_and_warns():
+def test_blank_above_signal_preserves_negative_net_and_censors():
     res = icp.process([{"sample_id": "S1", "element": "Ca", "concentration": 0.2, "unit": "mM",
-                        "blank_value": 0.5}])
-    assert res.corrected[0].blank_corrected_value == 0.0
+                       "blank_value": 0.5, "dilution_factor": 1.0,
+                       "measured_or_predicted": "measured"}])
+    assert res.corrected[0].blank_corrected_value == pytest.approx(-0.3)
+    assert res.corrected[0].value_mM is None
+    assert res.corrected[0].qc_status == icp.QC_CENSORED
     assert any("below blank" in w or "≥ reading" in w for w in res.warnings)
 
 
@@ -98,7 +107,7 @@ def test_blank_and_dilution_compose_in_order():
 def test_missing_unit_warns_and_does_not_convert():
     res = icp.process([{"sample_id": "S1", "element": "Ca", "concentration": 84}])
     assert res.corrected[0].value_mM is None
-    assert any("missing unit" in w for w in res.warnings)
+    assert any("unit is missing" in w for w in res.warnings)
 
 
 def test_unknown_element_warns_and_does_not_convert():
@@ -112,9 +121,15 @@ def test_negative_value_is_flagged_impossible():
     assert any("negative" in w and "impossible" in w for w in res.warnings)
 
 
-def test_missing_dilution_factor_defaults_to_one():
+def test_missing_dilution_factor_requires_review_without_fallback():
     row = _one([{"sample_id": "S1", "element": "Ca", "concentration": 84, "unit": "mg/L"}])
+    # _one supplies an explicit factor for ordinary conversion tests.
     assert row.dilution_factor == 1.0
+    unresolved = icp.process([{"sample_id": "S1", "element": "Ca", "concentration": 84,
+                               "unit": "mg/L", "measured_or_predicted": "measured"}]).corrected[0]
+    assert unresolved.dilution_factor is None
+    assert unresolved.value_mM is None
+    assert unresolved.qc_status == icp.QC_REVIEW_REQUIRED
 
 
 # --------------------------------------------------------------------------- #
@@ -123,13 +138,13 @@ def test_missing_dilution_factor_defaults_to_one():
 def test_measured_vs_predicted_residual_table():
     res = icp.process([
         {"sample_id": "S1", "element": "Ca", "concentration": 2.1, "unit": "mM",
-         "measured_or_predicted": "measured"},
+         "dilution_factor": 1.0, "measured_or_predicted": "measured"},
         {"sample_id": "S1", "element": "Ca", "concentration": 2.5, "unit": "mM",
-         "measured_or_predicted": "predicted"},
+         "dilution_factor": 1.0, "measured_or_predicted": "predicted"},
         {"sample_id": "S1", "element": "Si", "concentration": 0.8, "unit": "mM",
-         "measured_or_predicted": "measured"},
+         "dilution_factor": 1.0, "measured_or_predicted": "measured"},
         {"sample_id": "S1", "element": "Si", "concentration": 0.7, "unit": "mM",
-         "measured_or_predicted": "predicted"},
+         "dilution_factor": 1.0, "measured_or_predicted": "predicted"},
     ])
     by_el = {r.element: r for r in res.residuals}
     assert set(by_el) == {"Ca", "Si"}
@@ -140,16 +155,16 @@ def test_measured_vs_predicted_residual_table():
 
 def test_no_residuals_when_only_measured_or_only_predicted():
     res = icp.process([{"sample_id": "S1", "element": "Ca", "concentration": 2.1, "unit": "mM",
-                        "measured_or_predicted": "measured"}])
+                       "dilution_factor": 1.0, "measured_or_predicted": "measured"}])
     assert res.residuals == []
 
 
 def test_predicted_zero_gives_undefined_percent_difference():
     res = icp.process([
         {"sample_id": "S1", "element": "Ca", "concentration": 1.0, "unit": "mM",
-         "measured_or_predicted": "measured"},
+         "dilution_factor": 1.0, "measured_or_predicted": "measured"},
         {"sample_id": "S1", "element": "Ca", "concentration": 0.0, "unit": "mM",
-         "measured_or_predicted": "predicted"},
+         "dilution_factor": 1.0, "measured_or_predicted": "predicted"},
     ])
     assert res.residuals[0].percent_difference is None
 

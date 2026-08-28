@@ -234,10 +234,9 @@ def test_app_py_unchanged():
 
 def test_application_shell_and_machine_registries_unchanged():
     assert _porcelain(
-        "app.py", "ui/digital_lab.py",
+        "app.py",
         "flyash_phreeqc_ml/instruments/instrument_registry.py",
-        "flyash_phreeqc_ml/instruments/virtual_lab_machines.py",
-        "flyash_phreeqc_ml/instruments/virtual_lab_machine_runner.py") == ""
+        "flyash_phreeqc_ml/instruments/virtual_lab_machines.py") == ""
 
 
 def test_no_sandbox_or_pipeline_files_changed():

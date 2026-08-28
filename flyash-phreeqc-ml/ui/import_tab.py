@@ -5,6 +5,7 @@ docs/refactor_plan.md. Behavior is unchanged (verbatim move)."""
 from __future__ import annotations
 
 import io
+import json
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
@@ -16,6 +17,7 @@ from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
+from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
 
 from ui.common import _render_next_step
@@ -115,6 +117,10 @@ def _import_render_report(report: dict) -> None:
     if report["classifications"]:
         st.caption("Row classification — "
                    + ", ".join(f"{k}: {v}" for k, v in report["classifications"].items()))
+    if report.get("icp_qc_counts"):
+        st.caption("ICP QC — " + ", ".join(
+            f"{icp_qc.qc_display_label(k)}: {v}"
+            for k, v in report["icp_qc_counts"].items()))
 
 def _lab_data_import(run_name: str) -> None:
     """Data-tab import for a lab run — pick the import mode, then dispatch.
@@ -418,10 +424,31 @@ def _generic_table_import(run_name: str) -> None:
         "leaching get `NaOH_M` blanked, `leachant`/`acid_M` recorded, and a warning note."
     )
 
+    st.markdown("**ICP correction stage**")
+    final_stage_confirmed = st.checkbox(
+        "The mapped ICP chemistry columns are final concentrations after all required "
+        "blank and dilution corrections (not raw instrument readings).",
+        value=False, key=f"lab_icp_stage_confirm_{run_name}",
+        help="Leave this unchecked when correction provenance is unknown. The rows remain "
+             "visible but cannot enter residual validation until explicitly resolved.",
+    )
+    if not final_stage_confirmed and mapped_chem:
+        st.warning("Mapped ICP values require correction-stage review and will be excluded "
+                   "from residual validation. Use the Digital Lab raw-row processor when "
+                   "blank/dilution/detection-limit corrections still need to be applied.")
+
     # Feature 6/7 — build the transformed (schema-aligned) frame + validation.
     transformed = import_mapping.build_schema_frame(
         raw, mapping, units, filename=up.name, sheet_name=sheet_name,
         default_leachant=default_leachant,
+        icp_input_stage=(icp_qc.FINAL_CORRECTED_STAGE
+                         if final_stage_confirmed else icp_qc.UNKNOWN_STAGE),
+        icp_stage_confirmed=final_stage_confirmed,
+        icp_role=icp_qc.MEASURED,
+        icp_resolution_provenance=(json.dumps({
+            "field": "icp_input_stage", "replacement_value": icp_qc.FINAL_CORRECTED_STAGE,
+            "resolved_by": "user", "reason": "confirmed during reviewed import",
+        }, sort_keys=True) if final_stage_confirmed else ""),
     )
     st.markdown("**5 · Transformed preview & validation**")
     _import_render_report(import_mapping.summarize_import(transformed, units))
@@ -556,6 +583,12 @@ def _dissolution_import(run_name: str) -> None:
         index=1, key=f"diss_scope_{run_name}",
     )
     include_hcl = scope.endswith("HCl rows")
+    final_stage_confirmed = st.checkbox(
+        "The workbook chemistry values are final blank/dilution-corrected concentrations.",
+        value=False, key=f"diss_icp_stage_confirm_{run_name}",
+        help="The parser selects mmol/L (or converts mg/L), but it cannot infer whether "
+             "upstream blank/dilution corrections were complete.",
+    )
 
     try:
         transformed, report = dissolution_workbook.normalize_dissolution_workbook(
@@ -573,6 +606,21 @@ def _dissolution_import(run_name: str) -> None:
         st.warning("No NaOH/HCl sample rows were parsed from the pH sheet — check the workbook "
                    "matches the expected structure.")
         return
+
+    transformed[config.ICP_INPUT_STAGE_COLUMN] = (
+        icp_qc.FINAL_CORRECTED_STAGE if final_stage_confirmed else icp_qc.UNKNOWN_STAGE)
+    transformed[config.ICP_STAGE_CONFIRMED_COLUMN] = bool(final_stage_confirmed)
+    transformed[config.ICP_ROLE_COLUMN] = icp_qc.MEASURED
+    transformed[config.ICP_RESOLUTION_PROVENANCE_COLUMN] = (
+        json.dumps({"field": "icp_input_stage",
+                    "replacement_value": icp_qc.FINAL_CORRECTED_STAGE,
+                    "resolved_by": "user",
+                    "reason": "confirmed during reviewed dissolution-workbook import"},
+                   sort_keys=True)
+        if final_stage_confirmed else ""
+    )
+    transformed = icp_qc.annotate_wide_final_concentrations(
+        transformed, role=icp_qc.MEASURED, require_explicit_stage=True)
 
     # Feature 8 — normalised preview + counts.
     st.markdown("**3 · Normalised preview (nothing is saved yet)**")
@@ -625,7 +673,12 @@ def _lab_entry_form(run_name: str) -> None:
     with st.form(f"lab_entry_{run_name}", clear_on_submit=True):
         inputs: dict[str, str] = {}
         cols = st.columns(3)
-        for i, column in enumerate(config.EXPERIMENTAL_RELEASE_COLUMNS):
+        control_columns = {
+            config.ICP_INPUT_STAGE_COLUMN, config.ICP_STAGE_CONFIRMED_COLUMN,
+            config.ICP_ROLE_COLUMN, config.ICP_RESOLUTION_PROVENANCE_COLUMN,
+        }
+        entry_columns = [c for c in config.EXPERIMENTAL_RELEASE_COLUMNS if c not in control_columns]
+        for i, column in enumerate(entry_columns):
             widget_col = cols[i % 3]
             numeric = column in config.EXPERIMENTAL_NUMERIC_COLUMNS
             label = f"{column} (number)" if numeric else column
@@ -635,6 +688,9 @@ def _lab_entry_form(run_name: str) -> None:
                 inputs[column] = widget_col.selectbox(column, _YESNO_OPTIONS, key=f"{run_name}_{column}")
             else:
                 inputs[column] = widget_col.text_input(label, value="", key=f"{run_name}_{column}")
+        final_stage_confirmed = st.checkbox(
+            "Any ICP chemistry entered above is a final blank/dilution-corrected concentration.",
+            value=False, key=f"{run_name}_manual_icp_stage")
         submitted = st.form_submit_button("Save row to this run")
 
     if submitted:
@@ -649,7 +705,18 @@ def _lab_entry_form(run_name: str) -> None:
             for e in errors:
                 st.error(e)
         else:
-            row = {c: (inputs.get(c) or "").strip() for c in config.EXPERIMENTAL_RELEASE_COLUMNS}
+            row = {c: (inputs.get(c) or "").strip() for c in entry_columns}
+            row[config.ICP_INPUT_STAGE_COLUMN] = (
+                icp_qc.FINAL_CORRECTED_STAGE if final_stage_confirmed else icp_qc.UNKNOWN_STAGE)
+            row[config.ICP_STAGE_CONFIRMED_COLUMN] = bool(final_stage_confirmed)
+            row[config.ICP_ROLE_COLUMN] = icp_qc.MEASURED
+            row[config.ICP_RESOLUTION_PROVENANCE_COLUMN] = (
+                json.dumps({"field": "icp_input_stage",
+                            "replacement_value": icp_qc.FINAL_CORRECTED_STAGE,
+                            "resolved_by": "user",
+                            "reason": "confirmed during manual measured-row entry"},
+                           sort_keys=True)
+                if final_stage_confirmed else "")
             path = run_manager.append_lab_row(run_name, row)
             st.success(f"Saved sample '{row['sample_id']}' to {_rel(path)}.")
             _read_csv.clear()

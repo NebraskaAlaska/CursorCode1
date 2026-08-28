@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import PHREEQC_MOLALITY_TO_MM, RESIDUAL_ELEMENTS
+from ..instruments import icp_processor as icp_qc
 
 
 # Columns carried through from the PHREEQC side for context/debugging.
@@ -123,23 +124,120 @@ def join_measured_to_phreeqc(
     # string record keys.
     measured["phreeqc_record_key"] = measured["phreeqc_record_key"].astype(object)
     predictions["phreeqc_record_key"] = predictions["phreeqc_record_key"].astype(object)
+    prediction_counts = predictions["phreeqc_record_key"].value_counts(dropna=False)
+    predictions["prediction_mapping_ambiguous"] = predictions["phreeqc_record_key"].map(
+        prediction_counts).fillna(0).astype(int) > 1
     joined = measured.merge(predictions, on="phreeqc_record_key", how="left")
     return joined
 
 
-def compute_residuals(joined: pd.DataFrame) -> pd.DataFrame:
-    """Add ``residual_<X>`` columns = measured - PHREEQC to a joined frame."""
-    out = joined.copy()
+def compute_residuals(
+    joined: pd.DataFrame, *, require_explicit_icp_stage: bool = False,
+) -> pd.DataFrame:
+    """Add residuals only where both measured and predicted ICP sides pass QC.
+
+    The wide schema carries final corrected ``*_mM`` values.  Active file workflows
+    set ``require_explicit_icp_stage=True`` so legacy/missing correction-stage
+    provenance fails closed.  Direct callers remain compatible but still receive
+    hard numeric, role, unit, element, upstream-QC, and duplicate checks.
+    """
+    out = icp_qc.annotate_wide_final_concentrations(
+        joined.copy(), role=icp_qc.MEASURED,
+        elements=RESIDUAL_ELEMENTS,
+        require_explicit_stage=require_explicit_icp_stage,
+    )
+    additions: dict[str, object] = {}
+    for element in RESIDUAL_ELEMENTS:
+        for col in icp_qc.qc_columns_for(f"phreeqc_{element}_mM").values():
+            if col not in out.columns:
+                additions[col] = None
+        for col, default in (
+            (f"residual_{element}", np.nan),
+            (f"residual_{element}_validation_eligible", False),
+            (f"residual_{element}_qc_reasons", ""),
+        ):
+            if col not in out.columns:
+                additions[col] = default
+    if "residual_pH" not in out.columns:
+        additions["residual_pH"] = np.nan
+    if additions:
+        out = pd.concat(
+            [out, pd.DataFrame({k: [v] * len(out) for k, v in additions.items()}, index=out.index)],
+            axis=1,
+        )
     for el in RESIDUAL_ELEMENTS:
         measured_col = f"{el}_mM"
         phreeqc_col = f"phreeqc_{el}_mM"
-        if measured_col in out.columns and phreeqc_col in out.columns:
-            out[f"residual_{el}"] = out[measured_col] - out[phreeqc_col]
+        residual_col = f"residual_{el}"
+        eligible_col = f"{residual_col}_validation_eligible"
+        reasons_col = f"{residual_col}_qc_reasons"
+        out[residual_col] = np.nan
+        out[eligible_col] = False
+        out[reasons_col] = ""
+        if measured_col not in out.columns or phreeqc_col not in out.columns:
+            continue
+
+        pred_qc_cols = icp_qc.qc_columns_for(phreeqc_col)
+        for col in pred_qc_cols.values():
+            out[col] = out[col].astype(object)
+
+        # Duplicate sample/element measured rows are ambiguous.  Explicit replicates
+        # must have distinct sample IDs or use the existing replicate policy.
+        if "sample_id" in out.columns:
+            supplied = pd.to_numeric(out[measured_col], errors="coerce").notna()
+            duplicate_measured = (
+                out.loc[supplied, "sample_id"].astype(str).value_counts().to_dict()
+            )
         else:
-            out[f"residual_{el}"] = np.nan
+            duplicate_measured = {}
+
+        for idx, source in out.iterrows():
+            row = source.to_dict()
+            measured_qc = icp_qc.decision_from_wide_row(
+                row, measured_col, role=icp_qc.MEASURED, element=el,
+                require_explicit_stage=require_explicit_icp_stage,
+            )
+            predicted_qc = icp_qc.assess_final_concentration(
+                row.get(phreeqc_col), role=icp_qc.PREDICTED, element=el,
+                unit="mM", stage=icp_qc.FINAL_CORRECTED_STAGE, stage_confirmed=True,
+            )
+            out.at[idx, pred_qc_cols["role"]] = icp_qc.PREDICTED
+            out.at[idx, pred_qc_cols["input_stage"]] = icp_qc.FINAL_CORRECTED_STAGE
+            out.at[idx, pred_qc_cols["stage_confirmed"]] = True
+            out.at[idx, pred_qc_cols["corrected_value"]] = predicted_qc.numeric_value
+            out.at[idx, pred_qc_cols["conversion_authority"]] = icp_qc.CONVERSION_AUTHORITY
+            out.at[idx, pred_qc_cols["qc_status"]] = predicted_qc.qc_status
+            out.at[idx, pred_qc_cols["qc_codes"]] = "|".join(predicted_qc.qc_codes)
+            out.at[idx, pred_qc_cols["qc_reasons"]] = "|".join(predicted_qc.qc_reasons)
+            out.at[idx, pred_qc_cols["validation_eligible"]] = predicted_qc.validation_eligible
+
+            reasons = [*measured_qc.qc_reasons, *predicted_qc.qc_reasons]
+            sid = str(row.get("sample_id") or "").strip()
+            if duplicate_measured.get(sid, 0) > 1:
+                reasons.append(
+                    f"duplicate measured rows for ({sid}, {el}); explicit replicate mapping/selection required"
+                )
+            prediction_ambiguous = (
+                icp_qc.parse_qc_bool(row.get("prediction_mapping_ambiguous")) is True)
+            if prediction_ambiguous:
+                reasons.append(
+                    f"duplicate predicted rows for mapped key {row.get('phreeqc_record_key')!r}; selection required"
+                )
+            eligible = (
+                measured_qc.validation_eligible and predicted_qc.validation_eligible
+                and duplicate_measured.get(sid, 0) <= 1
+                and not prediction_ambiguous
+            )
+            out.at[idx, eligible_col] = bool(eligible)
+            out.at[idx, reasons_col] = "|".join(dict.fromkeys(reasons))
+            if eligible:
+                out.at[idx, residual_col] = measured_qc.numeric_value - predicted_qc.numeric_value
 
     if "final_pH" in out.columns and "phreeqc_pH" in out.columns:
-        out["residual_pH"] = out["final_pH"] - out["phreeqc_pH"]
+        measured_ph = pd.to_numeric(out["final_pH"], errors="coerce")
+        predicted_ph = pd.to_numeric(out["phreeqc_pH"], errors="coerce")
+        finite = np.isfinite(measured_ph) & np.isfinite(predicted_ph)
+        out["residual_pH"] = (measured_ph - predicted_ph).where(finite)
     else:
         out["residual_pH"] = np.nan
 
@@ -151,11 +249,13 @@ def compare_measured_vs_phreeqc(
     phreeqc_results: pd.DataFrame,
     mapping: Mapping[str, str] | pd.DataFrame | None = None,
     states: tuple[str, ...] | None = ("batch",),
+    *,
+    require_explicit_icp_stage: bool = False,
 ) -> pd.DataFrame:
     """End-to-end: predictions -> join -> residuals. Returns the comparison table."""
     predictions = phreeqc_predictions_mM(phreeqc_results, states=states)
     joined = join_measured_to_phreeqc(measured, predictions, mapping=mapping)
-    return compute_residuals(joined)
+    return compute_residuals(joined, require_explicit_icp_stage=require_explicit_icp_stage)
 
 
 def predictions_mM_from_manifest(manifest: pd.DataFrame) -> pd.DataFrame:
@@ -187,6 +287,8 @@ def compare_measured_to_manifest(
     measured: pd.DataFrame,
     manifest: pd.DataFrame,
     mapping: Mapping[str, str] | pd.DataFrame | None = None,
+    *,
+    require_explicit_icp_stage: bool = False,
 ) -> pd.DataFrame:
     """Model-agnostic comparison: measured -> (manifest predictions) -> residuals.
 
@@ -196,4 +298,4 @@ def compare_measured_to_manifest(
     """
     predictions = predictions_mM_from_manifest(manifest)
     joined = join_measured_to_phreeqc(measured, predictions, mapping=mapping)
-    return compute_residuals(joined)
+    return compute_residuals(joined, require_explicit_icp_stage=require_explicit_icp_stage)

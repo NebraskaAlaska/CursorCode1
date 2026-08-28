@@ -21,6 +21,7 @@ Hard safety properties (mirroring the blueprint, never weakening it):
 """
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field
 
@@ -189,7 +190,7 @@ def _num(value):
         x = float(value)
     except (TypeError, ValueError):
         return None
-    return x if x == x else None  # drop NaN
+    return x if math.isfinite(x) else None
 
 
 def _floats(seq):
@@ -299,7 +300,8 @@ def run_icp_processor(payload, confirm: bool = False) -> VirtualLabMachineResult
                        missing_inputs=missing,
                        warnings=[icp.PLASMA_EXPLANATION], provenance={"inputs": "user_provided"})
 
-    res = icp.process(list(p["rows"]))
+    res = icp.process(
+        list(p["rows"]), duplicate_resolutions=p.get("duplicate_resolutions") or [])
     source = str(p.get("source") or "").strip().lower()
     if source == "measured":
         out_type = OUT_MEASURED_LAB_DATA
@@ -312,7 +314,9 @@ def run_icp_processor(payload, confirm: bool = False) -> VirtualLabMachineResult
     return _result(vlm.ICP_PROCESSOR, STATUS_PROCESSED, out_type,
                    "Processed your concentration rows (unit conversion, blank/dilution correction, "
                    "QC flags). It reduces data only — it does not simulate the plasma.",
-                   results={"corrected": res.corrected_table(), "residuals": res.residual_table()},
+                   results={"corrected": res.corrected_table(), "residuals": res.residual_table(),
+                            "qc_summary": res.qc_summary(),
+                            "resolution_provenance": res.resolution_provenance},
                    warnings=[icp.PLASMA_EXPLANATION, *res.warnings],
                    assumptions=[] if source == "measured" else
                    ["data source not declared 'measured' — labelled as user-provided/assumption"],
@@ -674,21 +678,25 @@ def _suggest_missing_measurements(goal: str) -> list:
 # --------------------------------------------------------------------------- #
 def run_validation_uncertainty(payload, confirm: bool = False) -> VirtualLabMachineResult:
     p = payload or {}
-    measured = _as_map(p.get("measured"))
-    predicted = _as_map(p.get("predicted"))
+    measured, measured_qc = _as_map_with_qc(p.get("measured"), role="measured")
+    predicted, predicted_qc = _as_map_with_qc(p.get("predicted"), role="predicted")
+    qc_warnings = [*measured_qc, *predicted_qc]
     criteria = p.get("criteria") or {}
 
     if not measured:
         return _result(vlm.VALIDATION_UNCERTAINTY, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
-                       "No measured data — validation is impossible without measured lab data.",
+                       "No QC-eligible measured data — validation is impossible.",
                        missing_inputs=["measured"],
-                       warnings=["Validation REQUIRES measured data — simulation/ML/literature alone "
-                                 "are never validated."],
+                       results={"qc_exclusions": qc_warnings},
+                       warnings=["Validation REQUIRES QC-eligible measured data — "
+                                 "simulation/ML/literature alone are never validated.",
+                                 *qc_warnings],
                        provenance={"inputs": "user_provided"}, validation_status=VAL_NO_MEASURED_DATA)
     if not predicted:
         return _result(vlm.VALIDATION_UNCERTAINTY, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
-                       "Provide predicted / simulated values to compare against the measured data.",
-                       missing_inputs=["predicted"], provenance={"inputs": "user_provided"},
+                       "Provide QC-eligible predicted/simulated values to compare.",
+                       missing_inputs=["predicted"], results={"qc_exclusions": qc_warnings},
+                       warnings=qc_warnings, provenance={"inputs": "user_provided"},
                        validation_status=VAL_INSUFFICIENT_DATA)
 
     keys = sorted(set(measured) & set(predicted))
@@ -703,18 +711,20 @@ def run_validation_uncertainty(payload, confirm: bool = False) -> VirtualLabMach
         return _result(vlm.VALIDATION_UNCERTAINTY, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
                        "Measured and predicted share no comparable keys — cannot compute residuals.",
                        missing_inputs=["matching measured/predicted keys"],
+                       results={"qc_exclusions": qc_warnings}, warnings=qc_warnings,
                        provenance={"inputs": "user_provided"}, validation_status=VAL_INSUFFICIENT_DATA)
 
     has_criteria = bool(criteria)
     criteria_met = _criteria_met(residuals, criteria) if has_criteria else None
-    results = {"residuals": residuals, "criteria": criteria, "criteria_met": criteria_met}
+    results = {"residuals": residuals, "criteria": criteria, "criteria_met": criteria_met,
+               "qc_exclusions": qc_warnings}
 
     if has_criteria and criteria_met:
         return _result(vlm.VALIDATION_UNCERTAINTY, STATUS_PROCESSED, OUT_VALIDATED_RESULT,
                        "Measured-vs-predicted comparison MEETS your validation criteria.",
                        results=results,
-                       warnings=["'validated_result' means it met YOUR criteria against measured data — "
-                                 "not a universal guarantee."],
+                       warnings=["'validated_result' means it met YOUR criteria against QC-eligible "
+                                 "measured data — not a universal guarantee.", *qc_warnings],
                        provenance={"inputs": "user_provided"},
                        validation_status=VAL_VALIDATED, can_be_used_for_validation_claim=True)
 
@@ -723,8 +733,9 @@ def run_validation_uncertainty(payload, confirm: bool = False) -> VirtualLabMach
                "Comparison computed; no validation criteria supplied — advisory, not validated.")
     return _result(vlm.VALIDATION_UNCERTAINTY, STATUS_PROCESSED, OUT_ADVISORY_INTERPRETATION, summary,
                    results=results,
-                   warnings=["Validation needs measured data AND explicit criteria that are MET; "
-                             "otherwise this is an advisory comparison, not a validated result."],
+                   warnings=["Validation needs QC-eligible measured data AND explicit criteria that "
+                             "are MET; otherwise this is advisory, not a validated result.",
+                             *qc_warnings],
                    provenance={"inputs": "user_provided"}, validation_status=VAL_COMPARISON_AVAILABLE)
 
 
@@ -744,6 +755,49 @@ def _as_map(obj) -> dict:
             if k is not None and fv is not None:
                 out[str(k)] = fv
     return out
+
+
+def _as_map_with_qc(obj, *, role: str) -> tuple[dict, list[str]]:
+    """Normalize validation inputs without duplicate overwrite or ICP-QC bypass."""
+    from . import icp_processor as icp
+
+    entries: list[tuple[str, object]] = []
+    if isinstance(obj, dict):
+        entries = [(str(k), v) for k, v in obj.items()]
+    elif isinstance(obj, (list, tuple)):
+        for raw in obj:
+            row = dict(raw or {})
+            key = row.get("key") or row.get("element") or row.get("name")
+            if key is not None:
+                entries.append((str(key), row.get("value")))
+
+    counts: dict[str, int] = {}
+    for key, _ in entries:
+        counts[key] = counts.get(key, 0) + 1
+
+    values: dict[str, float] = {}
+    warnings: list[str] = []
+    for key, value in entries:
+        if counts[key] > 1:
+            warning = f"duplicate {role} key {key!r}; explicit selection required"
+            if warning not in warnings:
+                warnings.append(warning)
+            continue
+        element = icp.canonical_element(key)
+        if element:
+            decision = icp.assess_final_concentration(
+                value, role=role, element=element, unit="mM")
+            if decision.validation_eligible:
+                values[key] = float(decision.numeric_value)
+            else:
+                warnings.append(f"{role} {key}: " + "; ".join(decision.qc_reasons))
+        else:
+            numeric = _num(value)
+            if numeric is not None:
+                values[key] = numeric
+            else:
+                warnings.append(f"{role} {key}: missing/non-numeric/non-finite value excluded")
+    return values, warnings
 
 
 def _criteria_met(residuals, criteria) -> bool:

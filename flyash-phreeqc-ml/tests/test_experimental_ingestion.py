@@ -41,6 +41,10 @@ _ROW_1 = {
     "K_mM": "3.1",
     "Sc_ppb": "12.5",
     "total_REE_ppb": "88.0",
+    "icp_input_stage": "final_corrected_concentration",
+    "icp_stage_confirmed": "true",
+    "icp_role": "measured",
+    "icp_resolution_provenance": "user-confirmed fixture stage",
     "filtration_notes": "0.45um",
     "precipitate_observed": "yes",
     "notes": "baseline run",
@@ -78,7 +82,10 @@ def test_parse_valid_file(tmp_path):
 
     # provenance + all canonical columns present, in order.
     assert df.columns[0] == "source_file"
-    assert list(df.columns[1:]) == config.EXPERIMENTAL_RELEASE_COLUMNS
+    assert list(df.columns[1:1 + len(config.EXPERIMENTAL_RELEASE_COLUMNS)]) == \
+        config.EXPERIMENTAL_RELEASE_COLUMNS
+    assert "Ca_mM_qc_status" in df.columns
+    assert "Ca_mM_orig_value" in df.columns
     assert df["source_file"].iloc[0] == "run.csv"
     assert len(df) == 2
 

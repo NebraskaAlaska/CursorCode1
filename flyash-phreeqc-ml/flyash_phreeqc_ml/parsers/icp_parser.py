@@ -35,6 +35,8 @@ from ..config import (
     EXPERIMENTAL_RELEASE_COLUMNS,
     EXPERIMENTAL_TEMPLATE_CSV,
 )
+from .. import config, units
+from ..instruments import icp_processor as icp_qc
 
 # Oxide / component names we recognise as composition-table headers.
 _KNOWN_COMPONENTS = {
@@ -191,7 +193,12 @@ def parse_experimental_release(
 
     expected = list(EXPERIMENTAL_RELEASE_COLUMNS)
     # The batch-reaction block is optional/additive — its absence is never an error.
-    optional = set(BATCH_REACTION_COLUMNS)
+    optional = set(BATCH_REACTION_COLUMNS) | {
+        config.ICP_INPUT_STAGE_COLUMN,
+        config.ICP_STAGE_CONFIRMED_COLUMN,
+        config.ICP_ROLE_COLUMN,
+        config.ICP_RESOLUTION_PROVENANCE_COLUMN,
+    }
     missing_required = [c for c in expected if c not in df.columns and c not in optional]
     extra = [c for c in df.columns if c not in expected]
 
@@ -205,6 +212,26 @@ def parse_experimental_release(
         if c not in df.columns:
             df[c] = np.nan
 
+    # Preserve the exact supplied ICP token before numeric coercion.  A malformed
+    # value may become NaN for arithmetic, but its original evidence must survive.
+    chemistry_columns = ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "Na_mM", "K_mM"]
+    provenance_added: list[str] = []
+    for col in chemistry_columns:
+        if col not in df.columns:
+            continue
+        value_col = f"{col}{units.ORIG_VALUE_SUFFIX}"
+        unit_col = f"{col}{units.ORIG_UNIT_SUFFIX}"
+        conversion_col = f"{col}{units.CONVERSION_ID_SUFFIX}"
+        if value_col not in df.columns:
+            df[value_col] = df[col]
+            provenance_added.append(value_col)
+        if unit_col not in df.columns:
+            df[unit_col] = units.UNIT_MM
+            provenance_added.append(unit_col)
+        if conversion_col not in df.columns:
+            df[conversion_col] = units.IDENTITY_ID
+            provenance_added.append(conversion_col)
+
     # Coerce numeric columns; non-numeric entries become NaN.
     for col in EXPERIMENTAL_NUMERIC_COLUMNS:
         if col in df.columns:
@@ -215,10 +242,11 @@ def parse_experimental_release(
         df["experiment_date"] = pd.to_datetime(df["experiment_date"], errors="coerce")
 
     # Canonical column order, keeping any extra columns at the end.
-    ordered = expected + extra
+    ordered = expected + extra + [c for c in provenance_added if c not in extra]
     df = df[ordered]
     df.insert(0, "source_file", path.name)
-    return df
+    return icp_qc.annotate_wide_final_concentrations(
+        df, role=icp_qc.MEASURED, require_explicit_stage=True)
 
 
 def load_experimental_release(
@@ -263,11 +291,12 @@ def has_measured_data(df: pd.DataFrame) -> bool:
     """
     if df is None or df.empty:
         return False
-    signal_cols = [
-        c
-        for c in ["Ca_mM", "Si_mM", "Al_mM", "Fe_mM", "final_pH"]
-        if c in df.columns
-    ]
-    if not signal_cols:
+    if "final_pH" in df.columns:
+        ph = pd.to_numeric(df["final_pH"], errors="coerce")
+        if bool(np.isfinite(ph).any()):
+            return True
+    qc = icp_qc.wide_qc_table(df)
+    if qc.empty:
         return False
-    return bool(df[signal_cols].notna().any().any())
+    eligible = qc["validation_eligible"].map(icp_qc.parse_qc_bool).fillna(False)
+    return bool(eligible.any())

@@ -48,6 +48,7 @@ def _make_comp(per_condition, conditions=(0.5, 1.0, 2.0), *, seed=0,
                 "sample_id": key, "leachant": "NaOH", "NaOH_M": naoh,
                 "liquid_solid_ratio": 5, "time_min": 10, "CO2_condition": "OA",
                 "residual_Ca": r, "phreeqc_Ca_mM": phreeqc,
+                "residual_Ca_validation_eligible": True,
             })
             statuses[key] = replicates.MAPPING_STATUS_EXACT
             sid += 1
@@ -106,10 +107,12 @@ def test_gate_ignores_nonexact_and_synthetic_rows():
     noise = pd.DataFrame([
         {"sample_id": "SCEN", "leachant": "NaOH", "NaOH_M": 0.5,
          "liquid_solid_ratio": 5, "time_min": 10, "CO2_condition": "OA",
-         "residual_Ca": 99.0, "phreeqc_Ca_mM": 0.8},
+         "residual_Ca": 99.0, "phreeqc_Ca_mM": 0.8,
+         "residual_Ca_validation_eligible": True},
         {"sample_id": "SYN", "leachant": "NaOH", "NaOH_M": 0.5,
          "liquid_solid_ratio": 5, "time_min": 10, "CO2_condition": "OA",
-         "residual_Ca": 99.0, "phreeqc_Ca_mM": 0.8, "source_type": "synthetic_demo"},
+         "residual_Ca": 99.0, "phreeqc_Ca_mM": 0.8,
+         "residual_Ca_validation_eligible": True, "source_type": "synthetic_demo"},
     ])
     comp2 = pd.concat([comp, noise], ignore_index=True)
     statuses["SCEN"] = replicates.MAPPING_STATUS_SCENARIO
