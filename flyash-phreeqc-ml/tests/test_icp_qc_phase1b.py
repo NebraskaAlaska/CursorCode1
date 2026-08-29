@@ -194,6 +194,105 @@ def test_hard_invalid_issue_cannot_be_approved_anyway():
             resolved_by="synthetic-test-user", reason="approve anyway")
 
 
+@pytest.mark.parametrize(("field", "replacement"), [
+    ("unit", "mg/L"),
+    ("dilution_factor", 2.0),
+    ("role", "predicted"),
+    ("measured_or_predicted", "predicted"),
+    ("element", "Si"),
+    ("sample_id", "S2"),
+])
+def test_already_valid_authoritative_metadata_cannot_be_relabelled(field, replacement):
+    with pytest.raises(icp.QcResolutionError, match="already valid"):
+        icp.resolve_reviewable_issue(
+            _row("m", "measured", 1.0),
+            field=field,
+            replacement_value=replacement,
+            resolved_by="synthetic-test-user",
+            reason="adversarial valid-metadata mutation",
+        )
+
+
+def test_embedded_role_and_sample_mutations_cannot_bypass_scientific_boundaries():
+    predicted = _row("p", "predicted", 1.5)
+    predicted["qc_resolutions"] = [{
+        "field": "role",
+        "original_value": "predicted",
+        "replacement_value": "measured",
+        "resolved_by": "synthetic-attacker",
+        "reason": "attempt predicted-as-measured",
+    }]
+    duplicate = _row("m2", "measured", 2.0)
+    duplicate["qc_resolutions"] = [{
+        "field": "sample_id",
+        "original_value": "S1",
+        "replacement_value": "S2",
+        "resolved_by": "synthetic-attacker",
+        "reason": "attempt duplicate ambiguity bypass",
+    }]
+    result = icp.process([_row("m1", "measured", 1.0), duplicate, predicted])
+    by_id = {row.row_id: row for row in result.corrected}
+    assert by_id["p"].role == "predicted"
+    assert by_id["m2"].sample_id == "S1"
+    assert icp.QC_INVALID_RESOLUTION in by_id["p"].qc_codes
+    assert icp.QC_INVALID_RESOLUTION in by_id["m2"].qc_codes
+    assert all(icp.QC_DUPLICATE_MEASURED in by_id[row_id].qc_codes
+               for row_id in ("m1", "m2"))
+    assert result.residuals == []
+
+
+def test_missing_metadata_correction_requires_valid_replacement_and_is_single_use():
+    unresolved = _row("m", "", 1.0)
+    with pytest.raises(icp.QcResolutionError, match="unknown"):
+        icp.resolve_reviewable_issue(
+            unresolved,
+            field="role",
+            replacement_value="validated measurement",
+            resolved_by="synthetic-test-user",
+            reason="invalid replacement",
+        )
+    corrected = icp.resolve_reviewable_issue(
+        unresolved,
+        field="role",
+        replacement_value="measured",
+        resolved_by="synthetic-test-user",
+        reason="restore missing role metadata",
+    )
+    assert icp.process([corrected]).corrected[0].validation_eligible is True
+    with pytest.raises(icp.QcResolutionError, match="already has a correction"):
+        icp.resolve_reviewable_issue(
+            corrected,
+            field="role",
+            replacement_value="predicted",
+            resolved_by="synthetic-test-user",
+            reason="second relabelling attempt",
+        )
+
+
+def test_missing_primary_role_cannot_contradict_recognized_predicted_alias():
+    row = _row("p", "predicted", 1.0)
+    row["role"] = "predicted"
+    row["measured_or_predicted"] = None
+    with pytest.raises(icp.QcResolutionError, match="cannot relabel"):
+        icp.resolve_reviewable_issue(
+            row,
+            field="role",
+            replacement_value="measured",
+            resolved_by="synthetic-test-user",
+            reason="attempt predicted-as-measured through a blank primary alias",
+        )
+    corrected = icp.resolve_reviewable_issue(
+        row,
+        field="role",
+        replacement_value="predicted",
+        resolved_by="synthetic-test-user",
+        reason="restore the recognized predicted identity",
+    )
+    processed = icp.process([corrected]).corrected[0]
+    assert processed.role == "predicted"
+    assert processed.validation_eligible is True
+
+
 def test_duplicate_selection_is_explicit_and_provenance_preserving():
     rows = [_row("m1", "measured", 1.0), _row("m2", "measured", 2.0),
             _row("p", "predicted", 1.5)]

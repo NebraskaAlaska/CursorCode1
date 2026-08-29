@@ -47,6 +47,7 @@ _UNIT_CANON = {
 }
 
 # Authoritative row states.  Status priority is excluded > censored > review > usable.
+QC_CONTRACT_VERSION = "phase1b.icp_qc.v1"
 QC_USABLE = "usable"
 QC_CENSORED = "censored"
 QC_REVIEW_REQUIRED = "review_required"
@@ -419,6 +420,105 @@ _RESOLUTION_FIELDS = {"unit", "dilution_factor", "role", "measured_or_predicted"
 _FIELD_ALIASES = {"measured_or_predicted": "role"}
 
 
+def _resolution_source_value(row: Mapping[str, Any], field: str) -> Any:
+    """Return the authoritative, uncorrected source value for one metadata field."""
+    if field == "role":
+        key = "measured_or_predicted" if "measured_or_predicted" in row else "role"
+        return row.get(key)
+    if field == "sample_id":
+        # Match the processor's long-standing sample-id alias semantics: a non-blank
+        # ``sample`` is authoritative when ``sample_id`` is absent or blank.
+        return row.get("sample_id") or row.get("sample")
+    return row.get(field)
+
+
+def _resolution_issue(row: Mapping[str, Any], field: str) -> str | None:
+    """Identify a genuinely review-required issue in authoritative source metadata."""
+    value = _resolution_source_value(row, field)
+    if field == "unit":
+        if _blank(value):
+            return QC_MISSING_UNIT
+        if canonical_unit(value) is None:
+            return QC_UNKNOWN_UNIT
+    elif field == "dilution_factor":
+        number, error = _numeric(value)
+        if error == "missing":
+            return QC_MISSING_DILUTION
+        if error == "nonnumeric":
+            return QC_NONNUMERIC_DILUTION
+        if error == "nonfinite":
+            return QC_NONFINITE_DILUTION
+        if number is not None and number <= 0:
+            return QC_NONPOSITIVE_DILUTION
+    elif field == "role":
+        if _blank(value):
+            return QC_MISSING_ROLE
+        if not canonical_role(value):
+            return QC_UNKNOWN_ROLE
+    elif field == "element":
+        if _blank(value):
+            return QC_MISSING_ELEMENT
+        if canonical_element(value) is None:
+            return QC_UNKNOWN_ELEMENT
+    elif field == "sample_id" and _blank(value):
+        return QC_MISSING_SAMPLE_ID
+    return None
+
+
+def _validated_resolution_replacement(field: str, value: Any) -> Any:
+    """Return a canonical replacement that actually clears the field's QC issue."""
+    if _blank(value):
+        raise QcResolutionError("replacement_value must be explicit and non-blank")
+    if field == "unit":
+        replacement = canonical_unit(value)
+        if replacement is None:
+            raise QcResolutionError(f"replacement unit {value!r} is unknown")
+        return replacement
+    if field == "dilution_factor":
+        replacement, error = _numeric(value)
+        if error is not None or replacement is None or replacement <= 0:
+            raise QcResolutionError(
+                "replacement dilution_factor must be a finite number greater than zero")
+        return replacement
+    if field == "role":
+        replacement = canonical_role(value)
+        if not replacement:
+            raise QcResolutionError(f"replacement role {value!r} is unknown")
+        return replacement
+    if field == "element":
+        replacement = canonical_element(value)
+        if replacement is None:
+            raise QcResolutionError(f"replacement element {value!r} is unknown")
+        return replacement
+    replacement = str(value).strip()
+    if not replacement:
+        raise QcResolutionError("replacement sample_id must be explicit and non-blank")
+    return replacement
+
+
+def _require_identity_continuity(row: Mapping[str, Any], field: str, replacement: Any) -> None:
+    """Do not let a correction contradict a recognized identity in a source alias."""
+    if field != "role":
+        return
+    recognized = {
+        canonical_role(row.get(key))
+        for key in ("measured_or_predicted", "role")
+        if key in row and canonical_role(row.get(key))
+    }
+    if len(recognized) > 1:
+        raise QcResolutionError(
+            "authoritative source row contains conflicting recognized role aliases")
+    if recognized and replacement not in recognized:
+        raise QcResolutionError(
+            "role correction cannot relabel a recognized predicted/measured source identity")
+
+
+def reviewable_metadata_fields(row: Mapping[str, Any]) -> tuple[str, ...]:
+    """Fields with correctable missing/invalid metadata in the authoritative source row."""
+    return tuple(field for field in ("unit", "dilution_factor", "role", "element", "sample_id")
+                 if _resolution_issue(row, field) is not None)
+
+
 def resolve_reviewable_issue(
     row: Mapping[str, Any], *, field: str, replacement_value: Any,
     resolved_by: str, reason: str, resolved_at: str | None = None,
@@ -435,21 +535,33 @@ def resolve_reviewable_issue(
         )
     if not str(resolved_by or "").strip() or not str(reason or "").strip():
         raise QcResolutionError("resolved_by and reason are required")
-    if _blank(replacement_value):
-        raise QcResolutionError("replacement_value must be explicit and non-blank")
     out = deepcopy(dict(row or {}))
-    original_key = "measured_or_predicted" if field == "role" and "measured_or_predicted" in out else field
+    issue = _resolution_issue(out, field)
+    if issue is None:
+        raise QcResolutionError(
+            f"{field!r} is already valid in the authoritative source row and cannot be changed")
+    replacement = _validated_resolution_replacement(field, replacement_value)
+    _require_identity_continuity(out, field, replacement)
+    existing = out.get("qc_resolutions") or []
+    if isinstance(existing, Mapping):
+        existing = [dict(existing)]
+    if not isinstance(existing, (list, tuple)):
+        raise QcResolutionError("existing qc_resolutions must be a list of mappings")
+    for raw in existing:
+        prior_field = _FIELD_ALIASES.get(
+            str((raw or {}).get("field") or ""), str((raw or {}).get("field") or ""),
+        ) if isinstance(raw, Mapping) else ""
+        if prior_field == field:
+            raise QcResolutionError(
+                f"{field!r} already has a correction; repeated replacement is not allowed")
     entry = {
         "field": field,
-        "original_value": _evidence_value(out.get(original_key)),
-        "replacement_value": _evidence_value(replacement_value),
+        "original_value": _evidence_value(_resolution_source_value(out, field)),
+        "replacement_value": _evidence_value(replacement),
         "resolved_by": str(resolved_by).strip(),
         "reason": str(reason).strip(),
         "resolved_at": resolved_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    existing = out.get("qc_resolutions") or []
-    if isinstance(existing, Mapping):
-        existing = [dict(existing)]
     out["qc_resolutions"] = [*list(existing), entry]
     return out
 
@@ -462,18 +574,41 @@ def _resolved_row(row: dict) -> tuple[dict, list[dict], list[str]]:
     entries = row.get("qc_resolutions") or []
     if isinstance(entries, Mapping):
         entries = [entries]
+    seen_fields: set[str] = set()
     for raw in entries if isinstance(entries, (list, tuple)) else []:
         entry = dict(raw or {})
         field = _FIELD_ALIASES.get(str(entry.get("field") or ""), str(entry.get("field") or ""))
         if field not in {_FIELD_ALIASES.get(f, f) for f in _RESOLUTION_FIELDS}:
             errors.append(f"invalid resolution field {field!r}; hard values cannot be approved")
             continue
+        if field in seen_fields:
+            errors.append(f"multiple resolutions target {field!r}; repeated replacement is not allowed")
+            continue
+        seen_fields.add(field)
         if _blank(entry.get("replacement_value")) or not str(entry.get("resolved_by") or "").strip() \
                 or not str(entry.get("reason") or "").strip():
             errors.append(f"resolution for {field!r} lacks replacement/resolved_by/reason")
             continue
+        issue = _resolution_issue(row, field)
+        if issue is None:
+            errors.append(
+                f"resolution for {field!r} attempts to change already-valid authoritative metadata")
+            continue
+        expected_original = _evidence_value(_resolution_source_value(row, field))
+        if entry.get("original_value") != expected_original:
+            errors.append(f"resolution for {field!r} does not preserve its authoritative original value")
+            continue
+        try:
+            replacement = _validated_resolution_replacement(field, entry.get("replacement_value"))
+            _require_identity_continuity(row, field, replacement)
+        except QcResolutionError as exc:
+            errors.append(str(exc))
+            continue
+        entry["field"] = field
+        entry["original_value"] = expected_original
+        entry["replacement_value"] = _evidence_value(replacement)
         target = "measured_or_predicted" if field == "role" else field
-        effective[target] = entry["replacement_value"]
+        effective[target] = replacement
         provenance.append(entry)
     return effective, provenance, errors
 
@@ -689,6 +824,11 @@ def process(rows, *, apply_blank: bool = True, duplicate_resolutions=None) -> Ic
 
 def _duplicate_resolution_map(resolutions) -> tuple[dict[tuple[str, str, str], dict], list[str]]:
     selected: dict[tuple[str, str, str], dict] = {}
+    # Once more than one resolution targets a key it is permanently ambiguous for
+    # this processing pass.  Without this separate set, a third resolution could
+    # reinsert a key removed by the second one and silently restore last-entry
+    # selection semantics.
+    conflicted: set[tuple[str, str, str]] = set()
     errors: list[str] = []
     for raw in resolutions or []:
         r = dict(raw or {})
@@ -699,8 +839,13 @@ def _duplicate_resolution_map(resolutions) -> tuple[dict[tuple[str, str, str], d
                 or not str(r.get("resolved_by") or "").strip() or not str(r.get("reason") or "").strip():
             errors.append(f"invalid duplicate resolution {r!r}")
             continue
+        if key in conflicted:
+            errors.append(
+                f"multiple duplicate resolutions supplied for {key!r}; selection remains ambiguous")
+            continue
         if key in selected:
             selected.pop(key, None)
+            conflicted.add(key)
             errors.append(
                 f"multiple duplicate resolutions supplied for {key!r}; selection remains ambiguous")
             continue

@@ -69,7 +69,8 @@ class ResearchResult:
 
     query: str
     domain: str
-    queries: list = field(default_factory=list)              # the scholarly queries run
+    queries: list = field(default_factory=list)              # only scholarly queries actually run
+    generated_queries: list = field(default_factory=list)    # deterministic suggestions, may be unexecuted
     ranked: list = field(default_factory=list)               # list[ranking.ScoredCandidate]
     source_summaries: list = field(default_factory=list)     # list[dict] (per-source outcome)
     note: str | None = None
@@ -84,6 +85,7 @@ class ResearchResult:
 
     def to_dict(self) -> dict:
         return {"query": self.query, "domain": self.domain, "queries": list(self.queries),
+                "generated_queries": list(self.generated_queries),
                 "n_candidates": self.n_candidates, "n_extractable": self.n_extractable,
                 "source_summaries": list(self.source_summaries), "note": self.note,
                 "ranked": [s.to_dict() for s in self.ranked]}
@@ -97,11 +99,17 @@ def research(query_text: str, *, domain: str | None = None, sources=None,
     ranks transparently. Extraction is a separate explicit step — this returns candidates only.
     """
     domain = domain or infer_domain(query_text)
-    queries = generate_search_queries(query_text, domain)
-    primary = queries[0] if queries else str(query_text or "")
+    generated_queries = generate_search_queries(query_text, domain)
+    primary = generated_queries[0] if generated_queries else str(query_text or "")
     sources = list(sources or source_schema.DEFAULT_SEARCH_SOURCES)
 
     results = search_clients.search_sources(primary, sources, limit=limit)
+    # ``search_sources`` currently executes one primary query against each
+    # selected source. Do not label generated-but-unused variants as run.
+    executed_queries = []
+    for result in results:
+        if result.query and result.query not in executed_queries:
+            executed_queries.append(result.query)
     candidates = search_clients.merge_dedup(results)
     ranked = ranking.rank_candidates(primary, candidates, domain=domain, top_n=top_n)
     summaries = [r.to_summary() for r in results]
@@ -109,5 +117,6 @@ def research(query_text: str, *, domain: str | None = None, sources=None,
     if not candidates:
         note = ("No candidates returned — the official scholarly APIs may be unreachable here, or "
                 "the query is too narrow. You can also add a paper manually.")
-    return ResearchResult(query=str(query_text or ""), domain=domain, queries=queries,
+    return ResearchResult(query=str(query_text or ""), domain=domain, queries=executed_queries,
+                          generated_queries=generated_queries,
                           ranked=ranked, source_summaries=summaries, note=note)

@@ -6,8 +6,10 @@ inputs, delegates where a specialized backend exists, runs only explicitly limit
 workflows, and returns one standard result envelope. It is not a giant generic scientific engine and is
 not a replacement for the specialized PHREEQC, ICP, XRD, ML, literature, or validation authorities.
 
-The runner is not a dedicated UI. The current Digital Lab consumes canonical metadata and retains its
-hands-on ICP/XRD modules; a full machine execution shell belongs to a later phase.
+The runner is not a dedicated UI. The shared machine workspace calls it for narrow generic
+workflows, while durable ICP, measured-XRD, evidence, planning, and sustainability presentation uses
+the corresponding typed Phase 3 services. See
+[`phase3_durable_workflows.md`](phase3_durable_workflows.md).
 
 ## Result envelope and identity
 
@@ -38,19 +40,25 @@ QC-eligible measured data, compatible predictions, explicit criteria, and criter
   as provenance only; it cannot relabel rows, and a contradiction produces an actionable warning and
   a weaker advisory result. Corrected rows retain their own role and `row_output_data_type`.
 - XRD delegates expected-peak/checklist advice to `instruments.xrd_advisory`; wording remains tentative
-  and advisory.
+  and advisory. The durable measured-pattern/reference path uses the same matcher through
+  `instruments.xrd_records`, not a second runner-native matcher.
 - ML delegates a number to `ml_models.predict` only for an approved, non-demo `TrainedModel` with
   features. Missing, demo, exploratory, and legacy models produce no prediction. Delegation also has
   a narrow fail-closed artifact boundary: an approved-status object with a missing, unfitted, corrupt,
   or incompatible pipeline returns an advisory prerequisite result with no prediction value and no
   exception detail. Result provenance distinguishes `model_status_appeared_approved` from
   `model_artifact_usable`; the artifact is not rewritten.
-- Literature records supplied evidence metadata with provenance and human-review status; it fabricates
-  no citations and performs no scraping.
-- Sustainability multiplies only user-supplied amount/factor pairs and labels the result as
-  order-of-magnitude advice, never an LCA/TEA.
-- FTIR/Raman, SEM/EDS, TGA/DSC, mechanical testing, experimental design, and validation are narrow
-  workflows over supplied data or planning inputs. They do not invent measurements or outcomes.
+- Literature compatibility dispatch records supplied candidate metadata only. Durable manual/AI
+  evidence lifecycle authority is `literature.evidence_review`; only an explicit human action can
+  produce reviewed evidence.
+- Sustainability either multiplies user-supplied amount/factor pairs with compatible units and
+  sources, or applies the existing condition proxy only to explicitly eligible supplied rows.
+  Missing factors remain missing. Neither mode is LCA, TEA, a cost result, or a certified assessment.
+- Experimental design requires an explicit CFA preset or a complete generic user-defined factor
+  plan. It enforces the run cap and leaves outcomes blank; it does not invent levels, truncate a
+  plan, or claim an optimum.
+- FTIR/Raman, SEM/EDS, TGA/DSC, mechanical testing, and validation are narrow workflows over supplied
+  data. They do not invent measurements or outcomes.
 
 ## PHREEQC boundary
 

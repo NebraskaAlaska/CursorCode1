@@ -316,50 +316,60 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
     ),
     VirtualLabMachine(
         machine_id=XRD_ADVISORY,
-        display_name="XRD Advisory / Pattern Planning",
-        short_description=("Plan an XRD measurement: approximate expected peaks, tentative matching of "
-                           "user-measured peaks, and a PHREEQC-derived phase checklist — advisory only."),
+        display_name="Measured XRD Advisory / Pattern Planning",
+        short_description=("Import measured XRD and user-supplied references for tentative peak "
+                           "matching, or build an advisory phase checklist."),
         category="Crystalline phase analysis (advisory)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
         maturity=MATURITY_ADVISORY,
-        what_it_can_do=("Suggest approximate Cu Kα reference peaks for known phase NAMES, tentatively "
-                        "match a user-provided measured peak list, and turn PHREEQC-predicted phases "
-                        "into a 'phases to check by XRD' checklist."),
-        required_inputs=("a list of expected phase names, OR a user-measured 2θ peak list, OR "
-                         "PHREEQC-predicted phases",),
-        optional_inputs=("leaching context (material + reagent)", "match tolerance (degrees 2θ)"),
-        honest_outputs=("approximate expected peaks (advisory)", "tentative possible-phase matches",
+        what_it_can_do=("Import a user-supplied measured 2θ/intensity pattern, accept a reviewed "
+                        "user peak selection, import user-supplied CSV/JSON reference patterns with "
+                        "source and licence provenance, tentatively match peaks, and turn "
+                        "PHREEQC-predicted phases into a 'phases to check by XRD' checklist."),
+        required_inputs=("for measured-pattern matching: a user-supplied measured XRD pattern or "
+                         "peak list plus at least one user-supplied reference pattern; OR "
+                         "PHREEQC-predicted phases for checklist mode",),
+        optional_inputs=("radiation/wavelength metadata", "selected measured peaks",
+                         "material and source-file identity", "match tolerance (degrees 2θ)"),
+        honest_outputs=("preserved user-supplied measured pattern and selected peaks",
+                        "tentative possible-phase matches with unmatched peaks",
                         "phase checklist to verify by measured XRD"),
-        output_data_type=(OUT_ADVISORY_INTERPRETATION,),
-        verification_required=("a measured XRD pattern", "a reference pattern database (ICDD PDF)",
-                               "human expert review"),
-        real_world_verification_method=("Collect a measured XRD pattern and compare against reference "
-                                        "patterns (ICDD PDF / structure data) with expert review."),
+        output_data_type=(OUT_MEASURED_LAB_DATA, OUT_ADVISORY_INTERPRETATION),
+        verification_required=("the user-supplied measured XRD pattern and its instrument metadata",
+                               "appropriately licensed reference patterns with source provenance",
+                               "human expert review and complementary evidence"),
+        real_world_verification_method=("Review the measured pattern, instrument/radiation metadata, "
+                                        "and appropriately licensed reference patterns with an XRD "
+                                        "expert and complementary methods."),
         must_not_claim=("confirmed phase identification from a formula alone",
                         "an exact diffraction pattern without phase/structure/reference data",
-                        "validation or a measured identification"),
+                        "that a one-peak or advisory match confirms or certifies a phase",
+                        "validation or a measured phase identification"),
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=True,
         should_use_cached_or_precomputed_data=True,
         backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_EXTERNAL_DATA),
         backend_binding="instruments.xrd_advisory",
-        provenance_requirements=("supplied phase names or measured 2theta peaks",
-                                 "reference basis and advisory sub-mode"),
-        validation_requirements=("measured XRD pattern", "reference pattern source",
-                                 "human expert review"),
-        runtime_requirements=("internal approximate references for current advisory modes",
-                              "external reference patterns for stronger interpretation"),
+        provenance_requirements=("measured pattern source identity and radiation metadata",
+                                 "reference source, citation, licence, and redistribution permission",
+                                 "peak-selection basis, tolerance, and advisory sub-mode"),
+        validation_requirements=("reviewed measured XRD pattern",
+                                 "appropriately licensed reference pattern source",
+                                 "human expert and complementary-method review"),
+        runtime_requirements=("user-supplied measured pattern/peaks for matching mode",
+                              "user-supplied reference patterns with source and licence metadata"),
         uncertainty_controls=("peak overlap awareness", "amorphous-content caveat",
                               "tentative match confidence (never 'high' from one peak)"),
         safety_notes=("A FORMULA alone cannot fix a pattern (e.g. CaCO3 = calcite / aragonite / "
                       "vaterite — polymorph/phase ambiguity); a phase + reference structure is needed.",
                       "Matches are 'tentatively consistent with', never 'identified / confirmed'.",
-                      "Internal peaks are approximate teaching/advisory references, not ICDD standards."),
-        example_user_prompts=("expected XRD peaks for calcite, quartz, portlandite",
-                              "I measured peaks at 26.6, 29.4, 34.1 2theta — what might match?"),
-        future_backend_dependencies=("external reference patterns (ICDD PDF / CIF / pymatgen) — deferred",),
+                      "No licensed reference content is bundled; the user must supply reference data "
+                      "they are permitted to use."),
+        example_user_prompts=("import my measured XRD CSV and review its peak selection",
+                              "tentatively compare my measured peaks with these licensed references"),
+        future_backend_dependencies=("optional additional user-authorised reference adapters",),
     ),
     VirtualLabMachine(
         machine_id=ICP_PROCESSOR,
@@ -627,19 +637,23 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
     VirtualLabMachine(
         machine_id=LITERATURE_ENGINE,
         display_name="Literature Evidence Engine",
-        short_description=("Ingest DOI metadata, user-uploaded PDFs, and allowed APIs to surface "
-                           "candidate evidence with provenance — unreviewed until a human checks it."),
+        short_description=("Create provenance-rich evidence, then edit, review, reject, revise, "
+                           "link, and export it through a human-governed workflow."),
         category="Evidence / literature",
         mode=MODE_EVIDENCE_ENGINE,
         execution_mode=EXEC_EVIDENCE_REQUIRED,
         maturity=MATURITY_IMPLEMENTED,
-        what_it_can_do=("Ingest DOI metadata, user-uploaded PDFs, and permitted/licensed APIs; extract "
-                        "candidate evidence with source provenance and a confidence flag for review."),
-        required_inputs=("a research question or material system",
-                         "permitted sources (DOIs, user-uploaded PDFs, or licensed APIs)"),
-        optional_inputs=("domain filter", "preferred sources"),
-        honest_outputs=("candidate (unreviewed) evidence with provenance and a confidence flag",
-                        "a curated evidence table after human review"),
+        what_it_can_do=("Create evidence manually without AI; ingest DOI metadata, user-uploaded "
+                        "documents, and permitted APIs; preserve citation and page/table/figure "
+                        "locations; manage draft, needs-review, reviewed, rejected, and revised "
+                        "records; link records to materials/runs; and export provenance-rich packages."),
+        required_inputs=("a cited source identity and evidence content or claim",
+                         "source provenance and extraction scope/location"),
+        optional_inputs=("research question", "DOI, URL, authors, year, page/table/figure location",
+                         "user-uploaded source", "material/run links", "extraction confidence"),
+        honest_outputs=("draft or needs-review evidence with full source provenance",
+                        "human-reviewed or rejected revision history",
+                        "provenance-rich evidence table/package export"),
         output_data_type=(OUT_LITERATURE_EVIDENCE,),
         verification_required=("human expert review before any evidence is used for a claim",
                                "source provenance for every extracted value"),
@@ -653,39 +667,50 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_reference_database=False,
         should_use_cached_or_precomputed_data=True,
         backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_EXTERNAL_DATA),
-        backend_binding="literature.research_agent+literature.evidence_store",
+        backend_binding=("literature.evidence_review+literature.evidence_store+"
+                         "literature.research_agent"),
         provenance_requirements=("title/authors/year plus DOI, URL, or source location",
                                  "source/query, extraction scope/confidence, and review status"),
         validation_requirements=("human review against the cited source",
                                  "measured evidence for claims about the user's sample"),
-        runtime_requirements=("permitted source metadata, user PDF, DOI, or supported API",
-                              "network/source availability only when search is requested"),
+        runtime_requirements=("manual citation/source metadata or a permitted source input",
+                              "network/source availability only when external search is requested"),
         uncertainty_controls=("range across sources", "per-claim confidence flag"),
         safety_notes=("Every extracted value keeps its SOURCE PROVENANCE and stays 'candidate / "
                       "unreviewed' until HUMAN REVIEW.",
                       "Never invents citations, values, or sources; never scrapes restricted sources "
                       "(e.g. Google Scholar) — only DOIs, user PDFs, and licensed APIs.",
+                      "AI-created evidence always starts as draft or needs-review; only a human can "
+                      "mark a revision reviewed.",
+                      "Editing a reviewed record creates a new needs-review revision; rejection is "
+                      "retained in history and never presented as approval.",
                       "Literature evidence is context, not validation of your sample."),
-        example_user_prompts=("find sourced leaching benchmarks for Class C fly ash with DOIs",
-                              "extract candidate strength ranges from these uploaded PDFs"),
-        future_backend_dependencies=("a provenance-tracked evidence store", "licensed citation APIs"),
+        example_user_prompts=("add this cited table value manually and submit it for review",
+                              "revise this evidence record while preserving its review history"),
+        future_backend_dependencies=("optional licensed citation APIs",),
     ),
     VirtualLabMachine(
         machine_id=SUSTAINABILITY,
         display_name="Sustainability / Cost Screening",
-        short_description=("Order-of-magnitude sustainability/cost screening from USER assumptions — "
-                           "not a certified LCA/TEA and not a feasibility verdict."),
+        short_description=("Transparent screening proxy from explicitly supplied experimental rows "
+                           "or amount×factor inventory data — never a certified LCA/TEA or verdict."),
         category="Sustainability / cost (screening)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
         maturity=MATURITY_LIMITED,
-        what_it_can_do=("Do an ORDER-OF-MAGNITUDE screening when the user provides assumptions "
-                        "(energy, reagent use, transport, waste handling, CO2 factors, cost factors), "
-                        "and list the inventory data a real LCA/TEA would need."),
-        required_inputs=("user-provided assumptions (energy, reagents, transport, CO2 / cost factors)",),
-        optional_inputs=("process route + materials", "allocation choices"),
-        honest_outputs=("an order-of-magnitude screening estimate (from your assumptions)",
-                        "an LCA/TEA data-requirements checklist (advisory)"),
+        what_it_can_do=("Run one explicitly selected advisory mode: the historical condition "
+                        "screening proxy on explicitly eligible supplied experimental rows, or a "
+                        "transparent amount × user-supplied factor inventory screen. It blocks "
+                        "incompatible units, leaves missing factors missing, separates totals by "
+                        "boundary/unit, and uses ranges only when supplied."),
+        required_inputs=("explicit mode selection",
+                         "condition proxy: supplied rows plus explicit per-row eligibility; OR "
+                         "inventory: item, amount/unit, factor/unit/source/type, and boundary"),
+        optional_inputs=("geography and year", "user-supplied factor range", "notes",
+                         "durable evidence ID for a literature-derived factor"),
+        honest_outputs=("an order-of-magnitude screening proxy from supplied data",
+                        "included/excluded contribution table and missing-factor list",
+                        "boundary- and unit-separated totals with supplied-factor provenance"),
         output_data_type=(OUT_ADVISORY_INTERPRETATION, OUT_USER_PROVIDED_ASSUMPTION),
         verification_required=("full LCA/TEA system boundaries, inventory data, and review",
                                "characterised impact / cost factors from sourced data"),
@@ -701,36 +726,46 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED,),
         backend_binding=("instruments.virtual_lab_machine_runner.run_sustainability_screening+"
                          "experiments.sustainability_score"),
-        provenance_requirements=("user-provided amounts, factors, units, and assumptions",
-                                 "declared scope and system boundary"),
+        provenance_requirements=("user-provided rows, amounts, factors, units, and eligibility",
+                                 "factor source/type and evidence ID where literature-derived",
+                                 "declared scope, boundary, included items, and excluded items"),
         validation_requirements=("reviewed full inventory and sourced factors",
                                  "defined LCA/TEA boundaries and sensitivity analysis"),
-        runtime_requirements=("explicit user inventory/factor assumptions",),
+        runtime_requirements=("explicit mode selection and compatible supplied rows",
+                              "no inferred or default emission, energy, cost, or transport factors"),
         uncertainty_controls=("inventory completeness", "assumption sensitivity / ranges"),
         safety_notes=("ORDER-OF-MAGNITUDE screening only — never a quantified LCA, carbon footprint, "
                       "or feasibility verdict.",
                       "Every number is derived from YOUR assumptions and is labelled as such; no "
-                      "emission/cost factors are invented."),
-        example_user_prompts=("rough CO2 screening for replacing cement with fly ash, my assumptions",
-                              "what inventory data would a full LCA of this route need?"),
-        future_backend_dependencies=("a sourced emission/cost-factor library", "an LCA/TEA boundary model"),
+                      "emission/cost factors are invented.",
+                      "A literature-derived factor retains its evidence link; a user factor remains "
+                      "labelled as a user assumption. Missing factors are never treated as zero."),
+        example_user_prompts=("screen these explicitly eligible experimental conditions as proxies",
+                              "multiply my supplied inventory amounts by these sourced factors"),
+        future_backend_dependencies=("optional user-authorised factor data adapters",),
     ),
     VirtualLabMachine(
         machine_id=EXPERIMENTAL_DESIGN,
         display_name="Experimental Design Assistant",
-        short_description=("Suggest experiment matrices, controls, replicates, missing measurements, "
-                           "and verification plans — planning advice, not results."),
+        short_description=("Build an explicitly selected CFA preset or deterministic user-defined "
+                           "factor plan — advisory planning with blank result fields, never outcomes."),
         category="Experiment planning (advisory)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
         maturity=MATURITY_LIMITED,
-        what_it_can_do=("Suggest an experiment matrix, controls, replicate counts, the measurements "
-                        "still missing, and a verification plan to reduce trial-and-error."),
-        required_inputs=("a research goal and the candidate materials / factors",),
-        optional_inputs=("constraints (budget, instruments, time)", "prior results"),
-        honest_outputs=("a proposed experiment matrix + controls + replicates (advisory)",
-                        "a list of missing measurements and a verification plan"),
-        output_data_type=(OUT_ADVISORY_INTERPRETATION,),
+        what_it_can_do=("Run one explicitly selected advisory mode: the labelled historical CFA "
+                        "leaching preset with its assumptions, or a deterministic generic full-factor "
+                        "plan using only the active material, goal, factor levels, fixed conditions, "
+                        "replicates, cap, and optional controls supplied by the user."),
+        required_inputs=("explicit mode selection",
+                         "generic mode: active material, goal, factors/levels, fixed conditions, "
+                         "replicates, and maximum run count"),
+        optional_inputs=("explicitly named controls", "date", "sample prefix",
+                         "explicit CFA leaching preset selection"),
+        honest_outputs=("a deterministic condition matrix with stable replicate-specific sample IDs",
+                        "deduplication/run-count summary and full assumptions",
+                        "blank measurement/result fields for later physical work"),
+        output_data_type=(OUT_ADVISORY_INTERPRETATION, OUT_USER_PROVIDED_ASSUMPTION),
         verification_required=("actually running the experiments",),
         real_world_verification_method="Execute the designed experiments and record measured results.",
         must_not_claim=("experimental results before the experiments are run",
@@ -742,18 +777,25 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED,),
         backend_binding=("instruments.virtual_lab_machine_runner.run_experimental_design+"
                          "experiments.plan_generator"),
-        provenance_requirements=("user research goal, factors, levels, constraints, and prior results",
-                                 "deterministic matrix/control/replicate rules"),
+        provenance_requirements=("selected mode, active material, research goal, factor levels, "
+                                 "fixed conditions, controls, replicates, and cap",
+                                 "deterministic matrix/dedup/sample-identity rules"),
         validation_requirements=("physical execution of the plan",
                                  "measured outcomes with QC and provenance"),
-        runtime_requirements=("explicit research goal",),
+        runtime_requirements=("explicit mode selection",
+                              "generic mode requires every material/factor/treatment input; the CFA "
+                              "preset is never selected implicitly"),
         uncertainty_controls=("replicate planning", "control / confounder identification"),
         safety_notes=("Plans experiments; it never reports outcomes of experiments not yet run.",
+                      "Generic mode invents no material, treatment, control, replicate, or factor level; "
+                      "the maximum-run cap refuses rather than silently truncates.",
+                      "The CFA leaching preset is labelled and must be explicitly selected; it is not "
+                      "universally applicable.",
                       "Prioritises which FEW physical experiments are worth doing — it does not "
                       "replace them."),
-        example_user_prompts=("design a leaching study matrix with controls and replicates",
-                              "what measurements am I missing to validate this hypothesis?"),
-        future_backend_dependencies=("optional DOE helper library",),
+        example_user_prompts=("build a generic plan from these exact factors, controls, and cap",
+                              "explicitly use the labelled CFA leaching preset"),
+        future_backend_dependencies=("optional user-selected DOE algorithms",),
     ),
     VirtualLabMachine(
         machine_id=VALIDATION_UNCERTAINTY,

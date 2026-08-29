@@ -5,9 +5,10 @@ identity, deterministic order, scientific metadata, static maturity, safety, pro
 validation requirements, and backend bindings. It is pure import-safe metadata: it does not import
 Streamlit, inspect this computer, load a model, call an external API, or execute a scientific engine.
 
-The current Digital Lab renders these definitions as metadata cards. This is source consolidation in
-the existing page, not the Phase 2 Machines gallery or a redesigned application shell. The hands-on
-Digital Lab workflows remain ICP data reduction and XRD advisory.
+The Phase 2/3 Machines page renders these definitions as its canonical gallery and shared
+**Overview · Prepare · Results · History** workspace. Hands-on ICP and XRD workflows delegate to
+their existing scientific authorities; Phase 3 persistence wraps rather than replaces them. See
+[`phase3_durable_workflows.md`](phase3_durable_workflows.md).
 
 ## Canonical IDs and order
 
@@ -98,11 +99,11 @@ The contract coordinates capabilities; it does not reimplement their science:
 | Machine | authoritative or delegated backend |
 |---|---|
 | PHREEQC | `simulation.phreeqc_input_builder`, `simulation.phreeqc_run_contract`, `simulation.phreeqc_executor` |
-| XRD | `instruments.xrd_advisory` |
-| ICP | `instruments.icp_processor` and the Phase 1B QC contract |
+| XRD | `instruments.xrd_advisory`, with durable coordination in `instruments.xrd_records` |
+| ICP | `instruments.icp_processor` and the Phase 1B QC contract, with durable coordination in `instruments.icp_review` |
 | FTIR/Raman, SEM/EDS, TGA/DSC, mechanical | explicitly limited runner-native processors over supplied data |
 | ML | `ml_models.predict` with an approved non-demo trained model |
-| Literature | `literature.research_agent` and `literature.evidence_store` |
+| Literature | `literature.research_agent`, `literature.evidence_store`, and durable `literature.evidence_review` |
 | Sustainability | limited assumption-based screening plus `experiments.sustainability_score` |
 | Experimental design | limited deterministic planning plus `experiments.plan_generator` |
 | Validation | existing comparison/QC/criteria paths plus a limited standard-envelope adapter |

@@ -54,6 +54,7 @@ outputs/virtual_lab_workspace/
 ├── active_context.json
 ├── projects/prj_<uuid>.json
 ├── materials/mat_<uuid>.json
+├── artifacts/art_<uuid>.json
 └── runs/run_<uuid>.json
 ```
 
@@ -63,9 +64,17 @@ atomic `os.replace`; an interrupted replacement leaves the prior record intact. 
 `.tmp-*.json` files are ignored and may be removed through the explicit cleanup method.
 
 The store rejects traversal/absolute IDs, symlink components, duplicate IDs, malformed/non-finite
-JSON, future schema versions, cross-project material/run bindings, and secret-like fields. It copies
-no raw dataset or artifact. Existing experiment/evidence/model/simulation storage is not migrated;
-durable records carry explicit references where relevant.
+JSON, future schema versions, cross-project material/run bindings, and secret-like fields. It does
+not copy arbitrary raw files or external artifacts; typed Phase 3 records retain only their validated
+structured payloads and exact source identities. Existing experiment/evidence/model/simulation
+storage is not migrated; durable records carry explicit references where relevant.
+
+The whole runtime workspace is gitignored because artifact payloads can contain private structured
+instrument/evidence data. Phase 3 adds typed `ArtifactRecord` envelopes for ICP review, measured XRD
+patterns, XRD references, evidence, experiment plans, and sustainability screens. Each envelope has
+an exact input hash, payload hash, source identity, lifecycle/revision chain, and optional linked run.
+Terminal artifacts are immutable. See
+[`phase3_durable_workflows.md`](phase3_durable_workflows.md) for the domain workflows and exports.
 
 ### Project record
 
@@ -90,9 +99,14 @@ creation time.
 
 Every durable result is immutable. A run is current only when its project/material binding,
 material revision, composition revision, assumption revision, and material identity hash still match
-the active material. A scientifically meaningful material edit never overwrites an old result: the
-run remains visible in Results/Run History as historical/stale and is excluded from `current_runs()`.
-Display-only material edits and appending the run's own association do not create false staleness.
+the active material. Phase 3 runs additionally retain artifact ID/revision/input/payload hashes and
+become stale when a required artifact is missing, crosses context, or no longer matches those exact
+identities. A scientifically meaningful material edit never overwrites an old result: the run remains
+visible in Results/Run History as historical/stale and is excluded from `current_runs()`. Display-only
+material edits and appending the run's own association do not create false staleness.
+
+Reopen actions restore the run's original project, material, machine, and run context. They show the
+saved immutable payload and never silently recalculate or bind it to a newer artifact revision.
 
 Prepared-but-unsaved Streamlit results are also bound to the exact project ID, material ID, material
 revision, machine ID, input snapshot, and input hash. A prepared value from another project,

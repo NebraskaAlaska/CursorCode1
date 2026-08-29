@@ -12,12 +12,43 @@ shared key-safe client (like ``ai/scenario_parser``) and runs nothing else.
 """
 from __future__ import annotations
 
+import json
+
 from ..ai import client as ai_client
 from ..ai import config as ai_config
-from ..ai.import_assist import _message_text, _parse_json
 from . import evidence_schema as E
 
 MAX_TOKENS = 1200
+
+
+def _message_text(response) -> str:
+    """Read only text blocks from a Messages response."""
+    return "".join(
+        (getattr(block, "text", "") or "")
+        for block in (getattr(response, "content", None) or [])
+        if getattr(block, "type", None) == "text"
+    )
+
+
+def _parse_json(text: str):
+    """Defensively parse a JSON object; raw response text is never returned/stored."""
+    candidate = str(text or "").strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    for value in (candidate, candidate[candidate.find("{"):candidate.rfind("}") + 1]
+                  if "{" in candidate and "}" in candidate else ""):
+        if not value:
+            continue
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 # Per-session consent (same spirit as the other AI features).
 EXTRACTION_DATA_NOTICE = (
@@ -66,9 +97,10 @@ Rules:
 
 Extract these fields ({schema_kind}): {fields}.
 
-Respond with ONLY this JSON object (no prose, no code fences):
-{{"values": {{...the fields above, missing -> null...}}, "extraction_scope": "abstract"|"full_text",
- "confidence": 0.0, "conflicts": [], "notes": "short note on what was/ wasn't available"}}
+    Respond with ONLY this JSON object (no prose, no code fences):
+    {{"values": {{...the fields above, missing -> null...}}, "extraction_scope": "abstract",
+     "confidence": 0.0, "field_confidence": {{"field_name": 0.0}},
+     "conflicts": [], "notes": "short note on what was/ wasn't available"}}
 """
 
 
@@ -98,14 +130,16 @@ def _text(value):
 
 
 def _provenance(candidate) -> E.Provenance:
+    route = E.DiscoveryRoute(
+        method="scholarly_api_search" if candidate.query else "source_candidate",
+        source=candidate.source,
+        query=candidate.query,
+        executed_queries=[candidate.query] if candidate.query else [],
+        record_identifier=candidate.doi or candidate.url,
+    )
     return E.Provenance(source=candidate.source, doi=candidate.doi, title=candidate.title,
                         url=candidate.url, authors=list(candidate.authors), year=candidate.year,
-                        query=candidate.query)
-
-
-def _scope(value) -> str:
-    v = str(value or "").strip().lower()
-    return E.SCOPE_FULL_TEXT if v == "full_text" else E.SCOPE_ABSTRACT
+                        query=candidate.query, discovery_route=route)
 
 
 def _empty(schema_kind, prov, *, note, status, scope=E.SCOPE_ABSTRACT):
@@ -125,17 +159,34 @@ def _elements(value) -> dict:
     return out
 
 
-def _build(schema_kind, payload, prov):
+def _field_confidence(value) -> dict:
+    out = {}
+    if isinstance(value, dict):
+        for key, raw in value.items():
+            confidence = _num(raw)
+            if confidence is not None:
+                out[str(key)] = max(0.0, min(1.0, confidence))
+    return out
+
+
+def _build(schema_kind, payload, prov, *, supplied_scope=E.SCOPE_ABSTRACT):
     values = payload.get("values") if isinstance(payload.get("values"), dict) else payload
     values = values or {}
-    scope = _scope(payload.get("extraction_scope"))
+    # The public AI path supplies title + abstract only. The model is not an
+    # authority over that input boundary and cannot self-label it full_text.
+    scope = supplied_scope if supplied_scope in E.EXTRACTION_SCOPES else E.SCOPE_ABSTRACT
     conf = _num(payload.get("confidence")) or 0.0
     conf = max(0.0, min(1.0, conf))
-    conflicts = [str(c) for c in (payload.get("conflicts") or []) if str(c).strip()]
+    reported_conflicts = payload.get("conflicts")
+    conflicts = ([str(c).strip() for c in reported_conflicts if str(c).strip()]
+                 if isinstance(reported_conflicts, list) else [])
     note = _text(payload.get("notes"))
 
     common = dict(provenance=prov, extraction_confidence=conf, extraction_scope=scope,
-                  extraction_status=E.STATUS_OK, conflicts=conflicts, notes=note)
+                  extraction_status=E.STATUS_OK,
+                  field_confidence=_field_confidence(payload.get("field_confidence")),
+                  conflicts=conflicts, notes=note, creation_origin="ai",
+                  review_status=E.REVIEW_NEEDS_REVIEW)
     if schema_kind == E.SCHEMA_LEACHING:
         ev = E.LeachingEvidence(
             **common,
@@ -178,6 +229,8 @@ def extract_evidence(candidate, schema_kind=E.SCHEMA_LEACHING, *, client=None, m
     * AI on → one grounded call, validated into the schema (missing → null, confidence explicit,
       conflicts flagged, abstract-scope confidence-capped). The raw model response is never stored.
     """
+    if schema_kind not in E.SCHEMA_KINDS:
+        raise ValueError(f"unsupported evidence schema_kind: {schema_kind!r}")
     prov = _provenance(candidate)
     if not candidate.has_abstract:
         return _empty(schema_kind, prov, status=E.STATUS_NO_TEXT,
@@ -189,4 +242,4 @@ def extract_evidence(candidate, schema_kind=E.SCHEMA_LEACHING, *, client=None, m
     if payload is None:
         return _empty(schema_kind, prov, status=E.STATUS_AI_FAILED,
                       note="AI extraction was unavailable for this paper — no values were invented.")
-    return _build(schema_kind, payload, prov)
+    return _build(schema_kind, payload, prov, supplied_scope=E.SCOPE_ABSTRACT)

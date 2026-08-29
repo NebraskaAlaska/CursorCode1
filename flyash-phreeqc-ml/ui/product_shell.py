@@ -14,11 +14,12 @@ from typing import Any
 import streamlit as st
 
 import app_ui
-from flyash_phreeqc_ml import run_manager, workspace_store
+from flyash_phreeqc_ml import phase3_artifacts, run_manager, workspace_store
 from flyash_phreeqc_ml.instruments import icp_processor
 from flyash_phreeqc_ml.instruments import virtual_lab_machine_runner as machine_runner
 from flyash_phreeqc_ml.instruments import virtual_lab_machines as machines
 from flyash_phreeqc_ml.simulation import phreeqc_executor
+from ui import phase3_workflows
 
 NAV_PAGES = (
     "Home",
@@ -67,7 +68,8 @@ def friendly_status(value: Any) -> str:
 _SCIENTIFIC_SESSION_PREFIXES = (
     "asst_state__", "asst_mp__", "asst_release__", "asst_ctx_", "asst_db__",
     "asst_release_mode__", "asst_release_pct__", "sim_", "phase2_prepared_result__",
-    "machine_payload__", "lab_icp_", "predmdl_", "evlib_", "assistant_msgs_",
+    "machine_payload__", "phase3_", "lab_icp_", "predmdl_", "evlib_",
+    "assistant_msgs_",
 )
 
 
@@ -113,6 +115,27 @@ def _record_names(store, context):
     return project, material, run
 
 
+def _validated_artifact_links(
+        store, material, field_name: str, *, record_types: set[str], statuses: set[str] | None = None):
+    """Resolve typed material links in their exact context; opaque legacy labels never qualify."""
+    resolved = []
+    for reference in getattr(material, field_name, []) if material else []:
+        if not str(reference).startswith(workspace_store.ARTIFACT_PREFIX):
+            continue
+        try:
+            artifact = store.get_artifact(reference)
+        except workspace_store.WorkspaceStoreError:
+            continue
+        if artifact.project_id != material.project_id or artifact.material_id != material.material_id:
+            continue
+        if artifact.record_type not in record_types:
+            continue
+        if statuses is not None and artifact.status not in statuses:
+            continue
+        resolved.append(artifact)
+    return resolved
+
+
 def _bind_scientific_session_to_context(context: dict) -> None:
     """Invalidate unsaved/cached scientific UI state when durable identity changes.
 
@@ -132,6 +155,14 @@ def _bind_scientific_session_to_context(context: dict) -> None:
 
 def render_sidebar(store: workspace_store.WorkspaceStore) -> tuple[str, dict]:
     """One navigation system plus persistent project/material/run context."""
+    pending_page = st.session_state.pop("_vl_pending_nav_page", None)
+    if pending_page in NAV_PAGES:
+        st.session_state["nav_page"] = pending_page
+    pending_context = st.session_state.pop("_vl_pending_context_selection", None)
+    if isinstance(pending_context, dict):
+        st.session_state["shell_active_project"] = pending_context.get("project_id")
+        st.session_state["shell_active_material"] = pending_context.get("material_id")
+        st.session_state["shell_active_run"] = pending_context.get("run_id")
     st.sidebar.markdown("### WPI VIRTUAL LAB")
     context = _safe_context(store)
     projects = store.list_projects()
@@ -182,6 +213,13 @@ def render_sidebar(store: workspace_store.WorkspaceStore) -> tuple[str, dict]:
         st.sidebar.caption("No project selected")
 
     _bind_scientific_session_to_context(context)
+    pending_evidence = st.session_state.pop("_vl_pending_evidence_selection", None)
+    if isinstance(pending_evidence, dict) \
+            and pending_evidence.get("project_id") == context.get("active_project_id") \
+            and pending_evidence.get("artifact_id"):
+        st.session_state[
+            f"phase3_evidence_selected__{pending_evidence['project_id']}__new"
+        ] = pending_evidence["artifact_id"]
 
     st.sidebar.divider()
     page = st.sidebar.radio("Navigate", NAV_PAGES, key="nav_page", label_visibility="collapsed")
@@ -214,7 +252,10 @@ def render_context_bar(store, context, location: str | None = None) -> None:
 def navigate(page: str) -> None:
     if page not in NAV_PAGES:
         return
-    st.session_state["nav_page"] = page
+    # Navigation actions run after the sidebar radio has been instantiated.
+    # Defer rebinding its value until the next script pass to satisfy Streamlit's
+    # widget-state rules while preserving one canonical navigation control.
+    st.session_state["_vl_pending_nav_page"] = page
     st.rerun()
 
 
@@ -348,7 +389,10 @@ def render_projects(store, context) -> None:
     for record in projects:
         materials = store.list_materials(record.project_id)
         runs = store.list_runs(project_id=record.project_id)
-        evidence_count = sum(len(item.evidence_references) for item in materials)
+        evidence_count = sum(len(_validated_artifact_links(
+            store, item, "evidence_references",
+            record_types={workspace_store.ARTIFACT_EVIDENCE},
+        )) for item in materials)
         model_count = sum(len(item.associated_model_ids) for item in materials)
         with st.expander(f"{record.name} · {friendly_status(record.status)}", expanded=False):
             st.caption(f"{record.project_id} · created {record.created_at} · updated {record.updated_at}")
@@ -356,7 +400,7 @@ def render_projects(store, context) -> None:
             app_ui.render_metric_cards([
                 {"label": "Materials", "value": len(materials)},
                 {"label": "Runs", "value": len(runs)},
-                {"label": "Evidence refs", "value": evidence_count},
+                {"label": "Durable evidence", "value": evidence_count},
                 {"label": "Model refs", "value": model_count},
             ])
             if not record.archived and st.button("Make active", key=f"project_activate_{record.project_id}"):
@@ -421,7 +465,7 @@ def render_legacy_run_manager() -> str | None:
         )
         if st.button(
             "Create legacy run",
-            width="stretch",
+            use_container_width=True,
             key="create_legacy_run",
         ):
             raw = (new_name or "").strip()
@@ -543,12 +587,41 @@ def render_material_record(store, context) -> None:
             temperature = col4.text_input("Temperature + unit",
                                           material.process_conditions.get("temperature", ""))
         with st.expander("References and approved-model links", expanded=False):
-            measurement_refs = st.text_area("Measurement references (one per line)",
-                                            "\n".join(material.measurement_references))
-            evidence_refs = st.text_area("Evidence references (one per line)",
-                                         "\n".join(material.evidence_references))
+            typed_measurement_refs = [
+                item for item in material.measurement_references
+                if str(item).startswith(workspace_store.ARTIFACT_PREFIX)
+            ]
+            typed_evidence_refs = [
+                item for item in material.evidence_references
+                if str(item).startswith(workspace_store.ARTIFACT_PREFIX)
+            ]
+            legacy_measurement_refs = [
+                item for item in material.measurement_references
+                if item not in typed_measurement_refs
+            ]
+            legacy_evidence_refs = [
+                item for item in material.evidence_references
+                if item not in typed_evidence_refs
+            ]
+            st.caption(
+                f"Durable workflow links: {len(typed_measurement_refs)} measurement · "
+                f"{len(typed_evidence_refs)} evidence. Manage these in their review workflows."
+            )
+            measurement_refs = st.text_area(
+                "Legacy / unverified measurement references (one per line)",
+                "\n".join(legacy_measurement_refs),
+                help="These compatibility references do not satisfy a durable measured-data gate.",
+            )
+            evidence_refs = st.text_area(
+                "Legacy / unverified evidence references (one per line)",
+                "\n".join(legacy_evidence_refs),
+                help="Reviewed evidence artifact links are managed on the Evidence page.",
+            )
             model_refs = st.text_area("Associated approved model IDs (one per line)",
                                       "\n".join(material.associated_model_ids))
+            st.caption("Durable linked record IDs")
+            _render_items([*typed_measurement_refs, *typed_evidence_refs],
+                          "No durable artifact is linked yet.")
         submitted = st.form_submit_button("Save durable material", type="primary")
     if submitted:
         def lines(text):
@@ -558,6 +631,13 @@ def render_material_record(store, context) -> None:
             if any(value not in (None, "") for value in row.values()):
                 cleaned_composition.append(dict(row))
         try:
+            entered_measurement_refs = lines(measurement_refs)
+            entered_evidence_refs = lines(evidence_refs)
+            if any(item.startswith(workspace_store.ARTIFACT_PREFIX)
+                   for item in [*entered_measurement_refs, *entered_evidence_refs]):
+                raise workspace_store.WorkspaceStoreError(
+                    "durable artifact IDs must be linked from their measured/evidence workflow"
+                )
             store.update_material(
                 material.material_id, name=name.strip(), description=description.strip(),
                 material_type=material_type.strip(), composition=cleaned_composition,
@@ -569,8 +649,8 @@ def render_material_record(store, context) -> None:
                                     "concentration": concentration.strip(),
                                     "liquid_solid_ratio": ratio.strip(),
                                     "temperature": temperature.strip()},
-                measurement_references=lines(measurement_refs),
-                evidence_references=lines(evidence_refs),
+                measurement_references=[*typed_measurement_refs, *entered_measurement_refs],
+                evidence_references=[*typed_evidence_refs, *entered_evidence_refs],
                 associated_model_ids=lines(model_refs),
             )
             store.set_active_context(project.project_id, material.material_id, None)
@@ -580,7 +660,7 @@ def render_material_record(store, context) -> None:
             st.error(str(exc))
 
 
-def machine_runtime_state(spec, material=None) -> tuple[str, list[str], bool]:
+def machine_runtime_state(spec, material=None, store=None) -> tuple[str, list[str], bool]:
     if spec.machine_id == machines.PHREEQC_LEACHING:
         availability = _phreeqc_availability()
         return ("ready_for_gated_preview" if availability.can_run else "runtime_unavailable",
@@ -594,8 +674,27 @@ def machine_runtime_state(spec, material=None) -> tuple[str, list[str], bool]:
             ["Select and verify a usable, approved non-demo model in the approved-model workflow."],
             False,
         )
-    if spec.needs_measured_data and not (material and material.measurement_references):
-        return "measured_input_required", ["User-supplied measured data are required."], False
+    if spec.needs_measured_data:
+        durable_measurements = _validated_artifact_links(
+            store, material, "measurement_references",
+            record_types={
+                workspace_store.ARTIFACT_ICP_REVIEW,
+                workspace_store.ARTIFACT_XRD_PATTERN,
+            },
+            statuses={"finalized"},
+        ) if store is not None else [
+            item for item in getattr(material, "measurement_references", [])
+            if str(item).startswith(workspace_store.ARTIFACT_PREFIX)
+        ] if material else []
+        if not durable_measurements:
+            return (
+                "measured_input_required",
+                ["A project-scoped durable measured-data record is required; legacy text "
+                 "references remain unverified."],
+                False,
+            )
+    if spec.machine_id == machines.XRD_ADVISORY:
+        return "input_required", [], True
     if spec.needs_reference_database:
         return "reference_data_required", list(spec.runtime_requirements), False
     if spec.maturity == machines.MATURITY_BLUEPRINT:
@@ -709,7 +808,7 @@ def _render_machine_grid(store, context) -> None:
         cols = st.columns(3)
         for column, spec in zip(cols, specs[row_start:row_start + 3], strict=True):
             with column:
-                runtime, blockers, operable = machine_runtime_state(spec, material)
+                runtime, blockers, operable = machine_runtime_state(spec, material, store)
                 _machine_card(spec, runtime, blockers, operable)
 
 
@@ -788,6 +887,47 @@ def _render_icp_qc_summary(qc_summary) -> None:
         )
 
 
+def _render_phase3_run_summary(record) -> None:
+    """Concise typed summaries; full payloads remain in existing disclosures."""
+    data = record.result_data if isinstance(record.result_data, dict) else {}
+    if record.machine_id == machines.XRD_ADVISORY and isinstance(data.get("match_payload"), dict):
+        match = data["match_payload"]
+        app_ui.render_metric_cards([
+            {"label": "Possible matches", "value": len(match.get("candidates") or [])},
+            {"label": "Unmatched peaks", "value": len(match.get("unmatched_measured") or []),
+             "status": "warning"},
+            {"label": "Overlap ambiguity", "value": match.get("overlap_ambiguity_count", 0),
+             "status": "warning"},
+        ])
+        st.caption(
+            "Tentative advisory possible matches; check against an appropriate reference source."
+        )
+        return
+    payload = data.get("artifact_payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    if record.machine_id == machines.EXPERIMENTAL_DESIGN and payload:
+        app_ui.render_metric_cards([
+            {"label": "Planned runs", "value": payload.get("run_count", 0)},
+            {"label": "Duplicates removed",
+             "value": payload.get("duplicate_conditions_removed", 0)},
+        ])
+        st.caption("Advisory plan; measurement fields remain blank.")
+    elif record.machine_id == machines.SUSTAINABILITY and payload:
+        app_ui.render_metric_cards([
+            {"label": "Included", "value": payload.get("included_count",
+                                                         payload.get("included_rows", 0))},
+            {"label": "Missing factors", "value": len(payload.get("missing_factors") or []),
+             "status": "warning"},
+        ])
+        st.caption("Screening only; supplied boundaries and factors determine the totals.")
+    elif record.machine_id == machines.LITERATURE_ENGINE \
+            and isinstance(data.get("evidence_summary"), dict):
+        evidence = data["evidence_summary"]
+        st.write(evidence.get("title") or evidence.get("doi") or "Reviewed evidence")
+        st.caption("Reviewed literature context; not measured validation of this material.")
+
+
 def _show_specialized_workflow(machine_id: str, label: str) -> None:
     if st.button(label, key=f"machine_specialized_open_{machine_id}", type="primary"):
         st.session_state[f"machine_specialized_visible__{machine_id}"] = True
@@ -800,7 +940,7 @@ def render_machine_workspace(store, context, machine_id: str) -> None:
         st.error("Unknown machine. Nothing was run.")
         return
     project, material, _ = _record_names(store, context)
-    runtime, blockers, operable = machine_runtime_state(spec, material)
+    runtime, blockers, operable = machine_runtime_state(spec, material, store)
     view = machine_card_view(spec, runtime, blockers, operable)
     app_ui.render_page_header(spec.display_name, view["purpose"])
     tabs = st.tabs(list(MACHINE_WORKSPACE_AREAS))
@@ -823,10 +963,10 @@ def render_machine_workspace(store, context, machine_id: str) -> None:
                 st.caption(availability.message)
         elif spec.machine_id == machines.ICP_PROCESSOR:
             st.caption("Processes supplied concentration data; measured status still depends on row role and QC.")
-            _show_specialized_workflow(spec.machine_id, "Open ICP processor")
+            st.markdown("**Next:** open **Prepare** to use the durable Phase 1B review workflow.")
         elif spec.machine_id == machines.XRD_ADVISORY:
             st.caption("Results are advisory, not confirmed phase identification.")
-            _show_specialized_workflow(spec.machine_id, "Open XRD planner")
+            st.markdown("**Next:** open **Prepare** to import a measured pattern and sourced references.")
         elif spec.machine_id == machines.ML_SURROGATE:
             st.caption("A usable approved model is required; no model means no prediction.")
             _show_specialized_workflow(spec.machine_id, "Open approved-model workflow")
@@ -865,51 +1005,53 @@ def render_machine_workspace(store, context, machine_id: str) -> None:
             st.json(view["technical_details"])
 
     with tabs[1]:
-        st.markdown("**Required inputs**")
-        _render_items(spec.required_inputs)
-        if blockers:
-            st.warning(view["readiness"])
-        default_payload = st.session_state.get(f"machine_payload__{spec.machine_id}", "{}")
-        payload_text = default_payload
-        if spec.machine_id == machines.PHREEQC_LEACHING:
-            st.info("Prepare and review PHREEQC input in the planner; this shared workspace has no "
-                    "generic input editor or Run button.")
-            if st.button("Open PHREEQC planner", key="machine_phreeqc_prepare_route"):
-                navigate("Material Workspace")
-        else:
-            with st.expander("Advanced inputs", expanded=False):
-                payload_text = st.text_area(
-                    "Input data (JSON; user-supplied values only)", default_payload,
-                    key=f"machine_payload_editor__{spec.machine_id}", height=180,
-                    help="This delegates to the canonical adapter and does not add missing values.")
-            if operable and st.button(
-                    "Prepare supplied data", key=f"machine_prepare_{spec.machine_id}", type="primary"):
-                try:
-                    payload = json.loads(payload_text)
-                    if not isinstance(payload, dict):
-                        raise ValueError("payload must be a JSON object")
-                    result = machine_runner.run_virtual_lab_machine(spec.machine_id, payload)
-                    envelope = {
-                        "project_id": project.project_id if project else None,
-                        "material_id": material.material_id if material else None,
-                        "material_revision": material.revision if material else None,
-                        "machine_id": spec.machine_id,
-                        "input_snapshot": payload,
-                        "input_hash": workspace_store.identity_hash(payload),
-                        "result": _result_to_dict(result),
-                    }
-                    st.session_state[_prepared_key(spec.machine_id)] = envelope
-                    st.session_state[f"machine_payload__{spec.machine_id}"] = payload_text
-                    st.success("Prepared. Review Results before saving.")
-                except (ValueError, json.JSONDecodeError, workspace_store.WorkspaceStoreError) as exc:
-                    st.error(f"Input refused: {exc}")
-            elif not operable:
-                st.caption("This machine remains inspectable, but preparation is unavailable until the blocker is resolved.")
-            with st.expander("Optional inputs", expanded=False):
-                _render_items(spec.optional_inputs)
-            with st.expander("Full assumptions and preparation notes", expanded=False):
-                _render_items(spec.safety_notes)
-                _render_items(spec.runtime_requirements)
+        typed_prepare = phase3_workflows.render_machine_prepare(store, context, spec.machine_id)
+        if not typed_prepare:
+            st.markdown("**Required inputs**")
+            _render_items(spec.required_inputs)
+            if blockers:
+                st.warning(view["readiness"])
+            default_payload = st.session_state.get(f"machine_payload__{spec.machine_id}", "{}")
+            payload_text = default_payload
+            if spec.machine_id == machines.PHREEQC_LEACHING:
+                st.info("Prepare and review PHREEQC input in the planner; this shared workspace has no "
+                        "generic input editor or Run button.")
+                if st.button("Open PHREEQC planner", key="machine_phreeqc_prepare_route"):
+                    navigate("Material Workspace")
+            else:
+                with st.expander("Advanced inputs", expanded=False):
+                    payload_text = st.text_area(
+                        "Input data (JSON; user-supplied values only)", default_payload,
+                        key=f"machine_payload_editor__{spec.machine_id}", height=180,
+                        help="This delegates to the canonical adapter and does not add missing values.")
+                if operable and st.button(
+                        "Prepare supplied data", key=f"machine_prepare_{spec.machine_id}", type="primary"):
+                    try:
+                        payload = json.loads(payload_text)
+                        if not isinstance(payload, dict):
+                            raise ValueError("payload must be a JSON object")
+                        result = machine_runner.run_virtual_lab_machine(spec.machine_id, payload)
+                        envelope = {
+                            "project_id": project.project_id if project else None,
+                            "material_id": material.material_id if material else None,
+                            "material_revision": material.revision if material else None,
+                            "machine_id": spec.machine_id,
+                            "input_snapshot": payload,
+                            "input_hash": workspace_store.identity_hash(payload),
+                            "result": _result_to_dict(result),
+                        }
+                        st.session_state[_prepared_key(spec.machine_id)] = envelope
+                        st.session_state[f"machine_payload__{spec.machine_id}"] = payload_text
+                        st.success("Prepared. Review Results before saving.")
+                    except (ValueError, json.JSONDecodeError, workspace_store.WorkspaceStoreError) as exc:
+                        st.error(f"Input refused: {exc}")
+                elif not operable:
+                    st.caption("This machine remains inspectable, but preparation is unavailable until the blocker is resolved.")
+                with st.expander("Optional inputs", expanded=False):
+                    _render_items(spec.optional_inputs)
+                with st.expander("Full assumptions and preparation notes", expanded=False):
+                    _render_items(spec.safety_notes)
+                    _render_items(spec.runtime_requirements)
 
     envelope = st.session_state.get(_prepared_key(spec.machine_id))
     context_match = bool(envelope and project and material
@@ -918,7 +1060,9 @@ def render_machine_workspace(store, context, machine_id: str) -> None:
                          and envelope.get("material_revision") == material.revision)
     result = envelope.get("result") if context_match else None
     with tabs[2]:
-        if not context_match:
+        if phase3_workflows.render_machine_results(store, context, spec.machine_id):
+            pass
+        elif not context_match:
             _empty("No current result", "Prepare this machine for the active project and material.")
         else:
             app_ui.render_epistemic_badge(result.get("output_data_type"))
@@ -979,7 +1123,8 @@ def render_machine_workspace(store, context, machine_id: str) -> None:
                                       machine_id=spec.machine_id)
             if related:
                 _render_run_rows(store, list(reversed(related)), compact=True,
-                                 key_prefix=f"machine_history_{spec.machine_id}")
+                                 key_prefix=f"machine_history_{spec.machine_id}",
+                                 allow_reopen=True)
             else:
                 _empty("No related runs", "Saved results for this material will appear here.")
 
@@ -1036,11 +1181,42 @@ def _render_run_rows(store, records, compact=False, *, key_prefix="run", allow_r
                 st.warning(str(record.warnings[0]))
             if spec and spec.machine_id == machines.ICP_PROCESSOR:
                 _render_icp_qc_summary(record.result_data.get("qc_summary"))
+            _render_phase3_run_summary(record)
             if allow_reopen and st.button(
                     "Reopen this run", key=f"{key_prefix}_reopen_{record.run_id}_{index}"):
+                dependencies = record.input_snapshot.get("artifact_identities") \
+                    if isinstance(record.input_snapshot, dict) else None
+                try:
+                    if dependencies:
+                        phase3_artifacts.require_exact_artifact_dependencies(
+                            store,
+                            dependencies,
+                            project_id=record.project_id,
+                            material_id=record.material_id,
+                        )
+                except workspace_store.WorkspaceStoreError as exc:
+                    st.error(f"Saved artifact cannot be reopened safely: {exc}")
+                    continue
                 store.set_active_context(record.project_id, record.material_id, record.run_id)
-                st.success("Run context reopened without changing its original snapshot.")
-                st.rerun()
+                st.session_state["_vl_pending_context_selection"] = {
+                    "project_id": record.project_id,
+                    "material_id": record.material_id,
+                    "run_id": record.run_id,
+                }
+                if record.machine_id == machines.LITERATURE_ENGINE:
+                    identity = record.result_data.get("artifact_identity") \
+                        if isinstance(record.result_data, dict) else None
+                    artifact_id = identity.get("artifact_id") \
+                        if isinstance(identity, dict) else None
+                    if artifact_id:
+                        st.session_state["_vl_pending_evidence_selection"] = {
+                            "project_id": record.project_id,
+                            "artifact_id": artifact_id,
+                        }
+                    navigate("Evidence")
+                else:
+                    st.session_state["active_machine_id"] = record.machine_id
+                    navigate("Machines")
             with st.expander("Result details", expanded=False):
                 st.markdown(f"**Status:** {friendly_status(record.status)}  \n"
                             f"**Output:** {friendly_status(record.output_type)}  \n"
@@ -1124,7 +1300,7 @@ def render_results_index(store, context) -> None:
                if _run_matches_filters(item, filters, store.run_staleness(item)[0])]
     st.caption(f"{len(visible)} of {len(records)} project results")
     if visible:
-        _render_run_rows(store, visible, key_prefix="results")
+        _render_run_rows(store, visible, key_prefix="results", allow_reopen=True)
     else:
         _empty("No matching results", "Change filters; missing values are not interpreted as zero.")
 
@@ -1154,6 +1330,7 @@ def render_validation_overview(store, context, legacy_run: str | None) -> None:
             "The measured comparison must meet that criterion.",
             "Simulation, literature, or a model metric alone does not validate a material.",
         ))
+    phase3_workflows.render_icp_validation_gate(store, context)
 
 
 def render_evidence_header(store, context) -> None:
@@ -1161,11 +1338,25 @@ def render_evidence_header(store, context) -> None:
     app_ui.render_epistemic_badge("literature_evidence")
     _, material, _ = _record_names(store, context)
     if material and material.evidence_references:
-        st.caption(f"{len(material.evidence_references)} reviewed reference(s) attached to the active material")
+        durable_evidence = _validated_artifact_links(
+            store, material, "evidence_references",
+            record_types={workspace_store.ARTIFACT_EVIDENCE},
+        )
+        explicitly_reviewed = sum(
+            artifact.status == "reviewed" for artifact in durable_evidence)
+        legacy_count = len(material.evidence_references) - len(durable_evidence)
+        st.caption(
+            f"{len(durable_evidence)} durable evidence artifact(s) attached · "
+            f"{explicitly_reviewed} explicitly reviewed · "
+            f"{legacy_count} legacy/unverified reference(s)"
+        )
         with st.expander("Show material references", expanded=False):
-            _render_items(material.evidence_references)
+            _render_items(
+                [artifact.artifact_id for artifact in durable_evidence],
+                "No durable evidence artifact is linked.",
+            )
     else:
-        st.caption("No reviewed reference is attached to the active material yet.")
+        st.caption("No evidence reference is attached to the active material yet.")
 
 
 def render_history(store, context) -> None:

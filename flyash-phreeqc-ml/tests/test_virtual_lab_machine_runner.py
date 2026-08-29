@@ -219,23 +219,37 @@ def test_literature_requires_provenance_and_human_review():
 
 
 # 13.
-def test_sustainability_is_advisory_order_of_magnitude():
-    r = run.run_virtual_lab_machine(vlm.SUSTAINABILITY,
-                                    {"assumptions": {"energy": 100, "energy_co2_factor": 0.5}})
+def test_sustainability_is_advisory_from_supplied_inventory():
+    r = run.run_virtual_lab_machine(vlm.SUSTAINABILITY, {
+        "mode": "user_inventory_screen",
+        "inventory_rows": [{
+            "item": "Synthetic test energy", "amount": 100, "amount_unit": "kWh",
+            "factor": 0.5, "factor_unit": "kg CO2e/kWh",
+            "factor_source": "Synthetic user assumption", "source_type": "user_assumption",
+            "boundary": "Synthetic test boundary",
+        }],
+    })
     assert r.output_data_type == vlm.OUT_ADVISORY_INTERPRETATION
-    assert r.results["co2_estimate_order_of_magnitude"] == 50.0       # only user amount × user factor
-    assert any("order-of-magnitude" in w.lower() for w in r.warnings)
-    assert any("lca" in w.lower() for w in r.warnings)
+    assert r.results["totals"][0]["total"] == 50.0
+    assert any("screening" in w.lower() for w in r.warnings)
+    assert any("certified" in w.lower() for w in r.warnings)
 
 
 # 14.
 def test_experimental_design_produces_a_plan_but_no_results():
-    r = run.run_virtual_lab_machine(vlm.EXPERIMENTAL_DESIGN,
-                                    {"goal": "measure leaching pH", "factors": {"naoh": [0.1, 0.5]}})
+    r = run.run_virtual_lab_machine(vlm.EXPERIMENTAL_DESIGN, {
+        "mode": "generic_user_defined",
+        "material_id": "mat_" + "a" * 32,
+        "goal": "Synthetic test: measure leaching pH",
+        "factors": {"naoh": [0.1, 0.5]},
+        "replicates": 2,
+        "max_run_count": 4,
+    })
     assert r.output_data_type == vlm.OUT_ADVISORY_INTERPRETATION
-    assert r.results["controls"] and r.results["recommended_replicates"] == 3
-    assert r.results["matrix_size"] == 2
-    assert any("no experimental results" in w.lower() for w in r.warnings)
+    assert r.results["replicates"] == 2
+    assert r.results["run_count"] == 4
+    assert all(row["measured_response"] == "" for row in r.results["rows"])
+    assert any("no measurement" in w.lower() for w in r.warnings)
 
 
 # 15.

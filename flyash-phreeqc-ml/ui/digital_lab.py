@@ -301,7 +301,7 @@ def _render_xrd_expected() -> None:
 def _render_xrd_match() -> None:
     st.caption("Enter MEASURED 2θ peaks to get TENTATIVE possible phases — never an identification.")
     c1, c2 = st.columns([3, 1])
-    peaks_text = c1.text_input("Measured 2θ peaks (°, comma-separated)", value="26.6, 29.4, 34.1",
+    peaks_text = c1.text_input("Measured 2θ peaks (°, comma-separated)", value="",
                                key="lab_xrd_meas")
     tol = c2.number_input("Tolerance ±° 2θ", min_value=0.05, max_value=1.0,
                           value=float(xrd.DEFAULT_MATCH_TOLERANCE_DEG), step=0.05, key="lab_xrd_tol")

@@ -115,7 +115,9 @@ def test_app_dispatches_to_ui_render():
     src = (_REPO / "app.py").read_text(encoding="utf-8")
     for tab in TAB_MODULES:
         if tab == "digital_lab":
-            assert "digital_lab.render_machine_workflow(" in src
+            # The legacy ICP/XRD surface remains importable for compatibility tests,
+            # but the product entry point must expose only the durable typed authority.
+            assert "digital_lab.render_machine_workflow(" not in src
         else:
             assert f"{tab}.render(" in src, f"app.py does not dispatch to ui.{tab}.render"
     assert "product_shell.render_sidebar(" in src

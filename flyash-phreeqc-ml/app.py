@@ -36,7 +36,7 @@ import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from ui import (  # noqa: E402
     assistant_tab, simulate_tab, import_tab, validate_tab, match_tab,
     compare_tab, export_tab, results, engine_library, settings, evidence_library,
-    prediction_models, digital_lab, product_shell,
+    prediction_models, product_shell, phase3_evidence, phase3_workflows,
 )
 from ui.state import MODEL_NAME  # noqa: E402
 
@@ -451,12 +451,6 @@ elif PAGE == "Machines":
         product_shell.render_machine_workspace(STORE, CONTEXT, ACTIVE_MACHINE)
         specialized_visible = st.session_state.get(
             f"machine_specialized_visible__{ACTIVE_MACHINE}", False)
-        if specialized_visible and ACTIVE_MACHINE in {"icp_data_processor", "xrd_advisory"}:
-            st.divider()
-            if st.button("Close specialized workflow", key=f"machine_specialized_close_{ACTIVE_MACHINE}"):
-                st.session_state[f"machine_specialized_visible__{ACTIVE_MACHINE}"] = False
-                st.rerun()
-            digital_lab.render_machine_workflow(LEGACY_RUN, ACTIVE_MACHINE)
         if specialized_visible and ACTIVE_MACHINE == "ml_surrogate_predictor":
             st.divider()
             if st.button("Close approved-model workflow", key="machine_specialized_close_ml"):
@@ -472,6 +466,18 @@ elif PAGE == "Results":
 
 elif PAGE == "Validation & Uncertainty":
     product_shell.render_validation_header(STORE, CONTEXT)
+    st.markdown("### Operational durable ICP validation")
+    st.caption(
+        "Only a finalized Phase 3 ICP review with an exactly verified source can cross "
+        "this processor-owned validation gate."
+    )
+    phase3_workflows.render_icp_validation_gate(STORE, CONTEXT)
+    st.divider()
+    st.markdown("### Legacy validation workflows")
+    st.caption(
+        "The Import, Validate, Match, and Compare tools below preserve the existing "
+        "workflow. They do not finalize a Phase 3 ICP review or authorize durable ICP evidence."
+    )
     validation_overview, sub_import, sub_validate, sub_match, sub_compare = st.tabs(
         ["Overview", "Import", "Validate", "Match", "Compare"])
     with validation_overview:
@@ -487,12 +493,16 @@ elif PAGE == "Validation & Uncertainty":
 
 elif PAGE == "Evidence":
     product_shell.render_evidence_header(STORE, CONTEXT)
-    evidence_overview, evidence_workflow = st.tabs(["Overview", "Evidence Library"])
+    evidence_overview, evidence_manual, evidence_workflow = st.tabs(
+        ["Overview", "Manual evidence & review", "Legacy Evidence Library"])
     with evidence_overview:
-        st.write("Open the Evidence Library to search, review, and curate a source.")
+        st.write("Add evidence manually, review its exact source location, or use the legacy search library.")
         st.caption("Literature evidence is not a measurement of your material.")
+    with evidence_manual:
+        phase3_evidence.render_editor(STORE, CONTEXT)
     with evidence_workflow:
-        evidence_library.render(LEGACY_RUN, DEV_MODE)
+        evidence_library.render(
+            LEGACY_RUN, DEV_MODE, store=STORE, context=CONTEXT)
 
 elif PAGE == "Run History":
     product_shell.render_history(STORE, CONTEXT)

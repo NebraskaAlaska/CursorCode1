@@ -126,8 +126,6 @@ _INPUT_SPEC = {
     vlm.SEM_EDS: ("rows",),
     vlm.MECHANICAL: ("rows",),
     vlm.LITERATURE_ENGINE: ("rows",),
-    vlm.SUSTAINABILITY: ("assumptions",),
-    vlm.EXPERIMENTAL_DESIGN: ("goal",),
     vlm.ML_SURROGATE: ("model", "features"),
 }
 _INPUT_DESCRIPTIONS = {
@@ -165,6 +163,21 @@ def _missing_inputs(machine_id, payload) -> list:
         return []
     if machine_id == vlm.VALIDATION_UNCERTAINTY:
         return [k for k in ("measured", "predicted") if not p.get(k)]
+    if machine_id == vlm.EXPERIMENTAL_DESIGN:
+        mode = p.get("mode")
+        if mode == "cfa_leaching_preset":
+            return []
+        if mode == "generic_user_defined":
+            return [key for key in ("material_id", "goal", "factors", "replicates",
+                                    "max_run_count") if p.get(key) in (None, "", {}, [])]
+        return ["mode (cfa_leaching_preset or generic_user_defined)"]
+    if machine_id == vlm.SUSTAINABILITY:
+        mode = p.get("mode")
+        if mode == "user_inventory_screen":
+            return [] if p.get("inventory_rows") else ["inventory_rows"]
+        if mode == "experimental_condition_screening_proxy":
+            return [key for key in ("rows", "eligibility_column") if not p.get(key)]
+        return ["mode (user_inventory_screen or experimental_condition_screening_proxy)"]
     return [k for k in _INPUT_SPEC.get(machine_id, ()) if not p.get(k)]
 
 
@@ -754,100 +767,104 @@ def run_literature_evidence(payload, confirm: bool = False) -> VirtualLabMachine
 
 
 # --------------------------------------------------------------------------- #
-# 10. Sustainability / Cost Screening — order-of-magnitude from user assumptions.
+# 10. Sustainability / Cost Screening — supplied factors or eligible-condition proxy.
 # --------------------------------------------------------------------------- #
 def run_sustainability_screening(payload, confirm: bool = False) -> VirtualLabMachineResult:
+    import pandas as pd
+
+    from ..experiments import sustainability_score as sustainability
+
     p = payload or {}
     missing = _missing_inputs(vlm.SUSTAINABILITY, p)
     if missing:
         return _result(vlm.SUSTAINABILITY, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
-                       "Provide your assumptions (e.g. amounts + CO2 / cost factors).",
+                       "Choose a user inventory screen or the compatible condition screening proxy, "
+                       "then provide its explicit inputs.",
                        missing_inputs=missing, provenance={"inputs": "user_provided"})
-
-    a = dict(p["assumptions"] or {})
-    results: dict = {}
-    # Order-of-magnitude products ONLY from user-provided amount+factor pairs; no factor is invented.
-    co2 = _pairwise_total(a, "co2")
-    cost = _pairwise_total(a, "cost")
-    if co2 is not None:
-        results["co2_estimate_order_of_magnitude"] = round(co2, 6)
-    if cost is not None:
-        results["cost_estimate_order_of_magnitude"] = round(cost, 6)
-    if not results:
-        results["note"] = "No amount×factor pairs found to multiply — provide e.g. energy + co2_factor."
-
+    try:
+        if p["mode"] == "user_inventory_screen":
+            results = sustainability.screen_inventory(list(p["inventory_rows"]))
+        else:
+            frame = pd.DataFrame(list(p["rows"]))
+            proxy = sustainability.screen_condition_proxy(
+                frame, eligibility_column=str(p["eligibility_column"]))
+            results = {key: value for key, value in proxy.items() if key != "scores"}
+            results["scores"] = proxy["scores"].where(pd.notna(proxy["scores"]), None).to_dict(
+                orient="records")
+    except sustainability.SustainabilityScreenError as exc:
+        return _result(
+            vlm.SUSTAINABILITY, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
+            f"Screening input was refused: {exc}",
+            missing_inputs=[str(exc)],
+            warnings=["Missing or incompatible inputs remain excluded; no factor was invented."],
+            provenance={"inputs": "user_provided", "mode": p.get("mode")},
+        )
     return _result(vlm.SUSTAINABILITY, STATUS_ADVISORY, OUT_ADVISORY_INTERPRETATION,
-                   "ORDER-OF-MAGNITUDE screening from YOUR assumptions — not a final LCA/TEA.",
-                   results=results, assumptions=[f"{k}: {v}" for k, v in a.items()],
-                   warnings=["Order-of-magnitude only — NOT a quantified LCA/TEA or certified carbon "
-                             "savings.",
-                             "Every number is derived from YOUR assumptions; no emission/cost factor "
-                             "is invented."],
-                   provenance={"inputs": "user_assumptions"})
-
-
-def _pairwise_total(assumptions: dict, kind: str):
-    """Sum amount × factor for keys like ``energy`` + ``energy_<kind>_factor`` (user-provided only)."""
-    total, found = 0.0, False
-    for key, val in assumptions.items():
-        if key.endswith(f"_{kind}_factor"):
-            base = key[: -len(f"_{kind}_factor")]
-            amount = _num(assumptions.get(base))
-            factor = _num(val)
-            if amount is not None and factor is not None:
-                total += amount * factor
-                found = True
-    return total if found else None
+                   "Transparent screening prepared from supplied inventory factors or eligible "
+                   "experimental rows.",
+                   results=results, assumptions=list(results.get("assumptions") or []),
+                   warnings=["Screening only; this is not a certified assessment, cost conclusion, "
+                             "carbon-saving claim, or feasibility result.",
+                             "Every calculated factor was supplied with a source; missing factors "
+                             "remain missing."],
+                   provenance={"inputs": "user_provided", "mode": p.get("mode"),
+                               "engine": "experiments.sustainability_score"})
 
 
 # --------------------------------------------------------------------------- #
 # 11. Experimental Design Assistant — deterministic plan; never results.
 # --------------------------------------------------------------------------- #
 def run_experimental_design(payload, confirm: bool = False) -> VirtualLabMachineResult:
+    from ..experiments import plan_generator
+
     p = payload or {}
     missing = _missing_inputs(vlm.EXPERIMENTAL_DESIGN, p)
     if missing:
         return _result(vlm.EXPERIMENTAL_DESIGN, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
-                       "Provide your research goal (and optional factors).", missing_inputs=missing,
+                       "Choose the explicit CFA preset or provide a complete generic factor plan.",
+                       missing_inputs=missing,
                        provenance={"inputs": "user_provided"})
-
-    goal = str(p.get("goal"))
-    factors = p.get("factors") or {}          # {factor_name: [levels]}
-    matrix = _factor_matrix(factors)
-    plan = {
-        "goal": goal,
-        "controls": ["a no-treatment / blank control", "a known reference material",
-                     "a process-blank to catch contamination"],
-        "recommended_replicates": 3,
-        "variable_matrix": matrix,
-        "matrix_size": len(matrix),
-        "measurement_plan": ["define the measured response(s) up front",
-                             "measure with the relevant Virtual LAB machine (ICP / XRD / TGA / "
-                             "mechanical) on PHYSICAL samples",
-                             "compare measured vs any model estimate with the Validation assistant"],
-        "missing_measurements_to_consider": _suggest_missing_measurements(goal),
-    }
+    try:
+        if p["mode"] == "cfa_leaching_preset":
+            built = plan_generator.build_cfa_preset_advisory(
+                experiment_date=p.get("experiment_date"),
+                max_run_count=p.get("max_run_count"),
+            )
+        else:
+            built = plan_generator.build_generic_factor_plan(
+                material_id=str(p["material_id"]),
+                goal=str(p["goal"]),
+                factors=dict(p["factors"]),
+                fixed_conditions=dict(p.get("fixed_conditions") or {}),
+                replicates=p["replicates"],
+                max_run_count=p["max_run_count"],
+                controls=list(p.get("controls") or []),
+                sample_prefix=p.get("sample_prefix"),
+                experiment_date=p.get("experiment_date"),
+            )
+    except plan_generator.ExperimentPlanError as exc:
+        return _result(
+            vlm.EXPERIMENTAL_DESIGN, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
+            f"Plan input was refused: {exc}", missing_inputs=[str(exc)],
+            warnings=["No conditions were silently added, removed, or truncated."],
+            provenance={"inputs": "user_provided", "mode": p.get("mode")},
+        )
+    plan = {key: value for key, value in built.items() if key != "plan"}
+    frame = built["plan"]
+    plan["rows"] = frame.where(frame.notna(), None).to_dict(orient="records")
+    plan["columns"] = list(frame.columns)
+    plan["missing_measurements_to_consider"] = _suggest_missing_measurements(
+        str(built.get("goal") or p.get("goal") or ""))
     return _result(vlm.EXPERIMENTAL_DESIGN, STATUS_ADVISORY, OUT_ADVISORY_INTERPRETATION,
-                   "A suggested experiment plan (advisory) — run the experiments to obtain results.",
+                   "Deterministic experiment plan prepared from the explicitly selected mode and "
+                   "user-supplied settings.",
                    results=plan,
-                   warnings=["This is a PLAN only — it contains no experimental results.",
-                             "It helps prioritise which FEW physical experiments are worth doing."],
-                   provenance={"inputs": "user_provided", "engine": "deterministic_planner"})
-
-
-def _factor_matrix(factors) -> list:
-    """Deterministic full-factorial matrix from ``{factor: [levels]}`` (sorted; capped for safety)."""
-    if not isinstance(factors, dict) or not factors:
-        return []
-    names = sorted(factors)
-    combos = [{}]
-    for name in names:
-        levels = list(factors[name]) or [None]
-        combos = [{**c, name: lv} for c in combos for lv in levels]
-        if len(combos) > 256:                 # safety cap; advisory planning only
-            combos = combos[:256]
-            break
-    return combos
+                   warnings=["This advisory plan contains no measurement, result, optimum, "
+                             "prediction, or guarantee.",
+                             "Execute the physical experiments and record measured outcomes "
+                             "separately."],
+                   provenance={"inputs": "user_provided", "mode": p.get("mode"),
+                               "engine": "experiments.plan_generator"})
 
 
 def _suggest_missing_measurements(goal: str) -> list:

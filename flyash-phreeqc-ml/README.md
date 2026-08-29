@@ -65,6 +65,13 @@ models) can be added modularly.
   simulation-not-measured, advisory-not-confirmed, model/data requirements, QC blocks, and stale
   results remain visible whenever they apply. See
   [`docs/virtual_lab_machines.md`](docs/virtual_lab_machines.md).
+- **Complete durable review and advisory workflows** — ICP source review/finalization,
+  measured-XRD import plus user-reference matching, manual evidence review, explicit experiment
+  planning, and supplied-factor sustainability screening now save typed, revisioned artifacts and
+  exact linked runs. Results/History reopen the saved project, material, artifact hashes, and input
+  snapshot without silently rebinding newer state. XRD remains tentative, evidence remains
+  contextual, plans contain no outcomes, and sustainability remains screening-only. See
+  [`docs/phase3_durable_workflows.md`](docs/phase3_durable_workflows.md).
 
 ## What it cannot (yet) claim
 
@@ -486,6 +493,11 @@ The former conversational Assistant and structured PHREEQC Workspace are sub-wor
 Uncertainty**. Model management is reached from the ML machine workspace; ICP/XRD hands-on panels
 are reached from their canonical machine workspaces; and Engine Library is under **Settings &
 Diagnostics**. This keeps every important workflow reachable without a second navigation system.
+
+The Phase 3 durable record, import, review, export, staleness, and licensing contracts are documented
+in [`docs/phase3_durable_workflows.md`](docs/phase3_durable_workflows.md). Runtime artifacts live in
+the gitignored `outputs/virtual_lab_workspace/`; uploaded instrument/reference files and generated
+research records are not repository content.
 
 ## Experiment runs / save files
 

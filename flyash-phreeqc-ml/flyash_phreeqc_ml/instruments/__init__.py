@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from . import (
     icp_processor,
+    icp_review,
     instrument_registry,
     instrument_router,
     instrument_schema,
@@ -26,6 +27,7 @@ from . import (
 
 __all__ = [
     "icp_processor",
+    "icp_review",
     "instrument_registry",
     "instrument_router",
     "instrument_schema",

@@ -33,8 +33,16 @@ Safety properties (mirroring the project rules):
 """
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
+import json
+import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 CU_KALPHA_WAVELENGTH_A = 1.5406
 PEAK_BASIS = ("approximate demo / reference 2θ values for Cu Kα (λ≈1.5406 Å) — a planning aid, "
@@ -64,6 +72,968 @@ MODE_REFERENCE_NOTES = "reference_data_notes"
 # Default 2θ match tolerance (degrees). ±0.2° suits typical lab Cu Kα data; widen toward ±0.3° for
 # lower-resolution scans or shifted peaks (solid solution / strain). Documented + caller-overridable.
 DEFAULT_MATCH_TOLERANCE_DEG = 0.2
+
+# Measured/reference import contracts. 2theta is physically bounded to (0, 180] degrees. The
+# importer deliberately does not impose a narrower instrument-specific scan range.
+XRD_RECORD_SCHEMA_VERSION = 1
+MAX_XRD_SOURCE_BYTES = 50 * 1024 * 1024
+MIN_PHYSICAL_2THETA_DEG = 0.0
+MAX_PHYSICAL_2THETA_DEG = 180.0
+DUPLICATE_KEEP_ALL = "keep_all"
+DUPLICATE_REJECT_LATER = "reject_later"
+DUPLICATE_POLICIES = (DUPLICATE_KEEP_ALL, DUPLICATE_REJECT_LATER)
+LICENSE_UNKNOWN = "unknown"
+REDISTRIBUTION_UNKNOWN = "unknown"
+REDISTRIBUTION_NOT_PERMITTED = "not_permitted"
+REDISTRIBUTION_PERMITTED_BY_CITED_SOURCE = "permitted_by_cited_source"
+REDISTRIBUTION_STATUSES = (
+    REDISTRIBUTION_UNKNOWN,
+    REDISTRIBUTION_NOT_PERMITTED,
+    REDISTRIBUTION_PERMITTED_BY_CITED_SOURCE,
+)
+RADIATION_COMPATIBLE = "compatible"
+RADIATION_INCOMPATIBLE = "incompatible"
+RADIATION_UNKNOWN = "unknown"
+WAVELENGTH_COMPATIBILITY_TOLERANCE_A = 0.01
+_SENSITIVE_METADATA_KEY = re.compile(
+    r"(^|_)(api_?key|token|password|passwd|secret|cookie|authorization|credential|license_?key)s?($|_)",
+    re.IGNORECASE,
+)
+_METADATA_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SENSITIVE_METADATA_PARTS = {
+    "token", "password", "passwd", "secret", "cookie", "authorization", "credential",
+}
+
+
+class XrdDataError(ValueError):
+    """A controlled import/comparison error with an actionable user-facing message."""
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _json_safe_copy(value: Any) -> Any:
+    """Return a detached JSON-safe value and fail closed on NaN/Infinity/custom objects."""
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise XrdDataError(f"XRD record content must be finite JSON-safe data: {exc}") from exc
+
+
+def _is_sensitive_metadata_key(value: Any) -> bool:
+    text = _METADATA_CAMEL_BOUNDARY_RE.sub("_", str(value))
+    parts = [part.lower() for part in re.split(r"[^A-Za-z0-9]+", text) if part]
+    compact = "".join(parts)
+    adjacent = set(zip(parts, parts[1:]))
+    return bool(
+        _SENSITIVE_METADATA_KEY.search(str(value))
+        or _SENSITIVE_METADATA_PARTS.intersection(parts)
+        or adjacent.intersection({("api", "key"), ("license", "key")})
+        or compact in {"apikey", "licensekey", "accesstoken", "refreshtoken",
+                       "clientsecret", "bearertoken"}
+    )
+
+
+def _assert_no_sensitive_metadata(value: Any, path: str = "metadata") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _is_sensitive_metadata_key(key):
+                raise XrdDataError(f"secret-like metadata field is not permitted: {path}.{key}")
+            _assert_no_sensitive_metadata(child, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _assert_no_sensitive_metadata(child, f"{path}[{index}]")
+
+
+def _stable_record_id(prefix: str, value: Any) -> str:
+    encoded = json.dumps(_json_safe_copy(value), ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return f"{prefix}{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
+def _source_bytes(source: Any) -> tuple[bytes, str | None]:
+    """Read uploaded bytes/text/file-like input once; filesystem paths are not accepted."""
+    inferred_name = None
+    if isinstance(source, bytes):
+        return source, inferred_name
+    if isinstance(source, bytearray):
+        return bytes(source), inferred_name
+    if isinstance(source, Path):
+        raise XrdDataError(
+            "filesystem path inputs are not accepted; supply explicit bytes or an upload"
+        )
+    if hasattr(source, "read"):
+        inferred_name = Path(str(getattr(source, "name", ""))).name or None
+        payload = source.read()
+        if isinstance(payload, str):
+            return payload.encode("utf-8"), inferred_name
+        if isinstance(payload, (bytes, bytearray)):
+            return bytes(payload), inferred_name
+        raise XrdDataError("uploaded XRD source must yield text or bytes")
+    if isinstance(source, str):
+        return source.encode("utf-8"), inferred_name
+    raise XrdDataError("XRD source must be CSV/JSON text, bytes, or a readable upload")
+
+
+def _safe_source_filename(
+    value: Any, *, kind: str, expected_extension: str,
+) -> str:
+    filename = str(value or "").strip()
+    if not filename:
+        raise XrdDataError(f"source_filename is required for {kind} provenance")
+    if filename in {".", ".."} or "/" in filename or "\\" in filename or "\x00" in filename:
+        raise XrdDataError("source_filename must be a file name, not a path")
+    extension = str(expected_extension or "").strip().lower()
+    if not extension.startswith("."):
+        extension = f".{extension}"
+    if not filename.lower().endswith(extension):
+        raise XrdDataError(
+            f"{kind} source_filename must end with {extension}; deceptive extensions are refused")
+    return filename
+
+
+def _assert_source_size(raw: bytes) -> None:
+    if len(raw) > MAX_XRD_SOURCE_BYTES:
+        raise XrdDataError(
+            "XRD source exceeds the "
+            f"{MAX_XRD_SOURCE_BYTES // (1024 * 1024)} MiB safety limit")
+
+
+def _decode_source(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise XrdDataError("XRD CSV/JSON source must be UTF-8 text") from exc
+
+
+def _normalise_heading(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("θ", "theta").replace("°", "deg")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+_TWO_THETA_HEADINGS = (
+    "2theta", "twotheta", "2thetadeg", "twothetadeg", "2th", "angle", "angledeg",
+    "position", "positiondeg", "two_theta", "2-theta",
+)
+_INTENSITY_HEADINGS = (
+    "intensity", "counts", "count", "cps", "countspersecond", "relativeintensity",
+    "relintensity", "intensitycounts", "i",
+)
+
+
+def _canonical_mapping_key(value: Any) -> str | None:
+    key = _normalise_heading(value)
+    if key in {_normalise_heading(item) for item in _TWO_THETA_HEADINGS} | {"twotheta"}:
+        return "two_theta"
+    if key in {_normalise_heading(item) for item in _INTENSITY_HEADINGS}:
+        return "intensity"
+    return None
+
+
+def _find_heading(headings: list[str], requested: str) -> str | None:
+    if requested in headings:
+        return requested
+    normalised = _normalise_heading(requested)
+    matches = [heading for heading in headings if _normalise_heading(heading) == normalised]
+    if len(matches) > 1:
+        raise XrdDataError(f"column mapping {requested!r} is ambiguous across original headings")
+    return matches[0] if matches else None
+
+
+def _resolve_column_mapping(headings: list[str], supplied: dict | None = None) -> tuple[dict, str]:
+    """Resolve common headings while retaining the exact originals and mapping method."""
+    if not headings:
+        raise XrdDataError("XRD table has no header row")
+    mapping: dict[str, str | None] = {"two_theta": None, "intensity": None}
+    method = "common_heading_autodetect"
+    if supplied:
+        method = "user_supplied"
+        for left, right in supplied.items():
+            canonical_left = _canonical_mapping_key(left)
+            canonical_right = _canonical_mapping_key(right)
+            if canonical_left:
+                source_heading = _find_heading(headings, str(right))
+                if source_heading is None:
+                    raise XrdDataError(f"mapped source column {right!r} is not present")
+                mapping[canonical_left] = source_heading
+            elif canonical_right:
+                source_heading = _find_heading(headings, str(left))
+                if source_heading is None:
+                    raise XrdDataError(f"mapped source column {left!r} is not present")
+                mapping[canonical_right] = source_heading
+            else:
+                raise XrdDataError(
+                    f"column mapping {left!r}: {right!r} must name two_theta or intensity")
+
+    if mapping["two_theta"] is None:
+        candidates = [heading for heading in headings
+                      if _canonical_mapping_key(heading) == "two_theta"]
+        if len(candidates) > 1:
+            raise XrdDataError(
+                "multiple common 2theta headings are present; supply an explicit column_mapping")
+        mapping["two_theta"] = candidates[0] if candidates else None
+    if mapping["intensity"] is None:
+        candidates = [heading for heading in headings
+                      if _canonical_mapping_key(heading) == "intensity"]
+        if len(candidates) > 1:
+            raise XrdDataError(
+                "multiple common intensity headings are present; supply an explicit column_mapping")
+        mapping["intensity"] = candidates[0] if candidates else None
+    if mapping["two_theta"] is None:
+        raise XrdDataError(
+            "XRD table needs a 2theta column; supply column_mapping for an uncommon heading")
+    return mapping, method
+
+
+def _finite_number(value: Any, *, field_name: str, allow_missing: bool = False) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if allow_missing:
+            return None
+        raise XrdDataError(f"{field_name} is missing")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise XrdDataError(f"{field_name} is not numeric") from exc
+    if not math.isfinite(number):
+        raise XrdDataError(f"{field_name} is not finite")
+    return number
+
+
+def _physical_two_theta(value: Any) -> float:
+    number = _finite_number(value, field_name="2theta")
+    assert number is not None
+    if not (MIN_PHYSICAL_2THETA_DEG < number <= MAX_PHYSICAL_2THETA_DEG):
+        raise XrdDataError("2theta is outside the physical range (0, 180] degrees")
+    return number
+
+
+def _optional_wavelength(value: Any) -> float | None:
+    number = _finite_number(value, field_name="wavelength", allow_missing=True)
+    if number is not None and number <= 0:
+        raise XrdDataError("wavelength must be positive when supplied")
+    return number
+
+
+def _radiation_label(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text else RADIATION_UNKNOWN
+
+
+def _validated_reference_licensing(
+    *, license_status: Any, redistribution_status: Any,
+    doi: Any = None, url: Any = None, redistribution_basis: Any = None,
+) -> tuple[str, str]:
+    """Normalize the closed redistribution state and enforce licensing invariants."""
+    license_value = str(license_status or "").strip() or LICENSE_UNKNOWN
+    if license_value.lower() == LICENSE_UNKNOWN:
+        license_value = LICENSE_UNKNOWN
+    redistribution_value = str(redistribution_status or "").strip().lower() \
+        or REDISTRIBUTION_UNKNOWN
+    if redistribution_value not in REDISTRIBUTION_STATUSES:
+        raise XrdDataError(
+            "redistribution_permission_status must be unknown, not_permitted, or "
+            "permitted_by_cited_source; natural-language permission claims are refused")
+    permission_claimed = (
+        redistribution_value == REDISTRIBUTION_PERMITTED_BY_CITED_SOURCE)
+    restricted_license = bool(re.search(
+        r"(?<![a-z0-9])(?:proprietary|restricted)(?![a-z0-9])",
+        license_value.lower(),
+    ))
+    if restricted_license and permission_claimed:
+        raise XrdDataError(
+            "a proprietary/restricted license cannot be recorded as redistributable")
+    if permission_claimed:
+        if license_value == LICENSE_UNKNOWN:
+            raise XrdDataError(
+                "redistribution cannot be marked permitted while license status is unknown")
+        if not (str(doi or "").strip() or str(url or "").strip()):
+            raise XrdDataError(
+                "redistribution permission requires a cited DOI or URL")
+        if not str(redistribution_basis or "").strip():
+            raise XrdDataError(
+                "redistribution permission requires an explicit license citation or basis")
+    return license_value, redistribution_value
+
+
+def _normalise_radiation(value: Any) -> str | None:
+    key = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+    if not key or key in {"unknown", "unspecified", "na", "none"}:
+        return None
+    aliases = {
+        "cuka": "cu_kalpha", "cukalpha": "cu_kalpha", "cukalpha1": "cu_kalpha1",
+        "copperkalpha": "cu_kalpha", "moka": "mo_kalpha", "mokalpha": "mo_kalpha",
+        "coka": "co_kalpha", "cokalpha": "co_kalpha", "feka": "fe_kalpha",
+        "fekalpha": "fe_kalpha", "crka": "cr_kalpha", "crkalpha": "cr_kalpha",
+    }
+    return aliases.get(key, key)
+
+
+@dataclass
+class MeasuredXrdPattern:
+    """Measured signal import with exact source identity; it carries no phase conclusion."""
+
+    pattern_id: str = ""
+    project_id: str = ""
+    material_id: str = ""
+    sample_id: str = ""
+    source_filename: str = ""
+    source_sha256: str = ""
+    data_format: str = "csv"
+    two_theta_unit: str = "degrees 2theta"
+    intensity_unit: str | None = None
+    intensity_type: str | None = None
+    radiation_source: str = RADIATION_UNKNOWN
+    wavelength_angstrom: float | None = None
+    instrument: str = ""
+    method: str = ""
+    scan_start_deg: float | None = None
+    scan_end_deg: float | None = None
+    step_size_deg: float | None = None
+    measured_at: str | None = None
+    operator: str = ""
+    lab: str = ""
+    raw_imported_row_count: int = 0
+    accepted_row_count: int = 0
+    rejected_rows: list = field(default_factory=list)
+    rows: list = field(default_factory=list)
+    original_headings: list = field(default_factory=list)
+    column_mapping: dict = field(default_factory=dict)
+    duplicate_policy: str = "not_applicable"
+    duplicate_two_theta: list = field(default_factory=list)
+    source_order_preserved: bool = True
+    source_was_monotonic: bool = True
+    user_peak_list: list = field(default_factory=list)
+    peak_selection_provenance: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+    created_at: str = field(default_factory=_utc_now)
+    schema_version: int = XRD_RECORD_SCHEMA_VERSION
+
+    def plot_ready_rows(self) -> list[dict]:
+        """Source-order rows for plotting measured signal; missing intensity remains ``None``."""
+        return [{"x_two_theta_deg": row["two_theta_deg"], "y_intensity": row["intensity"],
+                 "source_row_number": row["source_row_number"]} for row in self.rows]
+
+    def to_dict(self) -> dict:
+        payload = asdict(self)
+        payload["plot_ready_rows"] = self.plot_ready_rows()
+        return _json_safe_copy(payload)
+
+
+@dataclass
+class ExternalXrdReference:
+    """User-supplied external peak table with explicit provenance and licensing state."""
+
+    reference_id: str = ""
+    phase_name: str = ""
+    formula: str = ""
+    polymorph: str = ""
+    radiation_source: str = RADIATION_UNKNOWN
+    wavelength_angstrom: float | None = None
+    peaks: list = field(default_factory=list)
+    source_name: str = ""
+    source_record_id: str = ""
+    title: str = ""
+    authors: list = field(default_factory=list)
+    year: int | str | None = None
+    doi: str = ""
+    url: str = ""
+    license_status: str = LICENSE_UNKNOWN
+    redistribution_permission_status: str = REDISTRIBUTION_UNKNOWN
+    source_filename: str = ""
+    source_sha256: str = ""
+    data_format: str = "csv"
+    notes: str = ""
+    review_status: str = "needs_review"
+    original_headings: list = field(default_factory=list)
+    column_mapping: dict = field(default_factory=dict)
+    rejected_rows: list = field(default_factory=list)
+    source_metadata: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+    created_at: str = field(default_factory=_utc_now)
+    schema_version: int = XRD_RECORD_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _assert_no_sensitive_metadata(self.source_metadata, "source_metadata")
+        basis = (self.source_metadata.get("redistribution_basis")
+                 or self.source_metadata.get("license_citation") or "")
+        self.license_status, self.redistribution_permission_status = (
+            _validated_reference_licensing(
+                license_status=self.license_status,
+                redistribution_status=self.redistribution_permission_status,
+                doi=self.doi,
+                url=self.url,
+                redistribution_basis=basis,
+            )
+        )
+
+    @property
+    def reference_2theta(self) -> list[float]:
+        return [row["two_theta_deg"] for row in self.peaks]
+
+    def identity(self) -> dict:
+        return {
+            "reference_id": self.reference_id,
+            "source_filename": self.source_filename,
+            "source_sha256": self.source_sha256,
+        }
+
+    def provenance(self) -> dict:
+        return {
+            "phase_name": self.phase_name,
+            "formula": self.formula,
+            "polymorph": self.polymorph,
+            "radiation_source": self.radiation_source,
+            "wavelength_angstrom": self.wavelength_angstrom,
+            "source_name": self.source_name,
+            "source_record_id": self.source_record_id,
+            "title": self.title,
+            "authors": list(self.authors),
+            "year": self.year,
+            "doi": self.doi,
+            "url": self.url,
+            "license_status": self.license_status,
+            "redistribution_permission_status": self.redistribution_permission_status,
+            "source_filename": self.source_filename,
+            "source_sha256": self.source_sha256,
+            "data_format": self.data_format,
+            "review_status": self.review_status,
+            "notes": self.notes,
+            "original_headings": list(self.original_headings),
+            "column_mapping": _json_safe_copy(self.column_mapping),
+            "rejected_rows": _json_safe_copy(self.rejected_rows),
+            "source_metadata": _json_safe_copy(self.source_metadata),
+        }
+
+    def to_dict(self) -> dict:
+        return _json_safe_copy(asdict(self))
+
+
+def _issue_code(message: str) -> str:
+    low = message.lower()
+    if "missing" in low:
+        return "missing_2theta"
+    if "not numeric" in low:
+        return "non_numeric_2theta"
+    if "not finite" in low:
+        return "non_finite_2theta"
+    if "physical range" in low:
+        return "physically_impossible_2theta"
+    return "invalid_2theta"
+
+
+def _optional_metadata_number(metadata: dict, key: str, *, positive: bool = False) -> float | None:
+    value = metadata.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    number = _finite_number(value, field_name=key)
+    if positive and number is not None and number <= 0:
+        raise XrdDataError(f"{key} must be positive when supplied")
+    return number
+
+
+def _csv_rows(raw: bytes) -> tuple[list[str], list[tuple[int, dict]]]:
+    reader = csv.DictReader(io.StringIO(_decode_source(raw)), restval=None)
+    headings = [str(item) for item in (reader.fieldnames or []) if item is not None]
+    if len(headings) != len(set(headings)):
+        raise XrdDataError("XRD CSV contains duplicate original headings; map them uniquely first")
+    rows = []
+    for row_number, row in enumerate(reader, start=2):
+        rows.append((row_number, {heading: row.get(heading) for heading in headings}))
+    return headings, rows
+
+
+def _parse_position_rows(
+    raw_rows: list[tuple[int, dict]],
+    mapping: dict,
+    *,
+    position_key: str = "two_theta",
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Parse peak/pattern rows without fabricating missing or invalid intensity values."""
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    warnings: list[str] = []
+    theta_heading = mapping[position_key]
+    intensity_heading = mapping.get("intensity")
+    for row_number, original_row in raw_rows:
+        try:
+            two_theta = _physical_two_theta(original_row.get(theta_heading))
+        except XrdDataError as exc:
+            rejected.append({
+                "source_row_number": row_number,
+                "reason_code": _issue_code(str(exc)),
+                "reason": str(exc),
+                "original_row": original_row,
+            })
+            continue
+
+        intensity = None
+        intensity_issue = None
+        if intensity_heading is not None:
+            raw_intensity = original_row.get(intensity_heading)
+            try:
+                intensity = _finite_number(raw_intensity, field_name="intensity", allow_missing=True)
+            except XrdDataError as exc:
+                # The position remains usable. Preserve the exact supplied value and retain missing
+                # intensity as None instead of turning it into zero or dropping the position.
+                intensity_issue = str(exc)
+                warnings.append(
+                    f"Row {row_number}: {exc}; position retained with missing intensity.")
+        if intensity is not None and intensity < 0:
+            intensity_issue = (
+                "negative intensity retained; background correction can produce negative values")
+            warnings.append(
+                f"Row {row_number}: negative intensity {intensity:g} retained without clamping; "
+                "background-corrected signal can be negative.")
+        accepted.append({
+            "source_row_number": row_number,
+            "two_theta_deg": two_theta,
+            "intensity": intensity,
+            "intensity_issue": intensity_issue,
+            "original_values": original_row,
+        })
+    return accepted, rejected, warnings
+
+
+def _handle_measured_duplicates(
+    rows: list[dict], rejected: list[dict], duplicate_policy: str | None,
+) -> tuple[list[dict], list[dict], str, list[dict], list[str]]:
+    if duplicate_policy is not None and duplicate_policy not in DUPLICATE_POLICIES:
+        raise XrdDataError(
+            f"duplicate_policy must be one of {', '.join(DUPLICATE_POLICIES)}")
+    by_position: dict[float, list[dict]] = {}
+    for row in rows:
+        by_position.setdefault(row["two_theta_deg"], []).append(row)
+    duplicates = [
+        {"two_theta_deg": position,
+         "source_row_numbers": [row["source_row_number"] for row in group]}
+        for position, group in by_position.items() if len(group) > 1
+    ]
+    if not duplicates:
+        return rows, rejected, duplicate_policy or "not_applicable", [], []
+    if duplicate_policy is None:
+        raise XrdDataError(
+            "duplicate 2theta values require an explicit duplicate_policy: keep_all or reject_later")
+    warnings = []
+    if duplicate_policy == DUPLICATE_KEEP_ALL:
+        warnings.append(
+            "Duplicate 2theta rows were retained in source order under the explicit keep_all policy.")
+        return rows, rejected, duplicate_policy, duplicates, warnings
+
+    seen: set[float] = set()
+    kept: list[dict] = []
+    for row in rows:
+        position = row["two_theta_deg"]
+        if position not in seen:
+            seen.add(position)
+            kept.append(row)
+            continue
+        rejected.append({
+            "source_row_number": row["source_row_number"],
+            "reason_code": "duplicate_2theta_rejected_later",
+            "reason": (
+                "later duplicate 2theta row rejected under the explicit reject_later policy"),
+            "original_row": row["original_values"],
+        })
+    warnings.append(
+        "Later duplicate 2theta rows were rejected in source order under the explicit "
+        "reject_later policy; no averaging was performed.")
+    return kept, rejected, duplicate_policy, duplicates, warnings
+
+
+def import_measured_pattern_csv(
+    source: Any,
+    *,
+    source_filename: str | None = None,
+    metadata: dict | None = None,
+    column_mapping: dict | None = None,
+    duplicate_policy: str | None = None,
+    user_peak_list: list | tuple | None = None,
+    peak_selection_provenance: dict | None = None,
+) -> MeasuredXrdPattern:
+    """Import a measured CSV signal with exact hash, row decisions, and source-order provenance.
+
+    Common headings (``2theta``, ``2θ``, ``Angle``, ``Intensity``, ``Counts``, ``cps``) are mapped
+    automatically. A user mapping may be given in either canonical-to-original or
+    original-to-canonical form. Duplicate positions require an explicit policy only when present;
+    rows are never sorted or averaged.
+    """
+    raw, inferred_filename = _source_bytes(source)
+    _assert_source_size(raw)
+    filename = _safe_source_filename(
+        source_filename or inferred_filename, kind="measured XRD", expected_extension=".csv")
+    safe_metadata = _json_safe_copy(metadata or {})
+    _assert_no_sensitive_metadata(safe_metadata)
+    two_theta_unit = str(safe_metadata.get("two_theta_unit") or "degrees 2theta")
+    if _normalise_heading(two_theta_unit) not in {
+            "degree2theta", "degrees2theta", "deg2theta", "2thetadeg", "2thetadegrees"}:
+        raise XrdDataError(
+            "measured CSV 2theta_unit must be degrees 2theta; no angle-unit conversion is performed")
+    headings, raw_rows = _csv_rows(raw)
+    resolved_mapping, mapping_method = _resolve_column_mapping(headings, column_mapping)
+    rows, rejected, warnings = _parse_position_rows(raw_rows, resolved_mapping)
+    rows, rejected, policy, duplicates, duplicate_warnings = _handle_measured_duplicates(
+        rows, rejected, duplicate_policy)
+    warnings.extend(duplicate_warnings)
+    if not rows:
+        warnings.append("No physically usable measured 2theta rows were imported.")
+
+    source_was_monotonic = all(
+        left["two_theta_deg"] <= right["two_theta_deg"] for left, right in zip(rows, rows[1:]))
+    if not source_was_monotonic:
+        warnings.append(
+            "Measured rows are not monotonic in 2theta; source order was preserved and no silent "
+            "reordering was performed.")
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    positions = [row["two_theta_deg"] for row in rows]
+    supplied_scan_start = _optional_metadata_number(safe_metadata, "scan_start_deg")
+    supplied_scan_end = _optional_metadata_number(safe_metadata, "scan_end_deg")
+    step_size = _optional_metadata_number(safe_metadata, "step_size_deg", positive=True)
+    wavelength = _optional_wavelength(
+        safe_metadata.get("wavelength_angstrom", safe_metadata.get("wavelength")))
+    identity_payload = {
+        "project_id": safe_metadata.get("project_id", ""),
+        "material_id": safe_metadata.get("material_id", ""),
+        "sample_id": safe_metadata.get("sample_id", ""),
+        "source_filename": filename,
+        "source_sha256": source_sha256,
+        "two_theta_unit": two_theta_unit,
+        "radiation_source": _radiation_label(
+            safe_metadata.get("radiation_source", safe_metadata.get("radiation"))),
+        "wavelength_angstrom": wavelength,
+        "instrument": str(safe_metadata.get("instrument") or ""),
+        "method": str(safe_metadata.get("method") or ""),
+    }
+    pattern = MeasuredXrdPattern(
+        pattern_id=_stable_record_id("xrdpat_", identity_payload),
+        project_id=str(safe_metadata.get("project_id") or ""),
+        material_id=str(safe_metadata.get("material_id") or ""),
+        sample_id=str(safe_metadata.get("sample_id") or ""),
+        source_filename=filename,
+        source_sha256=source_sha256,
+        two_theta_unit=two_theta_unit,
+        intensity_unit=(None if safe_metadata.get("intensity_unit") in (None, "")
+                        else str(safe_metadata["intensity_unit"])),
+        intensity_type=(None if safe_metadata.get("intensity_type") in (None, "")
+                        else str(safe_metadata["intensity_type"])),
+        radiation_source=_radiation_label(
+            safe_metadata.get("radiation_source", safe_metadata.get("radiation"))),
+        wavelength_angstrom=wavelength,
+        instrument=str(safe_metadata.get("instrument") or ""),
+        method=str(safe_metadata.get("method") or ""),
+        scan_start_deg=(supplied_scan_start if supplied_scan_start is not None
+                        else (min(positions) if positions else None)),
+        scan_end_deg=(supplied_scan_end if supplied_scan_end is not None
+                      else (max(positions) if positions else None)),
+        step_size_deg=step_size,
+        measured_at=(None if safe_metadata.get("measured_at") in (None, "")
+                     else str(safe_metadata["measured_at"])),
+        operator=str(safe_metadata.get("operator") or ""),
+        lab=str(safe_metadata.get("lab") or ""),
+        raw_imported_row_count=len(raw_rows),
+        accepted_row_count=len(rows),
+        rejected_rows=rejected,
+        rows=rows,
+        original_headings=headings,
+        column_mapping={
+            "method": mapping_method,
+            "canonical_to_original": resolved_mapping,
+            "original_headings": headings,
+        },
+        duplicate_policy=policy,
+        duplicate_two_theta=duplicates,
+        source_order_preserved=True,
+        source_was_monotonic=source_was_monotonic,
+        metadata=safe_metadata,
+        warnings=warnings,
+    )
+    if user_peak_list is not None:
+        pattern = attach_user_peak_list(
+            pattern, user_peak_list, provenance=peak_selection_provenance)
+    return pattern
+
+
+def attach_user_peak_list(
+    pattern: MeasuredXrdPattern,
+    peaks: list | tuple,
+    *,
+    provenance: dict | None = None,
+) -> MeasuredXrdPattern:
+    """Return a pattern copy with a validated, explicitly user-supplied measured peak list."""
+    if not isinstance(pattern, MeasuredXrdPattern):
+        raise XrdDataError("attach_user_peak_list requires a MeasuredXrdPattern")
+    parsed = []
+    for index, item in enumerate(peaks or [], start=1):
+        if isinstance(item, dict):
+            raw_position = (item.get("two_theta_deg") if "two_theta_deg" in item
+                            else item.get("two_theta", item.get("position")))
+            raw_intensity = item.get("relative_intensity", item.get("intensity"))
+            user_note = str(item.get("note") or "")
+        else:
+            raw_position, raw_intensity, user_note = item, None, ""
+        try:
+            position = _physical_two_theta(raw_position)
+            intensity = _finite_number(
+                raw_intensity, field_name="peak relative intensity", allow_missing=True)
+        except XrdDataError as exc:
+            raise XrdDataError(f"user peak {index}: {exc}") from exc
+        parsed.append({
+            "peak_index": index,
+            "two_theta_deg": position,
+            "relative_intensity": intensity,
+            "note": user_note,
+            "selection_method": "user_supplied",
+        })
+    supplied = _json_safe_copy(provenance or {})
+    selection = {
+        "selection_method": "user_supplied_peak_list",
+        "source_pattern_id": pattern.pattern_id,
+        "source_sha256": pattern.source_sha256,
+        "provided_by": str(supplied.get("provided_by") or supplied.get("operator") or ""),
+        "selected_at": str(supplied.get("selected_at") or _utc_now()),
+        "notes": str(supplied.get("notes") or ""),
+        "user_edits": _json_safe_copy(supplied.get("user_edits") or []),
+        "parameters": _json_safe_copy(supplied.get("parameters") or {}),
+        "supplied_provenance": supplied,
+    }
+    return replace(pattern, user_peak_list=parsed, peak_selection_provenance=selection)
+
+
+def _reference_provenance_fields(source_metadata: dict) -> dict:
+    source_name = str(
+        source_metadata.get("source_name") or source_metadata.get("database_name")
+        or source_metadata.get("provider") or "").strip()
+    if not source_name:
+        raise XrdDataError(
+            "external XRD reference requires source metadata with source_name/database_name/provider")
+    phase_name = str(source_metadata.get("phase_name") or source_metadata.get("phase") or "").strip()
+    if not phase_name:
+        raise XrdDataError("external XRD reference requires a phase_name in source metadata")
+    authors = source_metadata.get("authors") or []
+    if isinstance(authors, str):
+        authors = [authors]
+    if not isinstance(authors, (list, tuple)):
+        raise XrdDataError("reference authors must be a list or string when supplied")
+    license_status = str(source_metadata.get("license_status") or "").strip() or LICENSE_UNKNOWN
+    redistribution_status = str(
+        source_metadata.get("redistribution_permission_status")
+        or source_metadata.get("redistribution_status") or "").strip() or REDISTRIBUTION_UNKNOWN
+    redistribution_basis = str(
+        source_metadata.get("redistribution_basis")
+        or source_metadata.get("license_citation") or ""
+    ).strip()
+    license_status, redistribution_status = _validated_reference_licensing(
+        license_status=license_status,
+        redistribution_status=redistribution_status,
+        doi=source_metadata.get("doi"),
+        url=source_metadata.get("url"),
+        redistribution_basis=redistribution_basis,
+    )
+    return {
+        "source_name": source_name,
+        "phase_name": phase_name,
+        "formula": str(source_metadata.get("formula") or ""),
+        "polymorph": str(
+            source_metadata.get("polymorph") or source_metadata.get("crystal_form") or ""),
+        "radiation_source": _radiation_label(
+            source_metadata.get("radiation_source", source_metadata.get("radiation"))),
+        "wavelength_angstrom": _optional_wavelength(
+            source_metadata.get("wavelength_angstrom", source_metadata.get("wavelength"))),
+        "source_record_id": str(
+            source_metadata.get("source_record_id") or source_metadata.get("record_id")
+            or source_metadata.get("card_id") or ""),
+        "title": str(source_metadata.get("title") or ""),
+        "authors": [str(author) for author in authors],
+        "year": source_metadata.get("year"),
+        "doi": str(source_metadata.get("doi") or ""),
+        "url": str(source_metadata.get("url") or ""),
+        "license_status": license_status,
+        "redistribution_permission_status": redistribution_status,
+        "redistribution_basis": redistribution_basis,
+        "notes": str(source_metadata.get("notes") or ""),
+        "review_status": str(source_metadata.get("review_status") or "needs_review"),
+    }
+
+
+def _build_external_reference(
+    *,
+    raw: bytes,
+    filename: str,
+    data_format: str,
+    source_metadata: dict,
+    peaks: list[dict],
+    rejected: list[dict],
+    headings: list[str],
+    mapping: dict,
+    mapping_method: str,
+    warnings: list[str],
+) -> ExternalXrdReference:
+    safe_metadata = _json_safe_copy(source_metadata)
+    _assert_no_sensitive_metadata(safe_metadata, "source_metadata")
+    fields = _reference_provenance_fields(safe_metadata)
+    if not peaks:
+        raise XrdDataError("external XRD reference contains no finite physical 2theta positions")
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    duplicate_positions = {
+        peak["two_theta_deg"] for peak in peaks
+        if sum(row["two_theta_deg"] == peak["two_theta_deg"] for row in peaks) > 1
+    }
+    if duplicate_positions:
+        warnings.append(
+            "Duplicate reference positions were retained in source order; no averaging or "
+            "reordering was performed.")
+    identity_payload = {
+        "source_filename": filename,
+        "source_sha256": source_sha256,
+        "source_name": fields["source_name"],
+        "source_record_id": fields["source_record_id"],
+        "phase_name": fields["phase_name"],
+        "formula": fields["formula"],
+        "polymorph": fields["polymorph"],
+        "radiation_source": fields["radiation_source"],
+        "wavelength_angstrom": fields["wavelength_angstrom"],
+        "license_status": fields["license_status"],
+        "redistribution_permission_status": fields["redistribution_permission_status"],
+    }
+    return ExternalXrdReference(
+        reference_id=_stable_record_id("xrdref_", identity_payload),
+        phase_name=fields["phase_name"],
+        formula=fields["formula"],
+        polymorph=fields["polymorph"],
+        radiation_source=fields["radiation_source"],
+        wavelength_angstrom=fields["wavelength_angstrom"],
+        peaks=peaks,
+        source_name=fields["source_name"],
+        source_record_id=fields["source_record_id"],
+        title=fields["title"],
+        authors=fields["authors"],
+        year=fields["year"],
+        doi=fields["doi"],
+        url=fields["url"],
+        license_status=fields["license_status"],
+        redistribution_permission_status=fields["redistribution_permission_status"],
+        source_filename=filename,
+        source_sha256=source_sha256,
+        data_format=data_format,
+        notes=fields["notes"],
+        review_status=fields["review_status"],
+        original_headings=headings,
+        column_mapping={
+            "method": mapping_method,
+            "canonical_to_original": mapping,
+            "original_headings": headings,
+        },
+        rejected_rows=rejected,
+        source_metadata=safe_metadata,
+        warnings=warnings,
+    )
+
+
+def import_reference_csv(
+    source: Any,
+    *,
+    source_filename: str | None = None,
+    source_metadata: dict | None = None,
+    column_mapping: dict | None = None,
+) -> ExternalXrdReference:
+    """Adapt a user-supplied reference CSV; no database content is fetched or bundled."""
+    raw, inferred_filename = _source_bytes(source)
+    _assert_source_size(raw)
+    filename = _safe_source_filename(
+        source_filename or inferred_filename, kind="external XRD reference",
+        expected_extension=".csv")
+    if not source_metadata:
+        raise XrdDataError("external XRD reference requires source_metadata")
+    headings, raw_rows = _csv_rows(raw)
+    mapping, mapping_method = _resolve_column_mapping(headings, column_mapping)
+    peaks, rejected, warnings = _parse_position_rows(raw_rows, mapping)
+    reference_peaks = [{
+        "source_row_number": row["source_row_number"],
+        "two_theta_deg": row["two_theta_deg"],
+        "relative_intensity": row["intensity"],
+        "intensity_issue": row["intensity_issue"],
+        "original_values": row["original_values"],
+    } for row in peaks]
+    return _build_external_reference(
+        raw=raw, filename=filename, data_format="csv", source_metadata=source_metadata,
+        peaks=reference_peaks, rejected=rejected, headings=headings, mapping=mapping,
+        mapping_method=mapping_method, warnings=warnings)
+
+
+def _json_reference_rows(payload: Any) -> tuple[list[dict], dict]:
+    embedded_metadata: dict = {}
+    if isinstance(payload, dict):
+        embedded_metadata = {
+            key: value for key, value in payload.items()
+            if key not in {"peaks", "reference_peaks", "rows", "reference_positions",
+                           "relative_intensities"}
+        }
+        rows = payload.get("peaks", payload.get("reference_peaks", payload.get("rows")))
+        if rows is None and "reference_positions" in payload:
+            positions = payload.get("reference_positions") or []
+            intensities = payload.get("relative_intensities") or []
+            rows = [
+                {"two_theta": position,
+                 "relative_intensity": intensities[index] if index < len(intensities) else None}
+                for index, position in enumerate(positions)
+            ]
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        raise XrdDataError("reference JSON needs a peaks/reference_peaks/rows array")
+    normalised_rows = []
+    for item in rows:
+        if isinstance(item, dict):
+            normalised_rows.append(item)
+        else:
+            normalised_rows.append({"two_theta": item})
+    return normalised_rows, embedded_metadata
+
+
+def import_reference_json(
+    source: Any,
+    *,
+    source_filename: str | None = None,
+    source_metadata: dict | None = None,
+    column_mapping: dict | None = None,
+) -> ExternalXrdReference:
+    """Adapt a user-supplied reference JSON object/array with exact file and license provenance."""
+    raw, inferred_filename = _source_bytes(source)
+    _assert_source_size(raw)
+    filename = _safe_source_filename(
+        source_filename or inferred_filename, kind="external XRD reference",
+        expected_extension=".json")
+    try:
+        payload = json.loads(_decode_source(raw))
+    except json.JSONDecodeError as exc:
+        raise XrdDataError(f"invalid reference JSON: {exc.msg}") from exc
+    rows, embedded_metadata = _json_reference_rows(payload)
+    merged_metadata = _json_safe_copy(embedded_metadata)
+    if source_metadata:
+        merged_metadata.update(_json_safe_copy(source_metadata))
+    if not merged_metadata:
+        raise XrdDataError("external XRD reference requires source metadata")
+    headings = []
+    for row in rows:
+        for key in row:
+            if key not in headings:
+                headings.append(str(key))
+    mapping, mapping_method = _resolve_column_mapping(headings, column_mapping)
+    numbered_rows = [(index, {heading: row.get(heading) for heading in headings})
+                     for index, row in enumerate(rows, start=1)]
+    peaks, rejected, warnings = _parse_position_rows(numbered_rows, mapping)
+    reference_peaks = [{
+        "source_row_number": row["source_row_number"],
+        "two_theta_deg": row["two_theta_deg"],
+        "relative_intensity": row["intensity"],
+        "intensity_issue": row["intensity_issue"],
+        "original_values": row["original_values"],
+    } for row in peaks]
+    return _build_external_reference(
+        raw=raw, filename=filename, data_format="json", source_metadata=merged_metadata,
+        peaks=reference_peaks, rejected=rejected, headings=headings, mapping=mapping,
+        mapping_method=mapping_method, warnings=warnings)
 
 # Confidence levels for measured-peak matching. Even the HIGHEST level stays tentative — the wording
 # is always "tentatively consistent with", never "identified as".
@@ -371,11 +1341,18 @@ class XrdMatchResult:
     measured_2theta: list = field(default_factory=list)
     candidates: list = field(default_factory=list)         # list[dict] (sorted strongest-first)
     unmatched_measured: list = field(default_factory=list)  # measured peaks with no internal candidate
+    measured_peak_identity: dict = field(default_factory=dict)
+    reference_identities: list = field(default_factory=list)
+    radiation_compatibility: list = field(default_factory=list)
+    overlap_ambiguity_count: int = 0
+    comparison_status: str = "tentative_advisory"
+    limitations: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     disclaimer: str = DISCLAIMER
     explanation: str = MATCH_EXPLANATION
-    wording_note: str = ("Matches are TENTATIVE — phrased 'tentatively consistent with', never "
-                         "'identified as'. Confirm with reference patterns + full-pattern fitting.")
+    wording_note: str = (
+        "Matches are TENTATIVELY CONSISTENT WITH an advisory possible match only. Check against "
+        "an appropriate reference source and use full-pattern expert review.")
 
     def candidate_table(self) -> list[dict]:
         """Flat rows for the UI. The confidence column is labelled ``confidence (tentative)`` so a
@@ -389,12 +1366,287 @@ class XrdMatchResult:
                 "matched": f'{c["n_matched"]}/{c["n_reference"]}',
                 "matched_2theta_deg": ", ".join(f'{m["measured"]:g}' for m in c["matched_peaks"]) or "—",
                 "missing_major_2theta_deg": ", ".join(f"{x:g}" for x in c["missing_major_peaks"]) or "—",
+                "reference_id": c.get("reference_id", "internal_approximate_reference"),
+                "radiation compatibility": c.get("radiation_compatibility", "not_assessed"),
+                "overlap ambiguity count": c.get("ambiguity_overlap_count", 0),
                 "assessment": c["wording"],
             })
         return rows
 
+    def to_dict(self) -> dict:
+        return _json_safe_copy(asdict(self))
 
-def match_measured_peaks(measured_2theta, tolerance=DEFAULT_MATCH_TOLERANCE_DEG) -> XrdMatchResult:
+
+def _coerce_measured_peaks(
+    measured_input: Any,
+    measured_identity: dict | None,
+    measured_radiation: Any,
+    measured_wavelength: Any,
+) -> tuple[list[dict], dict, str, float | None, list[str]]:
+    warnings: list[str] = []
+    if isinstance(measured_input, MeasuredXrdPattern):
+        pattern = measured_input
+        raw_peaks = pattern.user_peak_list
+        if not raw_peaks:
+            warnings.append(
+                "The measured pattern has no explicit user-supplied peak list; raw scan points "
+                "were not treated as peaks.")
+        identity = {
+            "pattern_id": pattern.pattern_id,
+            "source_filename": pattern.source_filename,
+            "source_sha256": pattern.source_sha256,
+            "peak_list_id": _stable_record_id("xrdpeaks_", {
+                "pattern_id": pattern.pattern_id, "peaks": raw_peaks,
+                "selection": pattern.peak_selection_provenance,
+            }),
+            "peak_selection_provenance": pattern.peak_selection_provenance,
+        }
+        radiation = pattern.radiation_source
+        wavelength = pattern.wavelength_angstrom
+    else:
+        raw_peaks = measured_input or []
+        identity = _json_safe_copy(measured_identity or {})
+        radiation = _radiation_label(measured_radiation)
+        wavelength = _optional_wavelength(measured_wavelength)
+
+    parsed: list[dict] = []
+    for index, item in enumerate(raw_peaks, start=1):
+        if isinstance(item, dict):
+            raw_position = (item.get("two_theta_deg") if "two_theta_deg" in item
+                            else item.get("two_theta", item.get("measured")))
+            peak_id = item.get("peak_id") or item.get("peak_index") or index
+        else:
+            raw_position, peak_id = item, index
+        try:
+            position = _physical_two_theta(raw_position)
+        except XrdDataError:
+            warnings.append(f"Measured peak {index} was ignored because its 2theta is not finite/physical.")
+            continue
+        parsed.append({"peak_index": index, "peak_id": peak_id, "two_theta_deg": round(position, 6)})
+    if "peak_list_id" not in identity:
+        identity["peak_list_id"] = _stable_record_id("xrdpeaks_", {
+            "provided_identity": identity, "peaks": parsed,
+        })
+    return parsed, identity, _radiation_label(radiation), wavelength, warnings
+
+
+def _coerce_external_reference(value: Any) -> ExternalXrdReference:
+    if isinstance(value, ExternalXrdReference):
+        reference = value
+    elif isinstance(value, dict):
+        safe = _json_safe_copy(value)
+        try:
+            reference = ExternalXrdReference(
+                reference_id=str(safe.get("reference_id") or ""),
+                phase_name=str(safe.get("phase_name") or safe.get("phase") or ""),
+                formula=str(safe.get("formula") or ""),
+                polymorph=str(safe.get("polymorph") or safe.get("crystal_form") or ""),
+                radiation_source=_radiation_label(
+                    safe.get("radiation_source", safe.get("radiation"))),
+                wavelength_angstrom=_optional_wavelength(
+                    safe.get("wavelength_angstrom", safe.get("wavelength"))),
+                peaks=list(safe.get("peaks") or []),
+                source_name=str(safe.get("source_name") or ""),
+                source_record_id=str(safe.get("source_record_id") or ""),
+                title=str(safe.get("title") or ""),
+                authors=list(safe.get("authors") or []),
+                year=safe.get("year"), doi=str(safe.get("doi") or ""),
+                url=str(safe.get("url") or ""),
+                license_status=str(safe.get("license_status") or LICENSE_UNKNOWN),
+                redistribution_permission_status=str(
+                    safe.get("redistribution_permission_status") or REDISTRIBUTION_UNKNOWN),
+                source_filename=str(safe.get("source_filename") or ""),
+                source_sha256=str(safe.get("source_sha256") or ""),
+                data_format=str(safe.get("data_format") or ""),
+                notes=str(safe.get("notes") or ""),
+                review_status=str(safe.get("review_status") or "needs_review"),
+                original_headings=list(safe.get("original_headings") or []),
+                column_mapping=dict(safe.get("column_mapping") or {}),
+                rejected_rows=list(safe.get("rejected_rows") or []),
+                source_metadata=dict(safe.get("source_metadata") or {}),
+                warnings=list(safe.get("warnings") or []),
+                created_at=str(safe.get("created_at") or _utc_now()),
+                schema_version=int(safe.get("schema_version") or XRD_RECORD_SCHEMA_VERSION),
+            )
+        except (TypeError, ValueError) as exc:
+            raise XrdDataError(f"malformed external XRD reference record: {exc}") from exc
+    else:
+        raise XrdDataError("references must contain ExternalXrdReference records or their dictionaries")
+
+    if not reference.reference_id or not reference.phase_name or not reference.source_name:
+        raise XrdDataError(
+            "external reference identity, phase_name, and source_name provenance are required")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", reference.source_sha256):
+        raise XrdDataError("external reference requires an exact 64-character source_sha256")
+    if not reference.source_filename:
+        raise XrdDataError("external reference requires source_filename provenance")
+    parsed_peaks = []
+    for index, peak in enumerate(reference.peaks, start=1):
+        if not isinstance(peak, dict):
+            peak = {"two_theta_deg": peak}
+        try:
+            position = _physical_two_theta(
+                peak.get("two_theta_deg", peak.get("two_theta", peak.get("reference"))))
+            intensity = _finite_number(
+                peak.get("relative_intensity", peak.get("intensity")),
+                field_name="reference relative intensity", allow_missing=True)
+        except XrdDataError as exc:
+            raise XrdDataError(f"reference peak {index}: {exc}") from exc
+        parsed_peaks.append({
+            **_json_safe_copy(peak),
+            "two_theta_deg": position,
+            "relative_intensity": intensity,
+        })
+    if not parsed_peaks:
+        raise XrdDataError("external reference needs at least one finite physical peak position")
+    return replace(
+        reference,
+        peaks=parsed_peaks,
+        license_status=reference.license_status or LICENSE_UNKNOWN,
+        redistribution_permission_status=(
+            reference.redistribution_permission_status or REDISTRIBUTION_UNKNOWN),
+    )
+
+
+def radiation_compatibility(
+    measured_radiation: Any,
+    reference_radiation: Any,
+    *,
+    measured_wavelength_angstrom: Any = None,
+    reference_wavelength_angstrom: Any = None,
+) -> dict:
+    """Compare radiation identities without wavelength conversion."""
+    measured_label = _radiation_label(measured_radiation)
+    reference_label = _radiation_label(reference_radiation)
+    measured_key = _normalise_radiation(measured_label)
+    reference_key = _normalise_radiation(reference_label)
+    measured_wave = _optional_wavelength(measured_wavelength_angstrom)
+    reference_wave = _optional_wavelength(reference_wavelength_angstrom)
+    reasons: list[str] = []
+
+    incompatible = False
+    if measured_key is not None and reference_key is not None and measured_key != reference_key:
+        incompatible = True
+        reasons.append("radiation source labels differ")
+    if measured_wave is not None and reference_wave is not None:
+        delta = abs(measured_wave - reference_wave)
+        if delta > WAVELENGTH_COMPATIBILITY_TOLERANCE_A:
+            incompatible = True
+            reasons.append(
+                f"wavelengths differ by {delta:.6g} A; no wavelength conversion was performed")
+    if incompatible:
+        status = RADIATION_INCOMPATIBLE
+    elif measured_key is not None and reference_key is not None:
+        status = RADIATION_COMPATIBLE
+        reasons.append("supplied radiation identities are compatible for a position comparison")
+    else:
+        status = RADIATION_UNKNOWN
+        reasons.append(
+            "radiation compatibility is unknown because one or both identities are incomplete")
+    return {
+        "status": status,
+        "measured_radiation": measured_label,
+        "reference_radiation": reference_label,
+        "measured_wavelength_angstrom": measured_wave,
+        "reference_wavelength_angstrom": reference_wave,
+        "wavelength_conversion_performed": False,
+        "reasons": reasons,
+    }
+
+
+def _one_to_one_peak_pairs(measured: list[dict], reference_positions: list[float], tol: float) -> list[dict]:
+    possibilities = []
+    for measured_index, measured_peak in enumerate(measured):
+        for reference_index, reference_peak in enumerate(reference_positions):
+            delta = abs(measured_peak["two_theta_deg"] - reference_peak)
+            if delta <= tol:
+                possibilities.append((delta, measured_index, reference_index))
+    used_measured: set[int] = set()
+    used_reference: set[int] = set()
+    matched = []
+    for delta, measured_index, reference_index in sorted(possibilities):
+        if measured_index in used_measured or reference_index in used_reference:
+            continue
+        used_measured.add(measured_index)
+        used_reference.add(reference_index)
+        measured_value = measured[measured_index]["two_theta_deg"]
+        reference_value = reference_positions[reference_index]
+        matched.append({
+            "measured_peak_index": measured_index,
+            "reference_peak_index": reference_index,
+            "measured": measured_value,
+            "reference": reference_value,
+            "delta": round(delta, 6),
+            "measured_two_theta_deg": measured_value,
+            "reference_two_theta_deg": reference_value,
+            "delta_deg": round(delta, 6),
+            "signed_delta_deg": round(measured_value - reference_value, 6),
+        })
+    return sorted(matched, key=lambda pair: pair["reference_peak_index"])
+
+
+def _generic_references(references: Any) -> tuple[list[dict], bool]:
+    if references is None:
+        return ([{
+            "key": key,
+            "phase": ref.name,
+            "formula": ref.formula,
+            "polymorph": "",
+            "positions": list(ref.main_2theta),
+            "intensities": [None] * len(ref.main_2theta),
+            "dominant": _DOMINANT_2THETA.get(key),
+            "external": False,
+            "reference_id": f"internal_approximate_{key}",
+            "identity": {"reference_id": f"internal_approximate_{key}"},
+            "provenance": {"basis": PEAK_BASIS},
+            "radiation_source": "Cu Kalpha",
+            "wavelength_angstrom": CU_KALPHA_WAVELENGTH_A,
+        } for key, ref in _REFERENCE.items()], False)
+
+    values = references if isinstance(references, (list, tuple)) else [references]
+    generic = []
+    seen_reference_ids: set[str] = set()
+    for value in values:
+        ref = _coerce_external_reference(value)
+        if ref.reference_id in seen_reference_ids:
+            raise XrdDataError(f"duplicate external reference identity: {ref.reference_id}")
+        seen_reference_ids.add(ref.reference_id)
+        intensities = [peak.get("relative_intensity") for peak in ref.peaks]
+        finite_intensities = [
+            (index, intensity) for index, intensity in enumerate(intensities)
+            if isinstance(intensity, (int, float)) and math.isfinite(float(intensity))
+        ]
+        dominant = None
+        if finite_intensities:
+            dominant_index = max(finite_intensities, key=lambda item: item[1])[0]
+            dominant = ref.peaks[dominant_index]["two_theta_deg"]
+        generic.append({
+            "key": ref.reference_id,
+            "phase": ref.phase_name,
+            "formula": ref.formula,
+            "polymorph": ref.polymorph,
+            "positions": ref.reference_2theta,
+            "intensities": intensities,
+            "dominant": dominant,
+            "external": True,
+            "reference_id": ref.reference_id,
+            "identity": ref.identity(),
+            "provenance": ref.provenance(),
+            "radiation_source": ref.radiation_source,
+            "wavelength_angstrom": ref.wavelength_angstrom,
+        })
+    return generic, True
+
+
+def match_measured_peaks(
+    measured_2theta,
+    tolerance=DEFAULT_MATCH_TOLERANCE_DEG,
+    *,
+    references=None,
+    measured_identity: dict | None = None,
+    measured_radiation: Any = None,
+    measured_wavelength_angstrom: Any = None,
+) -> XrdMatchResult:
     """Compare measured 2θ positions to the internal references → TENTATIVE candidate phases.
 
     ``measured_2theta`` is a list of degrees-2θ (numbers or numeric strings); ``tolerance`` is the
@@ -406,48 +1658,77 @@ def match_measured_peaks(measured_2theta, tolerance=DEFAULT_MATCH_TOLERANCE_DEG)
     * ``high`` — 3+ matched peaks, at least 2 of them unique (not overlapping another candidate), a
       high matched fraction, and the dominant reflection present — and still only *tentative*.
     """
-    measured = [round(f, 3) for f in (_to_float(v) for v in (measured_2theta or [])) if f is not None]
+    measured_peaks, peak_identity, measured_radiation_label, measured_wavelength, input_warnings = (
+        _coerce_measured_peaks(
+            measured_2theta, measured_identity, measured_radiation,
+            measured_wavelength_angstrom))
+    measured = [peak["two_theta_deg"] for peak in measured_peaks]
     tol = _to_float(tolerance)
-    if tol is None or tol <= 0:
+    if tol is None or not math.isfinite(tol) or tol <= 0:
         tol = DEFAULT_MATCH_TOLERANCE_DEG
 
     if not measured:
         return XrdMatchResult(
             tolerance_deg=tol,
-            warnings=["No measured 2θ peaks provided — nothing to match. Enter peak positions in "
-                      "degrees 2θ (Cu Kα)."])
+            measured_peak_identity=peak_identity,
+            warnings=input_warnings + [
+                "No measured 2theta peaks are available for advisory matching."])
 
-    # Match each phase's principal peaks to the nearest measured peak within tolerance.
+    generic_references, external = _generic_references(references)
     raw_candidates = []
-    for key, ref in _REFERENCE.items():
-        matched = []
-        for ref_peak in ref.main_2theta:
-            best = None
-            for mp in measured:
-                d = abs(mp - ref_peak)
-                if d <= tol and (best is None or d < best[1]):
-                    best = (mp, d)
-            if best is not None:
-                matched.append({"reference": ref_peak, "measured": best[0], "delta": round(best[1], 3)})
-        if matched:
-            raw_candidates.append((key, ref, matched))
+    radiation_checks = []
+    for ref in generic_references:
+        matched = _one_to_one_peak_pairs(measured_peaks, ref["positions"], tol)
+        if not matched and not external:
+            continue
+        if external:
+            compatibility = radiation_compatibility(
+                measured_radiation_label, ref["radiation_source"],
+                measured_wavelength_angstrom=measured_wavelength,
+                reference_wavelength_angstrom=ref["wavelength_angstrom"])
+        else:
+            compatibility = {
+                "status": RADIATION_COMPATIBLE,
+                "measured_radiation": "legacy internal Cu Kalpha basis",
+                "reference_radiation": "Cu Kalpha",
+                "measured_wavelength_angstrom": None,
+                "reference_wavelength_angstrom": CU_KALPHA_WAVELENGTH_A,
+                "wavelength_conversion_performed": False,
+                "reasons": ["legacy internal-reference matcher uses its documented Cu Kalpha basis"],
+            }
+        radiation_checks.append({
+            "reference_id": ref["reference_id"],
+            **compatibility,
+        })
+        raw_candidates.append((ref, matched, compatibility))
 
     # Which measured peaks are claimed by more than one candidate phase (overlap / ambiguity)?
     claims: dict = {}
-    for key, ref, matched in raw_candidates:
+    for ref, matched, compatibility in raw_candidates:
         for m in matched:
-            claims.setdefault(m["measured"], set()).add(key)
+            claims.setdefault(m["measured_peak_index"], set()).add(ref["reference_id"])
+    overlap_count = sum(1 for claimants in claims.values() if len(claimants) > 1)
 
     candidates = []
-    for key, ref, matched in raw_candidates:
+    limitations = [
+        "Position-only comparison does not account for background, instrument broadening, "
+        "preferred orientation, solid-solution shifts, or full-pattern fit quality.",
+        "Amorphous content may raise the background without producing reference peaks.",
+        "No wavelength conversion is performed.",
+    ]
+    for ref, matched, compatibility in raw_candidates:
         n_matched = len(matched)
-        n_ref = len(ref.main_2theta)
-        unique = sum(1 for m in matched if len(claims.get(m["measured"], ())) == 1)
+        n_ref = len(ref["positions"])
+        unique = sum(
+            1 for m in matched if len(claims.get(m["measured_peak_index"], ())) == 1)
         frac = n_matched / n_ref if n_ref else 0.0
-        matched_refs = {m["reference"] for m in matched}
-        missing = [p for p in ref.main_2theta if p not in matched_refs]
-        dominant = _DOMINANT_2THETA.get(key)
-        dominant_missing = dominant is not None and dominant not in matched_refs
+        matched_reference_indices = {m["reference_peak_index"] for m in matched}
+        missing = [
+            position for index, position in enumerate(ref["positions"])
+            if index not in matched_reference_indices]
+        dominant = ref["dominant"]
+        dominant_missing = dominant is not None and all(
+            pair["reference"] != dominant for pair in matched)
 
         if n_matched <= 1:
             conf = CONFIDENCE_LOW
@@ -457,32 +1738,132 @@ def match_measured_peaks(measured_2theta, tolerance=DEFAULT_MATCH_TOLERANCE_DEG)
             conf = CONFIDENCE_HIGH if (unique >= 2 and frac >= 0.66) else CONFIDENCE_MEDIUM
         if conf == CONFIDENCE_HIGH and dominant_missing:
             conf = CONFIDENCE_MEDIUM        # never 'high' without the dominant reflection present
+        stronger_comparison_blocked = compatibility["status"] != RADIATION_COMPATIBLE
+        if stronger_comparison_blocked:
+            conf = CONFIDENCE_LOW
+
+        ambiguity_count = sum(
+            1 for pair in matched if len(claims.get(pair["measured_peak_index"], ())) > 1)
+        formula_polymorph_caution = bool(ref["formula"] and not ref["polymorph"] and ref["external"])
+        if formula_polymorph_caution and conf == CONFIDENCE_HIGH:
+            conf = CONFIDENCE_MEDIUM
 
         note_bits = []
         if dominant_missing:
             note_bits.append(f"dominant {dominant:g}° peak not in your list")
-        if unique == 0:
+        elif dominant is None:
+            note_bits.append(
+                "reference intensities were not supplied, so a dominant-peak check is unavailable")
+        if matched and unique == 0:
             note_bits.append("all matched peaks overlap other candidates (ambiguous)")
+        if stronger_comparison_blocked:
+            note_bits.append(
+                f"radiation compatibility is {compatibility['status']}; stronger comparison is blocked")
+        if formula_polymorph_caution:
+            note_bits.append(
+                "a formula alone cannot establish a polymorph; check the crystal form explicitly")
+        matched_measured_indices = {pair["measured_peak_index"] for pair in matched}
+        candidate_unmatched_measured = [
+            peak["two_theta_deg"] for index, peak in enumerate(measured_peaks)
+            if index not in matched_measured_indices]
         candidates.append({
-            "phase": ref.name, "formula": ref.formula, "key": key, "confidence": conf,
-            "wording": f"{ref.name}: {CONFIDENCE_WORDING[conf]}", "n_matched": n_matched,
+            "phase": ref["phase"], "formula": ref["formula"], "polymorph": ref["polymorph"],
+            "key": ref["key"], "confidence": conf, "tentative_confidence": conf,
+            "wording": f"{ref['phase']}: {CONFIDENCE_WORDING[conf]}", "n_matched": n_matched,
             "n_reference": n_ref, "unique_matches": unique, "matched_peaks": matched,
             "missing_major_peaks": missing, "dominant_missing": dominant_missing,
-            "note": "; ".join(note_bits) or "matched on peak positions only — confirm with the full pattern.",
+            "dominant_reference_2theta_deg": dominant,
+            "dominant_peak_warning": (
+                f"Dominant reference peak {dominant:g}° was not matched."
+                if dominant_missing else (
+                    "Dominant reference peak was matched."
+                    if dominant is not None else
+                    "Dominant-peak check unavailable because relative intensities were not supplied.")),
+            "unmatched_reference_peaks": missing,
+            "unmatched_measured_peaks": candidate_unmatched_measured,
+            "ambiguity_overlap_count": ambiguity_count,
+            "radiation_compatibility": compatibility["status"],
+            "radiation_compatibility_detail": compatibility,
+            "stronger_comparison_blocked": stronger_comparison_blocked,
+            "wavelength_conversion_performed": False,
+            "reference_id": ref["reference_id"],
+            "reference_identity": ref["identity"],
+            "reference_provenance": ref["provenance"],
+            "formula_polymorph_caution": formula_polymorph_caution,
+            "limitations": limitations + ([
+                "Radiation identity is unknown or incompatible; positional similarity cannot "
+                "support a stronger comparison."
+            ] if stronger_comparison_blocked else []) + ([
+                "Formula does not uniquely establish the polymorph/crystal form."
+            ] if formula_polymorph_caution else []),
+            "note": "; ".join(note_bits) or (
+                "position-only tentative advisory possible match; check against an appropriate "
+                "reference source."),
         })
 
     rank = {CONFIDENCE_HIGH: 3, CONFIDENCE_MEDIUM: 2, CONFIDENCE_LOW: 1}
     candidates.sort(key=lambda c: (rank[c["confidence"]], c["n_matched"]), reverse=True)
 
-    matched_vals = set(claims)
-    unmatched = [mp for mp in measured if mp not in matched_vals]
-    return XrdMatchResult(tolerance_deg=tol, measured_2theta=measured, candidates=candidates,
-                          unmatched_measured=unmatched,
-                          warnings=_match_warnings(candidates, unmatched, tol))
+    unmatched = [
+        peak["two_theta_deg"] for index, peak in enumerate(measured_peaks) if index not in claims]
+    reference_identities = [ref["identity"] for ref in generic_references]
+    result_warnings = input_warnings + _match_warnings(
+        candidates, unmatched, tol, external=external, radiation_checks=radiation_checks)
+    return XrdMatchResult(
+        tolerance_deg=tol,
+        measured_2theta=measured,
+        candidates=candidates,
+        unmatched_measured=unmatched,
+        measured_peak_identity=peak_identity,
+        reference_identities=reference_identities,
+        radiation_compatibility=radiation_checks,
+        overlap_ambiguity_count=overlap_count,
+        comparison_status="tentative_advisory_possible_match",
+        limitations=limitations,
+        warnings=result_warnings,
+        disclaimer=(
+            "Tentative advisory possible matches only; check against an appropriate reference "
+            "source. This position comparison is not a phase conclusion."
+            if external else DISCLAIMER),
+        explanation=(
+            "Measured peaks were compared with user-supplied external references using one "
+            "position-only advisory matcher. Exact source and radiation provenance are retained."
+            if external else MATCH_EXPLANATION),
+    )
 
 
-def _match_warnings(candidates, unmatched, tol) -> list[str]:
+def _match_warnings(candidates, unmatched, tol, *, external=False, radiation_checks=None) -> list[str]:
     """The standing caution set for tentative measured-peak matching."""
+    if external:
+        warns = [
+            f"Tentative advisory position comparison at ±{tol:g}° 2theta; check every possible "
+            "match against an appropriate reference source and the full measured pattern.",
+            "A one-peak possible match is weak because peaks can overlap; several characteristic "
+            "peaks and expert full-pattern review are needed for a stronger interpretation.",
+            "Amorphous content, background, preferred orientation, broadening, and solid-solution "
+            "shifts remain limitations.",
+            "No wavelength conversion was performed.",
+        ]
+        checks = radiation_checks or []
+        if any(check["status"] == RADIATION_INCOMPATIBLE for check in checks):
+            warns.append(
+                "At least one reference has incompatible radiation; stronger comparison is blocked.")
+        if any(check["status"] == RADIATION_UNKNOWN for check in checks):
+            warns.append(
+                "At least one radiation identity is unknown; stronger comparison is blocked.")
+        if any(candidate.get("formula_polymorph_caution") for candidate in candidates):
+            warns.append(
+                "A formula alone cannot establish a polymorph; check the supplied crystal form "
+                "against an appropriate reference source.")
+        if any(candidate.get("ambiguity_overlap_count", 0) for candidate in candidates):
+            warns.append(
+                "Overlapping reference positions remain ambiguous and are counted explicitly.")
+        if unmatched:
+            warns.append(
+                "Unmatched measured peaks remain uninterpreted: "
+                + ", ".join(f"{value:g}" for value in unmatched) + ".")
+        return warns
+
     warns = [
         f"Matching is TENTATIVE and position-only at ±{tol:g}° 2θ — it is NOT a phase identification. "
         "Confirm with measured reference patterns (ICDD PDF) and full-pattern (Rietveld) fitting.",

@@ -12,7 +12,9 @@ import json
 import os
 import re
 import tempfile
+import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,15 +23,45 @@ from typing import Any, Iterable
 from . import config
 from .instruments import virtual_lab_machines
 
-SCHEMA_VERSION = 1
+# Schema 2 adds full-envelope integrity digests to newly written ArtifactRecord
+# and RunRecord documents. Schema-1 files remain readable without rewriting.
+SCHEMA_VERSION = 2
 PROJECT_PREFIX = "prj_"
 MATERIAL_PREFIX = "mat_"
 RUN_PREFIX = "run_"
-_ID_RE = re.compile(r"^(prj|mat|run)_[0-9a-f]{32}$")
-_SECRET_KEYS = re.compile(
-    r"(^|_)(api_?key|token|password|passwd|secret|cookie|authorization|credential)s?($|_)",
-    re.IGNORECASE,
+ARTIFACT_PREFIX = "art_"
+_ID_RE = re.compile(r"^(prj|mat|run|art)_[0-9a-f]{32}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_REVISION_LOCKS_GUARD = threading.Lock()
+_REVISION_THREAD_LOCKS: dict[str, threading.Lock] = {}
+
+ARTIFACT_ICP_REVIEW = "icp_review"
+ARTIFACT_XRD_PATTERN = "xrd_measured_pattern"
+ARTIFACT_XRD_REFERENCE = "xrd_reference"
+ARTIFACT_EVIDENCE = "evidence"
+ARTIFACT_EXPERIMENT_PLAN = "experimental_plan"
+ARTIFACT_SUSTAINABILITY_SCREEN = "sustainability_screen"
+ARTIFACT_TYPES = (
+    ARTIFACT_ICP_REVIEW,
+    ARTIFACT_XRD_PATTERN,
+    ARTIFACT_XRD_REFERENCE,
+    ARTIFACT_EVIDENCE,
+    ARTIFACT_EXPERIMENT_PLAN,
+    ARTIFACT_SUSTAINABILITY_SCREEN,
 )
+ARTIFACT_STATUSES = (
+    "draft", "needs_review", "finalized", "reviewed", "rejected", "superseded",
+)
+IMMUTABLE_ARTIFACT_STATUSES = frozenset({"finalized", "reviewed", "rejected", "superseded"})
+_CAMEL_ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
+_KEY_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
+_SECRET_KEY_SEGMENTS = frozenset({
+    "token", "tokens", "password", "passwords", "passwd", "passwds",
+    "secret", "secrets", "cookie", "cookies", "authorization", "authorizations",
+    "credential", "credentials",
+})
+_SECRET_COMPACT_KEYS = frozenset({"apikey", "apikeys"})
 
 
 class WorkspaceStoreError(RuntimeError):
@@ -60,6 +92,10 @@ class ConfirmationRequiredError(WorkspaceStoreError):
     """A destructive operation did not carry an exact target confirmation."""
 
 
+class ImmutableRecordError(WorkspaceStoreError):
+    """A caller attempted to change an immutable finalized/reviewed artifact."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -81,10 +117,36 @@ def identity_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _require_sha256(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise MalformedRecordError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _is_secret_key(value: Any) -> bool:
+    """Recognize secret-bearing field aliases without substring false positives.
+
+    Keys are normalized across camelCase, acronymCase, snake_case, kebab-case,
+    spaces, and punctuation. Exact segments such as ``token`` and ``secret`` are
+    refused, while scientific words such as ``secretion`` or ``tokenization`` are
+    not treated as credentials merely because they contain those letters.
+    """
+    text = _CAMEL_ACRONYM_BOUNDARY.sub(r"\1_\2", str(value))
+    text = _CAMEL_WORD_BOUNDARY.sub(r"\1_\2", text)
+    parts = tuple(part.lower() for part in _KEY_SEPARATOR.split(text) if part)
+    if any(part in _SECRET_KEY_SEGMENTS for part in parts):
+        return True
+    if any(left in {"api", "license"} and right in {"key", "keys"}
+           for left, right in zip(parts, parts[1:])):
+        return True
+    compact = "".join(parts)
+    return compact in _SECRET_COMPACT_KEYS
+
+
 def _assert_no_secrets(value: Any, path: str = "record") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            if _SECRET_KEYS.search(str(key)):
+            if _is_secret_key(key):
                 raise MalformedRecordError(f"secret-like field is not permitted: {path}.{key}")
             _assert_no_secrets(child, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
@@ -94,7 +156,34 @@ def _assert_no_secrets(value: Any, path: str = "record") -> None:
 
 def _record_from_dict(cls, payload: dict):
     known = {item.name for item in fields(cls)}
-    return cls(**{key: value for key, value in payload.items() if key in known})
+    unknown = set(payload) - known
+    # Current-schema documents must be closed shapes: otherwise an unverified
+    # field could remain on disk while projection into the dataclass makes it
+    # invisible to the full-envelope digest. Schema 1 retains its historical
+    # tolerant-reader behavior for compatibility and is never rewritten on read.
+    if payload.get("schema_version", 1) >= 2 and unknown:
+        raise MalformedRecordError(
+            f"record contains unsupported schema-{payload.get('schema_version')} fields for "
+            f"{cls.__name__}: {sorted(unknown)}")
+    try:
+        return cls(**{key: value for key, value in payload.items() if key in known})
+    except (TypeError, ValueError) as exc:
+        raise MalformedRecordError(
+            f"record fields are malformed for {cls.__name__}: {exc}") from exc
+
+
+def _artifact_type(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized not in ARTIFACT_TYPES:
+        raise MalformedRecordError(f"unsupported artifact record_type: {value!r}")
+    return normalized
+
+
+def _artifact_status(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized not in ARTIFACT_STATUSES:
+        raise MalformedRecordError(f"unsupported artifact status: {value!r}")
+    return normalized
 
 
 @dataclass
@@ -166,9 +255,64 @@ class RunRecord:
     legacy_references: list = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     schema_version: int = SCHEMA_VERSION
+    # Optional only so genuine schema-v1 records created before Phase 3 remain readable.
+    # Every run created by the current store persists and verifies this digest.
+    result_hash: str | None = None
+    envelope_hash: str | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # Preserve the exact historical schema-1 shape when the optional
+        # integrity fields did not exist. Reads remain non-migrating and any
+        # identity derived by legacy consumers stays stable.
+        if self.schema_version == 1 and self.result_hash is None:
+            data.pop("result_hash", None)
+        if self.schema_version == 1 and self.envelope_hash is None:
+            data.pop("envelope_hash", None)
+        return data
+
+
+@dataclass
+class ArtifactRecord:
+    """Typed, revision-linked Phase 3 record stored by the existing workspace authority.
+
+    The common envelope owns durable identity and lifecycle only. Domain modules validate the
+    scientific payload, so this record cannot become a second ICP/XRD/evidence/planning engine.
+    """
+
+    artifact_id: str
+    logical_id: str
+    project_id: str
+    material_id: str | None
+    record_type: str
+    revision: int
+    status: str
+    input_snapshot: dict
+    input_hash: str
+    payload: dict
+    payload_hash: str
+    source_identity: dict = field(default_factory=dict)
+    creator: str = ""
+    reviewer: str = ""
+    reason: str = ""
+    previous_artifact_id: str | None = None
+    previous_artifact_hash: str | None = None
+    related_run_id: str | None = None
+    provenance: dict = field(default_factory=dict)
+    created_at: str = field(default_factory=_now)
+    updated_at: str = field(default_factory=_now)
+    reviewed_at: str | None = None
+    schema_version: int = SCHEMA_VERSION
+    envelope_hash: str | None = None
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        # Schema-1 lineage hashes were calculated before ``envelope_hash`` was a
+        # field. Omitting the absent optional field is required to validate those
+        # immutable predecessor identities without rewriting legacy files.
+        if self.schema_version == 1 and self.envelope_hash is None:
+            data.pop("envelope_hash", None)
+        return data
 
 
 def material_identity_payload(material: MaterialRecord | dict) -> dict:
@@ -194,6 +338,20 @@ def material_identity_payload(material: MaterialRecord | dict) -> dict:
 
 def material_identity_hash(material: MaterialRecord | dict) -> str:
     return identity_hash(material_identity_payload(material))
+
+
+def artifact_envelope_hash(record: ArtifactRecord | dict) -> str:
+    """Digest every durable artifact field except the digest itself."""
+    data = record.to_dict() if isinstance(record, ArtifactRecord) else dict(record)
+    data.pop("envelope_hash", None)
+    return identity_hash(data)
+
+
+def run_envelope_hash(record: RunRecord | dict) -> str:
+    """Digest every durable run field except the digest itself."""
+    data = record.to_dict() if isinstance(record, RunRecord) else dict(record)
+    data.pop("envelope_hash", None)
+    return identity_hash(data)
 
 
 class WorkspaceStore:
@@ -241,7 +399,7 @@ class WorkspaceStore:
 
     def _record_path(self, kind: str, record_id: str) -> Path:
         prefix = {"projects": PROJECT_PREFIX, "materials": MATERIAL_PREFIX,
-                  "runs": RUN_PREFIX}.get(kind)
+                  "runs": RUN_PREFIX, "artifacts": ARTIFACT_PREFIX}.get(kind)
         if prefix is None:
             raise UnsafePathError(f"unknown record kind: {kind!r}")
         return self._path(kind, f"{self._validate_id(record_id, prefix)}.json")
@@ -264,9 +422,16 @@ class WorkspaceStore:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if create_only and path.exists():
-                raise DuplicateRecordError(f"record already exists: {path.stem}")
-            os.replace(temp_name, path)
+            if create_only:
+                # ``link`` supplies the atomic create-if-absent guarantee that an
+                # exists-check followed by ``replace`` cannot provide to competing writers.
+                try:
+                    os.link(temp_name, path)
+                except FileExistsError as exc:
+                    raise DuplicateRecordError(f"record already exists: {path.stem}") from exc
+                os.unlink(temp_name)
+            else:
+                os.replace(temp_name, path)
             try:
                 directory_fd = os.open(path.parent, os.O_RDONLY)
                 try:
@@ -280,6 +445,10 @@ class WorkspaceStore:
                 os.unlink(temp_name)
 
     def _read(self, path: Path, expected_kind: str | None = None) -> dict:
+        # Test the directory entry itself before ``exists``/``read_text`` can
+        # dereference either a live or broken symlink outside the workspace.
+        if path.is_symlink():
+            raise UnsafePathError(f"record file must not be a symlink: {path.name}")
         if not path.exists():
             raise RecordNotFoundError(f"record not found: {path.stem}")
         try:
@@ -289,7 +458,7 @@ class WorkspaceStore:
         if not isinstance(payload, dict):
             raise MalformedRecordError(f"{path.name} must contain a JSON object")
         version = payload.get("schema_version")
-        if not isinstance(version, int):
+        if isinstance(version, bool) or not isinstance(version, int):
             raise MalformedRecordError(f"{path.name} has no integer schema_version")
         if version > SCHEMA_VERSION:
             raise UnsupportedSchemaError(
@@ -302,12 +471,54 @@ class WorkspaceStore:
         _assert_no_secrets(payload)
         return payload
 
+    @contextmanager
+    def _artifact_revision_lock(self, logical_id: str):
+        """Serialize appends to one artifact lineage across threads/processes.
+
+        The lock contains no scientific or user data and remains as an empty local
+        coordination file. ``O_NOFOLLOW`` prevents a planted lock-file symlink from
+        redirecting the open.
+        """
+        logical = self._validate_id(logical_id, ARTIFACT_PREFIX)
+        lock_key = f"{self.root}:{logical}"
+        with _REVISION_LOCKS_GUARD:
+            thread_lock = _REVISION_THREAD_LOCKS.setdefault(lock_key, threading.Lock())
+        thread_lock.acquire()
+        try:
+            lock_dir = self._path("locks")
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_path = self._path("locks", f"{logical}.lock")
+            flags = os.O_CREAT | os.O_RDWR
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(lock_path, flags, 0o600)
+            except OSError as exc:
+                raise UnsafePathError(
+                    f"cannot safely open artifact revision lock: {logical}") from exc
+        except Exception:
+            thread_lock.release()
+            raise
+        try:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+                thread_lock.release()
+
     def cleanup_stale_temps(self) -> int:
         """Remove only this store's abandoned atomic-write temp files."""
         count = 0
         if not self.root.exists():
             return count
-        for kind in ("projects", "materials", "runs"):
+        for kind in ("projects", "materials", "runs", "artifacts"):
             directory = self._path(kind)
             if not directory.exists() or directory.is_symlink():
                 continue
@@ -386,18 +597,76 @@ class WorkspaceStore:
         record = MaterialRecord(
             material_id=self._validate_id(material_id, MATERIAL_PREFIX) if material_id
             else _new_id(MATERIAL_PREFIX), project_id=project_id, name=str(name).strip(), **values)
+        self._validate_loaded_material(record)
         self._atomic_write(self._record_path("materials", record.material_id), record.to_dict(),
                            create_only=True)
         return record
 
+    def _read_material_record(self, material_id: str) -> MaterialRecord:
+        return _record_from_dict(
+            MaterialRecord,
+            self._read(self._record_path("materials", material_id), "material"),
+        )
+
+    def _validate_material_reference_list(
+        self,
+        record: MaterialRecord,
+        field_name: str,
+        values: Any,
+    ) -> None:
+        if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
+            raise MalformedRecordError(f"material {field_name} must be a list of strings")
+        if len(values) != len(set(values)):
+            raise MalformedRecordError(f"material {field_name} must not contain duplicates")
+        for reference in values:
+            # Opaque legacy source labels remain readable. A value that presents
+            # itself as a durable ID must, however, resolve to the right typed
+            # record in this exact project/material context.
+            if field_name in {"measurement_references", "evidence_references"} \
+                    and reference.startswith(ARTIFACT_PREFIX):
+                self._validate_id(reference, ARTIFACT_PREFIX)
+                artifact = self.get_artifact(reference)
+                if artifact.project_id != record.project_id \
+                        or artifact.material_id != record.material_id:
+                    raise WorkspaceStoreError(
+                        f"material {field_name} contains a cross-context artifact")
+                permitted = ({ARTIFACT_EVIDENCE} if field_name == "evidence_references" else {
+                    ARTIFACT_ICP_REVIEW, ARTIFACT_XRD_PATTERN, ARTIFACT_XRD_REFERENCE,
+                })
+                if artifact.record_type not in permitted:
+                    raise WorkspaceStoreError(
+                        f"material {field_name} contains an incompatible artifact type")
+            elif field_name == "associated_run_ids" and reference.startswith(RUN_PREFIX):
+                self._validate_id(reference, RUN_PREFIX)
+                run = self.get_run(reference)
+                if run.project_id != record.project_id or run.material_id != record.material_id:
+                    raise WorkspaceStoreError(
+                        "material associated_run_ids contains a cross-context run")
+
+    def _validate_loaded_material(self, record: MaterialRecord) -> MaterialRecord:
+        self._validate_id(record.material_id, MATERIAL_PREFIX)
+        self._validate_id(record.project_id, PROJECT_PREFIX)
+        project = self.get_project(record.project_id)
+        if not isinstance(record.name, str) or not record.name.strip():
+            raise MalformedRecordError("material name is required")
+        for name in ("revision", "composition_revision", "assumption_revision"):
+            value = getattr(record, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise MalformedRecordError(f"material {name} must be a positive integer")
+        for name in ("measurement_references", "evidence_references", "associated_run_ids"):
+            self._validate_material_reference_list(record, name, getattr(record, name))
+        if project.project_id != record.project_id:  # pragma: no cover - defensive clarity
+            raise WorkspaceStoreError("material project binding is invalid")
+        return record
+
     def get_material(self, material_id: str) -> MaterialRecord:
-        return _record_from_dict(MaterialRecord,
-                                 self._read(self._record_path("materials", material_id), "material"))
+        return self._validate_loaded_material(self._read_material_record(material_id))
 
     def list_materials(self, project_id: str | None = None) -> list[MaterialRecord]:
         if project_id is not None:
             self.get_project(project_id)
-        records = self._list_records("materials", MaterialRecord, "material")
+        records = [self._validate_loaded_material(record) for record in
+                   self._list_records("materials", MaterialRecord, "material")]
         return [record for record in records if project_id is None or record.project_id == project_id]
 
     def update_material(self, material_id: str, **changes) -> MaterialRecord:
@@ -413,6 +682,7 @@ class WorkspaceStore:
             if key == "name" and not str(value or "").strip():
                 raise MalformedRecordError("material name is required")
             setattr(record, key, value)
+        self._validate_loaded_material(record)
         after = record.to_dict()
         changed = {key for key in changes if before.get(key) != after.get(key)}
         meaningful_fields = {
@@ -432,6 +702,399 @@ class WorkspaceStore:
             self._atomic_write(self._record_path("materials", material_id), record.to_dict())
         return record
 
+    def create_artifact(
+        self,
+        project_id: str,
+        material_id: str | None,
+        record_type: str,
+        input_snapshot: dict | None = None,
+        *,
+        status: str = "draft",
+        payload: dict | None = None,
+        source_identity: dict | None = None,
+        creator: str = "",
+        reviewer: str = "",
+        reason: str = "",
+        provenance: dict | None = None,
+        revision: int = 1,
+        previous_artifact_id: str | None = None,
+        related_run_id: str | None = None,
+        artifact_id: str | None = None,
+        logical_id: str | None = None,
+        reviewed_at: str | None = None,
+    ) -> ArtifactRecord:
+        """Create one typed Phase 3 artifact without changing existing record schemas."""
+        self.get_project(project_id)
+        if material_id is not None:
+            material = self.get_material(material_id)
+            if material.project_id != project_id:
+                raise WorkspaceStoreError("material does not belong to the selected project")
+        kind = _artifact_type(record_type)
+        lifecycle = _artifact_status(status)
+        normalized_reviewer = str(reviewer or "").strip()
+        normalized_reason = str(reason or "").strip()
+        if lifecycle in {"finalized", "reviewed", "rejected"}:
+            if not normalized_reviewer or not normalized_reason:
+                raise MalformedRecordError(
+                    f"{lifecycle} artifact requires reviewer/resolver and reason")
+            reviewed_at = reviewed_at or _now()
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise MalformedRecordError("artifact revision must be a positive integer")
+
+        if previous_artifact_id is None and revision != 1:
+            raise MalformedRecordError("an artifact revision above 1 requires a previous artifact")
+
+        def persist(previous: ArtifactRecord | None) -> ArtifactRecord:
+            if previous is not None:
+                if (previous.project_id != project_id or previous.material_id != material_id
+                        or previous.record_type != kind):
+                    raise WorkspaceStoreError(
+                        "previous artifact does not share project/material/type identity")
+                if revision != previous.revision + 1:
+                    raise MalformedRecordError(
+                        "artifact revision must follow the previous revision")
+            if related_run_id is not None:
+                run = self.get_run(related_run_id)
+                if run.project_id != project_id or run.material_id != material_id:
+                    raise WorkspaceStoreError("related run does not share artifact context")
+
+            snapshot = dict(input_snapshot or {})
+            artifact_payload = dict(payload or {})
+            _canonical_json(snapshot)
+            _canonical_json(artifact_payload)
+            new_id = self._validate_id(artifact_id, ARTIFACT_PREFIX) if artifact_id \
+                else _new_id(ARTIFACT_PREFIX)
+            if logical_id is None:
+                logical = previous.logical_id if previous else new_id
+            else:
+                logical = self._validate_id(logical_id, ARTIFACT_PREFIX)
+                if previous and logical != previous.logical_id:
+                    raise WorkspaceStoreError("artifact revision cannot change logical identity")
+                if previous is None and logical != new_id:
+                    raise MalformedRecordError(
+                        "a root artifact logical ID must equal its artifact ID")
+            record = ArtifactRecord(
+                artifact_id=new_id,
+                logical_id=logical,
+                project_id=project_id,
+                material_id=material_id,
+                record_type=kind,
+                revision=revision,
+                status=lifecycle,
+                input_snapshot=snapshot,
+                input_hash=identity_hash(snapshot),
+                payload=artifact_payload,
+                payload_hash=identity_hash(artifact_payload),
+                source_identity=dict(source_identity or {}),
+                creator=str(creator or "").strip(),
+                reviewer=normalized_reviewer,
+                reason=normalized_reason,
+                previous_artifact_id=previous.artifact_id if previous else None,
+                previous_artifact_hash=identity_hash(previous.to_dict()) if previous else None,
+                related_run_id=related_run_id,
+                provenance=dict(provenance or {}),
+                reviewed_at=reviewed_at,
+            )
+            record.envelope_hash = artifact_envelope_hash(record)
+            self._atomic_write(
+                self._record_path("artifacts", record.artifact_id),
+                record.to_dict(),
+                create_only=True,
+            )
+            return record
+
+        if previous_artifact_id is None:
+            return persist(None)
+
+        initially_loaded = self.get_artifact(previous_artifact_id)
+        with self._artifact_revision_lock(initially_loaded.logical_id):
+            # Re-read after acquiring the cross-process lock. Another writer may
+            # have appended while this caller waited.
+            previous = self.get_artifact(previous_artifact_id)
+            inventory = self._loaded_artifact_inventory()
+            self._validate_artifact_lineage(previous, inventory)
+            family = [item for item in inventory if item.logical_id == previous.logical_id]
+            latest = max(family, key=lambda item: item.revision)
+            if latest.artifact_id != previous.artifact_id:
+                raise DuplicateRecordError(
+                    "artifact revision must extend the latest logical revision")
+            return persist(previous)
+
+    def _validate_loaded_artifact(self, record: ArtifactRecord) -> ArtifactRecord:
+        self._validate_id(record.artifact_id, ARTIFACT_PREFIX)
+        self._validate_id(record.logical_id, ARTIFACT_PREFIX)
+        self._validate_id(record.project_id, PROJECT_PREFIX)
+        if record.material_id is not None:
+            self._validate_id(record.material_id, MATERIAL_PREFIX)
+        if record.previous_artifact_id is not None:
+            self._validate_id(record.previous_artifact_id, ARTIFACT_PREFIX)
+        if record.related_run_id is not None:
+            self._validate_id(record.related_run_id, RUN_PREFIX)
+        _artifact_type(record.record_type)
+        _artifact_status(record.status)
+        if isinstance(record.revision, bool) or not isinstance(record.revision, int) \
+                or record.revision < 1:
+            raise MalformedRecordError("artifact revision must be a positive integer")
+        if any(not isinstance(value, dict) for value in (
+                record.input_snapshot, record.payload, record.source_identity, record.provenance)):
+            raise MalformedRecordError(
+                "artifact input, payload, source identity, and provenance must be objects")
+        if identity_hash(record.input_snapshot) != record.input_hash:
+            raise MalformedRecordError("artifact input hash does not match its stored snapshot")
+        if identity_hash(record.payload) != record.payload_hash:
+            raise MalformedRecordError("artifact payload hash does not match its stored payload")
+        if record.schema_version >= 2:
+            _require_sha256(record.envelope_hash, "artifact envelope_hash")
+            if artifact_envelope_hash(record) != record.envelope_hash:
+                raise MalformedRecordError(
+                    "artifact envelope hash does not match its stored record")
+        elif record.envelope_hash is not None:
+            _require_sha256(record.envelope_hash, "artifact envelope_hash")
+            if artifact_envelope_hash(record) != record.envelope_hash:
+                raise MalformedRecordError(
+                    "schema-1 artifact envelope hash does not match its stored record")
+        if record.status in {"finalized", "reviewed", "rejected"} \
+                and (not record.reviewer or not record.reason or not record.reviewed_at):
+            raise MalformedRecordError(
+                f"stored {record.status} artifact lacks required review metadata")
+        return record
+
+    def _validate_artifact_context(self, record: ArtifactRecord) -> None:
+        self.get_project(record.project_id)
+        if record.material_id is not None:
+            # Use the basic read here, not ``get_material``: a material can link
+            # back to this artifact and full reference validation would recurse.
+            material = self._read_material_record(record.material_id)
+            if material.project_id != record.project_id:
+                raise WorkspaceStoreError("artifact material belongs to another project")
+        if record.related_run_id is not None:
+            run = self.get_run(record.related_run_id)
+            if run.project_id != record.project_id or run.material_id != record.material_id:
+                raise WorkspaceStoreError("artifact related run belongs to another context")
+
+    def _validate_artifact_lineage(
+        self,
+        record: ArtifactRecord,
+        records: Iterable[ArtifactRecord],
+    ) -> None:
+        lineage = sorted(
+            (item for item in records if item.logical_id == record.logical_id),
+            key=lambda item: item.revision,
+        )
+        if not lineage:
+            raise MalformedRecordError("artifact lineage is missing")
+        revisions = [item.revision for item in lineage]
+        if revisions != list(range(1, len(lineage) + 1)):
+            raise MalformedRecordError(
+                "artifact lineage has duplicate, missing, or branched revision numbers")
+        root = lineage[0]
+        if root.artifact_id != root.logical_id \
+                or root.previous_artifact_id is not None \
+                or root.previous_artifact_hash is not None:
+            raise MalformedRecordError("artifact lineage root identity is invalid")
+        for previous, current in zip(lineage, lineage[1:]):
+            if (current.project_id != root.project_id
+                    or current.material_id != root.material_id
+                    or current.record_type != root.record_type):
+                raise MalformedRecordError("artifact lineage changes durable context or type")
+            if current.previous_artifact_id != previous.artifact_id:
+                raise MalformedRecordError("artifact lineage branches or skips its previous revision")
+            if current.previous_artifact_hash != identity_hash(previous.to_dict()):
+                raise MalformedRecordError("artifact previous-revision hash does not match")
+
+    def _loaded_artifact_inventory(self) -> list[ArtifactRecord]:
+        records = [self._validate_loaded_artifact(record) for record in
+                   self._list_records("artifacts", ArtifactRecord, "artifact")]
+        for record in records:
+            self._validate_artifact_context(record)
+        return records
+
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord:
+        record = _record_from_dict(
+            ArtifactRecord,
+            self._read(self._record_path("artifacts", artifact_id), "artifact"),
+        )
+        record = self._validate_loaded_artifact(record)
+        self._validate_artifact_context(record)
+        # Loading the complete logical family detects a manually planted sibling
+        # revision or a broken intermediate link even when reopening history.
+        lineage = [self._validate_loaded_artifact(item) for item in
+                   self._list_records("artifacts", ArtifactRecord, "artifact")
+                   if item.logical_id == record.logical_id]
+        for item in lineage:
+            self._validate_artifact_context(item)
+        self._validate_artifact_lineage(record, lineage)
+        return record
+
+    def list_artifacts(
+        self,
+        *,
+        project_id: str | None = None,
+        material_id: str | None = None,
+        record_type: str | None = None,
+        status: str | None = None,
+        logical_id: str | None = None,
+    ) -> list[ArtifactRecord]:
+        if project_id is not None:
+            self.get_project(project_id)
+        if material_id is not None:
+            material = self.get_material(material_id)
+            if project_id is not None and material.project_id != project_id:
+                raise WorkspaceStoreError("material does not belong to the selected project")
+        kind = _artifact_type(record_type) if record_type is not None else None
+        lifecycle = _artifact_status(status) if status is not None else None
+        logical = self._validate_id(logical_id, ARTIFACT_PREFIX) if logical_id else None
+        records = self._loaded_artifact_inventory()
+        for record in records:
+            self._validate_artifact_lineage(record, records)
+        visible = [
+            record for record in records
+            if (project_id is None or record.project_id == project_id)
+            and (material_id is None or record.material_id == material_id)
+            and (kind is None or record.record_type == kind)
+            and (lifecycle is None or record.status == lifecycle)
+            and (logical is None or record.logical_id == logical)
+        ]
+        # Artifact history has a stronger ordering contract than generic record
+        # enumeration: every logical lineage is returned root-to-head. Timestamps
+        # have only one-second resolution and generated artifact IDs are random (or
+        # content-derived), so neither can safely break same-second revision ties.
+        return sorted(
+            visible,
+            key=lambda record: (record.logical_id, record.revision, record.artifact_id),
+        )
+
+    def update_artifact(
+        self,
+        artifact_id: str,
+        *,
+        expected_payload_hash: str | None = None,
+        expected_input_hash: str | None = None,
+        expected_status: str | None = None,
+        **changes,
+    ) -> ArtifactRecord:
+        """Update only an editable draft/review artifact; terminal states are immutable."""
+        record = self.get_artifact(artifact_id)
+        if record.status in IMMUTABLE_ARTIFACT_STATUSES:
+            raise ImmutableRecordError(
+                f"artifact {artifact_id} is {record.status}; create a new revision instead")
+        family = [item for item in self._loaded_artifact_inventory()
+                  if item.logical_id == record.logical_id]
+        latest = max(family, key=lambda item: item.revision)
+        if latest.artifact_id != record.artifact_id:
+            raise ImmutableRecordError(
+                "a historical artifact revision cannot be updated")
+        if expected_payload_hash is not None and record.payload_hash != expected_payload_hash:
+            raise WorkspaceStoreError("artifact payload changed since it was loaded")
+        if expected_input_hash is not None and record.input_hash != expected_input_hash:
+            raise WorkspaceStoreError("artifact input changed since it was loaded")
+        if expected_status is not None and record.status != expected_status:
+            raise WorkspaceStoreError("artifact lifecycle state changed since it was loaded")
+
+        allowed = {
+            "status", "input_snapshot", "payload", "source_identity", "reviewer", "reason",
+            "related_run_id", "provenance", "reviewed_at",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise MalformedRecordError(f"unsupported artifact fields: {sorted(unknown)}")
+        before = record.to_dict()
+        if "status" in changes:
+            record.status = _artifact_status(changes["status"])
+        if "input_snapshot" in changes:
+            record.input_snapshot = dict(changes["input_snapshot"] or {})
+            record.input_hash = identity_hash(record.input_snapshot)
+        if "payload" in changes:
+            record.payload = dict(changes["payload"] or {})
+            record.payload_hash = identity_hash(record.payload)
+        if "source_identity" in changes:
+            record.source_identity = dict(changes["source_identity"] or {})
+        if "reviewer" in changes:
+            record.reviewer = str(changes["reviewer"] or "").strip()
+        if "reason" in changes:
+            record.reason = str(changes["reason"] or "").strip()
+        if "provenance" in changes:
+            record.provenance = dict(changes["provenance"] or {})
+        if "reviewed_at" in changes:
+            record.reviewed_at = changes["reviewed_at"]
+        if "related_run_id" in changes:
+            related_run_id = changes["related_run_id"]
+            if related_run_id is not None:
+                run = self.get_run(related_run_id)
+                if run.project_id != record.project_id or run.material_id != record.material_id:
+                    raise WorkspaceStoreError("related run does not share artifact context")
+            record.related_run_id = related_run_id
+
+        if record.status in {"finalized", "reviewed", "rejected"}:
+            if not record.reviewer or not record.reason:
+                raise MalformedRecordError(
+                    f"{record.status} artifact requires reviewer/resolver and reason")
+            if not record.reviewed_at:
+                record.reviewed_at = _now()
+        if before != record.to_dict():
+            record.updated_at = _now()
+            # Reads never rewrite legacy records. A caller-authorized mutation,
+            # however, is a new persistence event and is written with the current
+            # integrity-bearing schema instead of extending schema 1 silently.
+            record.schema_version = SCHEMA_VERSION
+            record.envelope_hash = artifact_envelope_hash(record)
+            self._atomic_write(
+                self._record_path("artifacts", artifact_id), record.to_dict())
+        return record
+
+    def create_artifact_revision(
+        self,
+        artifact_id: str,
+        *,
+        status: str = "draft",
+        payload: dict | None = None,
+        input_snapshot: dict | None = None,
+        source_identity: dict | None = None,
+        creator: str = "",
+        reason: str = "",
+        provenance: dict | None = None,
+    ) -> ArtifactRecord:
+        """Create a linked revision; the previous immutable record is never rewritten."""
+        previous = self.get_artifact(artifact_id)
+        return self.create_artifact(
+            previous.project_id,
+            previous.material_id,
+            previous.record_type,
+            previous.input_snapshot if input_snapshot is None else input_snapshot,
+            status=status,
+            payload=previous.payload if payload is None else payload,
+            source_identity=previous.source_identity if source_identity is None else source_identity,
+            creator=creator,
+            reason=reason,
+            provenance=previous.provenance if provenance is None else provenance,
+            revision=previous.revision + 1,
+            previous_artifact_id=previous.artifact_id,
+            logical_id=previous.logical_id,
+        )
+
+    def link_artifact_to_material(self, artifact_id: str, *, evidence: bool = False) -> MaterialRecord:
+        record = self.get_artifact(artifact_id)
+        if record.material_id is None:
+            raise WorkspaceStoreError("project-scoped artifact has no material link")
+        material = self.get_material(record.material_id)
+        if material.project_id != record.project_id:
+            raise WorkspaceStoreError("artifact/material project binding is invalid")
+        field_name = "evidence_references" if evidence else "measurement_references"
+        references = list(getattr(material, field_name))
+        if artifact_id not in references:
+            references.append(artifact_id)
+            material = self.update_material(material.material_id, **{field_name: references})
+        return material
+
+    def unlink_artifact_from_material(self, artifact_id: str, *, evidence: bool = False) -> MaterialRecord:
+        record = self.get_artifact(artifact_id)
+        if record.material_id is None:
+            raise WorkspaceStoreError("project-scoped artifact has no material link")
+        material = self.get_material(record.material_id)
+        field_name = "evidence_references" if evidence else "measurement_references"
+        references = [item for item in getattr(material, field_name) if item != artifact_id]
+        return self.update_material(material.material_id, **{field_name: references})
+
     def create_run(self, project_id: str, material_id: str, machine_id: str,
                    input_snapshot: dict, *, status: str, output_type: str,
                    epistemic_type: str, result_data: dict | None = None,
@@ -448,6 +1111,8 @@ class WorkspaceStore:
             raise MalformedRecordError(f"unknown machine id: {machine_id!r}")
         snapshot = dict(input_snapshot or {})
         _canonical_json(snapshot)
+        output = dict(result_data or {})
+        result_hash = identity_hash(output)
         record = RunRecord(
             run_id=self._validate_id(run_id, RUN_PREFIX) if run_id else _new_id(RUN_PREFIX),
             project_id=project_id, material_id=material_id, machine_id=canonical_machine,
@@ -458,14 +1123,17 @@ class WorkspaceStore:
             material_snapshot_hash=material_identity_hash(material),
             status=str(status or "unknown"), output_type=str(output_type or "unspecified"),
             epistemic_type=str(epistemic_type or "unspecified"),
-            result_data=dict(result_data or {}), warnings=[str(item) for item in warnings],
+            result_data=output, warnings=[str(item) for item in warnings],
             validation_state=str(validation_state or "not_evaluated"),
             model_identity=dict(model_identity or {}),
             environment_identity=dict(environment_identity or {}),
             evidence_identity=[dict(item) for item in evidence_identity],
             result_location=str(result_location) if result_location else None,
             legacy_references=[dict(item) for item in legacy_references],
+            result_hash=result_hash,
         )
+        record.envelope_hash = run_envelope_hash(record)
+        self._validate_loaded_run(record)
         self._atomic_write(self._record_path("runs", record.run_id), record.to_dict(),
                            create_only=True)
         if record.run_id not in material.associated_run_ids:
@@ -473,9 +1141,105 @@ class WorkspaceStore:
                                  associated_run_ids=[*material.associated_run_ids, record.run_id])
         return record
 
+    def _validate_artifact_identity_shape(
+        self,
+        value: Any,
+        label: str,
+        *,
+        require_exact: bool = False,
+    ) -> None:
+        if not isinstance(value, dict):
+            raise MalformedRecordError(f"{label} must be an object")
+        if "artifact_id" in value:
+            self._validate_id(value["artifact_id"], ARTIFACT_PREFIX)
+            if "logical_id" in value:
+                self._validate_id(value["logical_id"], ARTIFACT_PREFIX)
+            if "record_type" in value:
+                _artifact_type(value["record_type"])
+            revision = value.get("revision")
+            if require_exact or revision is not None:
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                    raise MalformedRecordError(f"{label}.revision must be a positive integer")
+            for hash_name in ("input_hash", "payload_hash"):
+                if require_exact or hash_name in value:
+                    _require_sha256(value.get(hash_name), f"{label}.{hash_name}")
+
+    def _validate_loaded_run(self, record: RunRecord) -> RunRecord:
+        self._validate_id(record.run_id, RUN_PREFIX)
+        self._validate_id(record.project_id, PROJECT_PREFIX)
+        self._validate_id(record.material_id, MATERIAL_PREFIX)
+        self.get_project(record.project_id)
+        material = self._read_material_record(record.material_id)
+        if material.project_id != record.project_id:
+            raise WorkspaceStoreError("run material belongs to another project")
+        canonical_machine = virtual_lab_machines.canonical_machine_id(record.machine_id)
+        if canonical_machine is None or canonical_machine != record.machine_id:
+            raise MalformedRecordError("run machine_id is not a canonical machine identity")
+        for name in ("material_revision", "composition_revision", "assumption_revision"):
+            value = getattr(record, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise MalformedRecordError(f"run {name} must be a positive integer")
+        if not isinstance(record.input_snapshot, dict):
+            raise MalformedRecordError("run input_snapshot must be an object")
+        _require_sha256(record.input_hash, "run input_hash")
+        if identity_hash(record.input_snapshot) != record.input_hash:
+            raise MalformedRecordError("run input hash does not match its stored snapshot")
+        _require_sha256(record.material_snapshot_hash, "run material_snapshot_hash")
+        if not isinstance(record.result_data, dict):
+            raise MalformedRecordError("run result_data must be an object")
+        if record.result_hash is not None:
+            _require_sha256(record.result_hash, "run result_hash")
+            if identity_hash(record.result_data) != record.result_hash:
+                raise MalformedRecordError(
+                    "run result payload hash changed from its stored integrity digest")
+        if record.schema_version >= 2:
+            if record.result_hash is None:
+                raise MalformedRecordError(
+                    "Phase 3 run is missing its required result integrity hash")
+            _require_sha256(record.result_hash, "run result_hash")
+            _require_sha256(record.envelope_hash, "run envelope_hash")
+            if run_envelope_hash(record) != record.envelope_hash:
+                raise MalformedRecordError(
+                    "run envelope hash does not match its stored record")
+        elif record.envelope_hash is not None:
+            _require_sha256(record.envelope_hash, "run envelope_hash")
+            if run_envelope_hash(record) != record.envelope_hash:
+                raise MalformedRecordError(
+                    "schema-1 run envelope hash does not match its stored record")
+        for name in ("model_identity", "environment_identity"):
+            if not isinstance(getattr(record, name), dict):
+                raise MalformedRecordError(f"run {name} must be an object")
+        for name in ("evidence_identity", "legacy_references"):
+            values = getattr(record, name)
+            if not isinstance(values, list) or any(not isinstance(item, dict) for item in values):
+                raise MalformedRecordError(f"run {name} must be a list of objects")
+            for index, item in enumerate(values):
+                self._validate_artifact_identity_shape(item, f"run {name}[{index}]")
+        if not isinstance(record.warnings, list) \
+                or any(not isinstance(item, str) for item in record.warnings):
+            raise MalformedRecordError("run warnings must be a list of strings")
+        if record.result_location is not None and not isinstance(record.result_location, str):
+            raise MalformedRecordError("run result_location must be a string or null")
+        for name in ("status", "output_type", "epistemic_type", "validation_state", "created_at"):
+            if not isinstance(getattr(record, name), str) or not getattr(record, name):
+                raise MalformedRecordError(f"run {name} must be a non-empty string")
+        dependencies = record.input_snapshot.get("artifact_identities", [])
+        if not isinstance(dependencies, list):
+            raise MalformedRecordError("run artifact_identities must be a list")
+        if dependencies and record.result_hash is None:
+            raise MalformedRecordError(
+                "Phase 3 run is missing its required result integrity hash")
+        for index, dependency in enumerate(dependencies):
+            self._validate_artifact_identity_shape(
+                dependency, f"run input artifact_identities[{index}]", require_exact=True)
+        return record
+
     def get_run(self, run_id: str) -> RunRecord:
-        return _record_from_dict(RunRecord,
-                                 self._read(self._record_path("runs", run_id), "run"))
+        record = _record_from_dict(
+            RunRecord,
+            self._read(self._record_path("runs", run_id), "run"),
+        )
+        return self._validate_loaded_run(record)
 
     def list_runs(self, *, project_id: str | None = None, material_id: str | None = None,
                   machine_id: str | None = None) -> list[RunRecord]:
@@ -488,7 +1252,8 @@ class WorkspaceStore:
             canonical_machine = virtual_lab_machines.canonical_machine_id(machine_id)
             if canonical_machine is None:
                 raise MalformedRecordError(f"unknown machine id: {machine_id!r}")
-        records = self._list_records("runs", RunRecord, "run")
+        records = [self._validate_loaded_run(record) for record in
+                   self._list_records("runs", RunRecord, "run")]
         return [record for record in records
                 if (project_id is None or record.project_id == project_id)
                 and (material_id is None or record.material_id == material_id)
@@ -511,6 +1276,32 @@ class WorkspaceStore:
             reasons.append("assumption/process revision changed")
         if material_identity_hash(material) != record.material_snapshot_hash:
             reasons.append("material identity hash changed")
+        artifact_identities = record.input_snapshot.get("artifact_identities", []) \
+            if isinstance(record.input_snapshot, dict) else []
+        if artifact_identities and not isinstance(artifact_identities, list):
+            reasons.append("artifact dependency identity is malformed")
+            artifact_identities = []
+        for dependency in artifact_identities:
+            if not isinstance(dependency, dict):
+                reasons.append("artifact dependency identity is malformed")
+                continue
+            artifact_id = dependency.get("artifact_id")
+            try:
+                artifact = self.get_artifact(artifact_id)
+            except WorkspaceStoreError:
+                reasons.append(f"artifact dependency is missing: {artifact_id}")
+                continue
+            if artifact.project_id != record.project_id or artifact.material_id != record.material_id:
+                reasons.append(f"artifact dependency context changed: {artifact_id}")
+            if dependency.get("revision") is not None \
+                    and dependency.get("revision") != artifact.revision:
+                reasons.append(f"artifact revision changed: {artifact_id}")
+            if dependency.get("payload_hash") \
+                    and dependency.get("payload_hash") != artifact.payload_hash:
+                reasons.append(f"artifact payload changed: {artifact_id}")
+            if dependency.get("input_hash") \
+                    and dependency.get("input_hash") != artifact.input_hash:
+                reasons.append(f"artifact input changed: {artifact_id}")
         return bool(reasons), reasons
 
     def current_runs(self, *, project_id: str, material_id: str) -> list[RunRecord]:
@@ -576,6 +1367,7 @@ class WorkspaceStore:
             "projects": len(self.list_projects(include_archived=True)),
             "materials": len(self.list_materials()),
             "runs": len(self.list_runs()),
+            "artifacts": len(self.list_artifacts()),
             "active_project_id": context.get("active_project_id"),
             "active_material_id": context.get("active_material_id"),
             "active_run_id": context.get("active_run_id"),
