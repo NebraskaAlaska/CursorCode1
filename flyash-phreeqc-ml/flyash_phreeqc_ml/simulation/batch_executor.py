@@ -112,18 +112,21 @@ class BatchResult:
 # --------------------------------------------------------------------------- #
 # Run a sweep (explicit; never automatic)
 # --------------------------------------------------------------------------- #
-def run_batch(previews, *, max_scenarios: int = DEFAULT_MAX_SCENARIOS, exe: str | None = None,
+def run_batch(previews, *, confirmations=None,
+              max_scenarios: int = DEFAULT_MAX_SCENARIOS, exe: str | None = None,
               database: str | None = None, timeout: float | None = None,
               on_progress=None) -> BatchResult:
     """Run each preview through the safe executor; collect a structured batch result.
 
     Caps the run at ``max_scenarios`` (excess previews are dropped with ``truncated=True``).
     One scenario failing never stops the batch — each per-scenario outcome is a structured
-    status (``success`` / ``failed`` / ``timeout`` / ``phreeqc_missing``; ``parse_failed`` is
-    captured in the parsed status). ``on_progress(i, total, scenario_id, status)`` is called
-    after each scenario when given. Never raises.
+    status (``success`` / ``not_runnable`` / ``failed`` / ``timeout`` /
+    ``phreeqc_missing``; ``parse_failed`` is captured in the parsed status). A matching explicit
+    confirmation is required for every preview. ``on_progress(i, total, scenario_id, status)`` is
+    called after each scenario when given. Never raises.
     """
     previews = list(previews or [])
+    confirmations = list(confirmations or [])
     requested = len(previews)
     to_run = previews[:max(0, int(max_scenarios))]
     truncated = requested > len(to_run)
@@ -133,7 +136,9 @@ def run_batch(previews, *, max_scenarios: int = DEFAULT_MAX_SCENARIOS, exe: str 
     for i, pv in enumerate(to_run, start=1):
         sid = getattr(pv, "scenario_id", f"SIM-{i:03d}")
         try:
-            execution = _exec.execute_preview(pv, exe=exe, database=database, timeout=timeout)
+            confirmation = confirmations[i - 1] if i <= len(confirmations) else None
+            execution = _exec.execute_preview(
+                pv, confirmation=confirmation, exe=exe, database=database, timeout=timeout)
             parsed = (_exec.parse_outputs(execution)
                       if execution.status == _exec.STATUS_SUCCESS else None)
         except Exception as exc:                          # noqa: BLE001 — never stop the batch

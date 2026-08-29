@@ -29,6 +29,7 @@ import pandas as pd
 from . import (__version__, attribution, audit, calculations, config, import_mapping,
                mapping_table, mass_balance, profiles, replicates, run_manager, scenarios)
 from .compare import inclusion as _inc
+from .instruments import icp_processor as icp_qc
 from .ml import residual_stats
 from .viz import compare_plots, measured_overview
 
@@ -251,8 +252,36 @@ def _residuals_frame(comparison_df: pd.DataFrame, profile) -> pd.DataFrame:
     for var, (mcol, pcol) in profile.comparison_variable_spec.items():
         rcol = _residual_col(var)
         cols += [c for c in (mcol, pcol, rcol) if c in comparison_df.columns]
+    icp_elements = [
+        variable.removesuffix("_mM")
+        for variable in profile.comparison_variable_spec
+        if variable.endswith("_mM")
+    ]
+    for element in icp_elements:
+        cols += [
+            c for c in (
+                f"residual_{element}_validation_eligible",
+                f"residual_{element}_qc_status",
+                f"residual_{element}_qc_codes",
+                f"residual_{element}_qc_reasons",
+            ) if c in comparison_df.columns
+        ]
     cols = list(dict.fromkeys(c for c in cols if c in comparison_df.columns))
-    return comparison_df[cols].copy() if cols else pd.DataFrame()
+    out = comparison_df[cols].copy() if cols else pd.DataFrame()
+    if out.empty:
+        return out
+    for element in icp_elements:
+        residual_column = f"residual_{element}"
+        if residual_column not in out.columns:
+            continue
+        decisions = icp_qc.serialized_residual_eligibility_decisions(comparison_df, element)
+        out[f"residual_{element}_serialized_qc_state"] = decisions.map(
+            lambda decision: decision.evidence_state)
+        out[f"residual_{element}_serialized_qc_code"] = decisions.map(
+            lambda decision: decision.qc_code)
+        out[f"residual_{element}_serialized_qc_reason"] = decisions.map(
+            lambda decision: decision.qc_reason)
+    return out
 
 
 def _predictions_used(mapping, manifest, comparison_df) -> pd.DataFrame:

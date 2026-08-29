@@ -250,7 +250,8 @@ def _render_train(run) -> None:
 
 def _do_train(run, rows, target, model_type, *, demo, exploratory) -> None:
     try:
-        model = train.train_model(rows, target=target, model_type=model_type, demo=demo)
+        model = train.train_model(rows, target=target, model_type=model_type, demo=demo,
+                                  exploratory=exploratory)
     except train.InsufficientTrainingDataError as exc:
         st.error(exc.message())
         return
@@ -284,7 +285,8 @@ def _render_last_metrics(run) -> None:
     if model is None:
         return
     with st.container(border=True):
-        status = "danger" if model.is_demo else "success"
+        status = "danger" if (model.is_demo or model.is_legacy_unknown) else (
+            "warning" if model.is_exploratory else "success")
         app_ui.render_status_badge(model_schema.VALIDATION_LABELS.get(model.validation_status,
                                                                       model.validation_status),
                                    status)
@@ -298,6 +300,11 @@ def _render_last_metrics(run) -> None:
         ])
         if model.is_demo:
             st.error("⚠️ This demo model is for workflow testing only — not validated, not real.")
+        elif model.is_exploratory:
+            st.warning("Exploratory model — training admitted rows outside the approved default "
+                       "eligibility gate. Do not present it as an approved-data model.")
+        elif model.is_legacy_unknown:
+            st.error("Legacy model — training-data eligibility status is unknown.")
         else:
             st.caption("Experimental surrogate — cross-validated on the training rows, **not** "
                        "validated against measured experiments.")
@@ -330,8 +337,13 @@ def _available_models(run) -> dict:
     if session_model is not None:
         out[f"⟳ current — {session_model.display_label()}"] = ("session", None)
     for rec in _registry(run).list_models():
-        demo = rec.get("validation_status") == model_schema.VALIDATION_DEMO
-        tag = " · DEMO" if demo else ""
+        training_status = rec.get("training_data_status")
+        demo = (rec.get("validation_status") == model_schema.VALIDATION_DEMO
+                or training_status == model_schema.TRAINING_DATA_SYNTHETIC_DEMO)
+        tag = (" · DEMO" if demo else " · EXPLORATORY"
+               if training_status == model_schema.TRAINING_DATA_EXPLORATORY
+               else " · LEGACY/UNKNOWN"
+               if training_status == model_schema.TRAINING_DATA_LEGACY_UNKNOWN else "")
         out[f"{rec.get('name')}{tag}"] = ("registry", rec.get("name"))
     return out
 
@@ -387,9 +399,14 @@ def _render_prediction(result) -> None:
             app_ui.render_warning_panel("No prediction", result.refusal_reason or "Cannot predict.",
                                         level="warning")
             return
-        status = "danger" if result.is_demo else "warning"
+        status = "danger" if (result.is_demo or result.training_data_status
+                              == model_schema.TRAINING_DATA_LEGACY_UNKNOWN) else "warning"
         app_ui.render_status_badge(
-            "DEMO — not real" if result.is_demo else "Experimental — not validated", status)
+            ("DEMO — not real" if result.is_demo else "EXPLORATORY — not approved"
+             if result.training_data_status == model_schema.TRAINING_DATA_EXPLORATORY
+             else "LEGACY — training status unknown"
+             if result.training_data_status == model_schema.TRAINING_DATA_LEGACY_UNKNOWN
+             else "Experimental — approved training data, not validated"), status)
         st.markdown(f"### {result.headline()}")
         if result.interval_text():
             st.caption(f"Approximate 95% range: **{result.interval_text()}** "
@@ -411,6 +428,7 @@ def _render_saved_models(run) -> None:
         return
     table = [{"name": r.get("name"), "target": r.get("target"),
               "status": r.get("validation_status"), "type": r.get("model_type"),
+              "training data": r.get("training_data_status"),
               "rows": r.get("n_train"), "MAE": (r.get("metrics") or {}).get("MAE"),
               "R2": (r.get("metrics") or {}).get("R2"), "date": r.get("date")}
              for r in records]

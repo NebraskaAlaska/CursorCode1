@@ -19,10 +19,12 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from ..config import RESIDUAL_ELEMENTS  # noqa: E402
 from .. import replicates  # noqa: E402  (mapping-status constants)
+from ..instruments import icp_processor as icp_qc  # noqa: E402
 
 # (measured_col, phreeqc_col, residual_col, nice label)
 _ANALYTES = [(f"{el}_mM", f"phreeqc_{el}_mM", f"residual_{el}", f"{el} (mM)")
@@ -46,11 +48,26 @@ def _style_for(status) -> dict:
     return _STATUS_STYLE.get(status, _DEFAULT_STYLE)
 
 
+def _pair_mask(comparison: pd.DataFrame, measured_col: str, phreeqc_col: str) -> pd.Series:
+    """Finite pair mask, additionally requiring authoritative ICP residual eligibility."""
+    measured = pd.to_numeric(comparison[measured_col], errors="coerce")
+    predicted = pd.to_numeric(comparison[phreeqc_col], errors="coerce")
+    mask = pd.Series(np.isfinite(measured) & np.isfinite(predicted), index=comparison.index)
+    if measured_col.endswith("_mM"):
+        element = measured_col.removesuffix("_mM")
+        mask &= icp_qc.serialized_residual_eligibility_mask(comparison, element)
+        residual_col = f"residual_{element}"
+        if residual_col in comparison.columns:
+            residual = pd.to_numeric(comparison[residual_col], errors="coerce")
+            mask &= np.isfinite(residual)
+    return mask
+
+
 def _has_pairs(comparison: pd.DataFrame, measured_col: str, phreeqc_col: str) -> bool:
     """True if at least one row has both a measured and a PHREEQC value."""
     if measured_col not in comparison.columns or phreeqc_col not in comparison.columns:
         return False
-    return bool((comparison[measured_col].notna() & comparison[phreeqc_col].notna()).any())
+    return bool(_pair_mask(comparison, measured_col, phreeqc_col).any())
 
 
 def comparison_scatter_figure(plotted: pd.DataFrame, variable: str):
@@ -166,12 +183,14 @@ def make_comparison_plots(
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 3.8 * nrows), squeeze=False)
     for idx, (mcol, pcol, _rcol, label) in enumerate(plottable):
         ax = axes[idx // ncols][idx % ncols]
-        m = comparison[mcol].astype(float)
-        p = comparison[pcol].astype(float)
+        pair_mask = _pair_mask(comparison, mcol, pcol)
+        m = pd.to_numeric(comparison.loc[pair_mask, mcol], errors="coerce")
+        p = pd.to_numeric(comparison.loc[pair_mask, pcol], errors="coerce")
         if statuses:
             seen: set = set()
-            for status in dict.fromkeys(row_status):  # stable unique order
-                mask = [rs == status for rs in row_status]
+            eligible_status = [s for s, keep in zip(row_status, pair_mask.tolist()) if keep]
+            for status in dict.fromkeys(eligible_status):  # stable unique order
+                mask = [rs == status for rs in eligible_status]
                 style = _style_for(status)
                 lab = style["label"] if style["label"] not in seen else None
                 seen.add(style["label"])
@@ -201,16 +220,22 @@ def make_comparison_plots(
     written.append(out)
 
     # --- 2) Residuals per sample ------------------------------------------ #
-    res_cols = [(rcol, label) for (_m, _p, rcol, label) in plottable
-                if rcol in comparison.columns]
-    if res_cols:
-        n = len(res_cols)
+    residual_specs = [(mcol, pcol, rcol, label)
+                      for (mcol, pcol, rcol, label) in plottable
+                      if rcol in comparison.columns]
+    if residual_specs:
+        n = len(residual_specs)
         fig, axes = plt.subplots(n, 1, figsize=(max(6, len(labels) * 0.5), 2.0 * n),
                                  squeeze=False)
-        for idx, (rcol, label) in enumerate(res_cols):
+        for idx, (mcol, pcol, rcol, label) in enumerate(residual_specs):
             ax = axes[idx][0]
-            vals = comparison[rcol].astype(float)
-            ax.bar(range(len(vals)), vals.fillna(0).values, color="#6ACC64")
+            vals = pd.to_numeric(comparison[rcol], errors="coerce")
+            # The residual-bar figure consumes the same authoritative pair mask as
+            # the scatter.  A finite legacy/forged residual must not leak merely
+            # because another row made this analyte plottable.
+            valid = _pair_mask(comparison, mcol, pcol) & np.isfinite(vals)
+            ax.bar([i for i, keep in enumerate(valid) if keep], vals[valid].values,
+                   color="#6ACC64")
             ax.axhline(0, color="black", linewidth=0.8)
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=90, fontsize=6)

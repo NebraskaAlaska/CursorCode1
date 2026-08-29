@@ -16,6 +16,7 @@ import pytest
 from flyash_phreeqc_ml.materials import profile_schema as MS
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder as B
 from flyash_phreeqc_ml.simulation import phreeqc_executor as E
+from flyash_phreeqc_ml.simulation import phreeqc_run_contract as C
 from flyash_phreeqc_ml.simulation import source_terms as ST
 from flyash_phreeqc_ml.simulation.scenario_schema import SimulationScenario
 
@@ -140,11 +141,12 @@ def test_measured_liquid_mode():
 # --------------------------------------------------------------------------- #
 # Builder integration
 # --------------------------------------------------------------------------- #
-def test_no_model_preserves_prior_behaviour():
+def test_no_model_preserves_preview_but_is_not_run_ready():
     pv = B.build_phreeqc_input_preview(_scenario(), material_profile=_profile())
     assert pv.includes_source_terms is False
     assert "REACTION" not in pv.phreeqc_input_text
-    assert pv.status == B.STATUS_READY                       # NaOH + usable assay
+    assert pv.status == B.STATUS_NEEDS_SOURCE_TERM
+    assert pv.phreeqc_input_text                              # preview remains available
 
 
 def test_release_model_adds_reaction_block_and_comments():
@@ -199,7 +201,12 @@ def test_parsed_output_sees_released_elements_mocked(monkeypatch, tmp_path):
 def test_real_phreeqc_release_gives_nonzero_elements(tmp_path):  # pragma: no cover - env
     pv = B.build_phreeqc_input_preview(_scenario(), material_profile=_profile(),
                                        dissolution_model=ST.global_release(0.01))
-    result = E.execute_preview(pv, workdir=tmp_path / "ws")
+    reviewed = C.review_preview(pv)
+    availability = E.check_availability()
+    assert availability.environment_identity is not None
+    result = E.execute_preview(
+        pv, confirmation=C.confirm_reviewed(reviewed, availability.environment_identity),
+        workdir=tmp_path / "ws")
     assert result.status == E.STATUS_SUCCESS
     parsed = E.parse_outputs(result)
     for el in ("Ca", "Si", "Al", "Fe"):

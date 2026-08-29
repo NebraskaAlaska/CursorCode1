@@ -24,7 +24,8 @@ from flyash_phreeqc_ml.compare import inclusion as compare_inclusion  # noqa: E4
 from flyash_phreeqc_ml.ml import residual_stats  # noqa: E402  (descriptive bias stats)
 from flyash_phreeqc_ml.viz import compare_plots  # noqa: E402
 
-from ui.common import _png_provenance_caption, _render_next_step
+from ui.common import (_png_provenance_caption, _render_legacy_icp_qc_warning,
+                       _render_next_step)
 from ui.state import MODEL_NAME, _COMPARISON_FIGURES, _FIGURE_CAPTIONS, _ICP_MEASURED_COLS, _PROJECT_ROOT, _manifest_if_available, _read_csv, _rel, _run_comparison_path, _scenario_manifest
 
 # --------------------------------------------------------------------------- #
@@ -124,10 +125,18 @@ _COMPARISON_PREVIEW_SPEC = [
     ("final_pH", "measured_final_pH"),
     ("phreeqc_pH", "phreeqc_pH"),
     ("residual_pH", "residual_pH"),
-    ("Ca_mM", "measured_Ca_mM"), ("phreeqc_Ca_mM", "phreeqc_Ca_mM"), ("residual_Ca", "residual_Ca"),
-    ("Si_mM", "measured_Si_mM"), ("phreeqc_Si_mM", "phreeqc_Si_mM"), ("residual_Si", "residual_Si"),
-    ("Al_mM", "measured_Al_mM"), ("phreeqc_Al_mM", "phreeqc_Al_mM"), ("residual_Al", "residual_Al"),
-    ("Fe_mM", "measured_Fe_mM"), ("phreeqc_Fe_mM", "phreeqc_Fe_mM"), ("residual_Fe", "residual_Fe"),
+    ("Ca_mM", "measured_Ca_mM"), ("Ca_mM_qc_status", "Ca_QC"),
+    ("phreeqc_Ca_mM", "phreeqc_Ca_mM"), ("residual_Ca", "residual_Ca"),
+    ("residual_Ca_validation_eligible", "Ca_residual_eligible"),
+    ("Si_mM", "measured_Si_mM"), ("Si_mM_qc_status", "Si_QC"),
+    ("phreeqc_Si_mM", "phreeqc_Si_mM"), ("residual_Si", "residual_Si"),
+    ("residual_Si_validation_eligible", "Si_residual_eligible"),
+    ("Al_mM", "measured_Al_mM"), ("Al_mM_qc_status", "Al_QC"),
+    ("phreeqc_Al_mM", "phreeqc_Al_mM"), ("residual_Al", "residual_Al"),
+    ("residual_Al_validation_eligible", "Al_residual_eligible"),
+    ("Fe_mM", "measured_Fe_mM"), ("Fe_mM_qc_status", "Fe_QC"),
+    ("phreeqc_Fe_mM", "phreeqc_Fe_mM"), ("residual_Fe", "residual_Fe"),
+    ("residual_Fe_validation_eligible", "Fe_residual_eligible"),
 ]
 
 def _looks_like_test(comp: pd.DataFrame) -> bool:
@@ -161,7 +170,10 @@ def _render_stale_results_warning(run_name: str) -> None:
 def _render_results_summary(run_name: str | None) -> None:
     """Honest, presentation-friendly summary of this run's comparison."""
     if not run_name:
-        st.info("Select a lab run in the **Experiment runs** sidebar (left) to see its results.")
+        st.info(
+            "Select a legacy lab run from the **Legacy experiment run** selector on "
+            "**Projects** to see its results."
+        )
         return
     comp_path = _run_comparison_path(run_name)
     if comp_path is None:
@@ -179,6 +191,7 @@ def _render_results_summary(run_name: str | None) -> None:
     _render_stale_results_warning(run_name)
 
     comp = _read_csv(str(comp_path), comp_path.stat().st_mtime)
+    _render_legacy_icp_qc_warning(comp)
     n_rows = len(comp)
     if "phreeqc_record_key" in comp.columns:
         mapped = int(comp["phreeqc_record_key"].apply(
@@ -320,8 +333,8 @@ def _render_run_workflow_tab(selected_run: str | None) -> None:
     )
     if not selected_run:
         st.info(
-            "Select or create a run in the **Experiment runs** sidebar (left) first, then "
-            "this button will run the workflow for it."
+            "Select a legacy run from the **Legacy experiment run** selector on "
+            "**Projects** first, then this button will run the workflow for it."
         )
     else:
         rt = run_manager.load_run_config(selected_run).get("run_type")

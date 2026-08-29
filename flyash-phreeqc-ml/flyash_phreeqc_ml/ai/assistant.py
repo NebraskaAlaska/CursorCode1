@@ -37,6 +37,7 @@ import pandas as pd
 
 from .. import config, mapping_table, profiles, replicates, run_manager, scenarios
 from ..compare import inclusion
+from ..instruments import icp_processor as icp_qc
 from ..ml import residual_stats
 from . import import_assist
 from .import_assist import _message_text, _model, _resolve_client, is_enabled  # reuse
@@ -298,8 +299,23 @@ def get_comparison_rows(ctx: RunContext, limit: int = DEFAULT_ROWS) -> dict:
              "final_pH", "phreeqc_pH", "residual_pH"]
             + [f"{el}_mM" for el in elements]
             + [f"phreeqc_{el}_mM" for el in elements]
-            + [f"residual_{el}" for el in elements])
-    df = ctx.comparison_df
+            + [f"residual_{el}" for el in elements]
+            + [f"residual_{el}_validation_eligible" for el in elements]
+            + [f"residual_{el}_qc_status" for el in elements]
+            + [f"residual_{el}_qc_codes" for el in elements]
+            + [f"residual_{el}_qc_reasons" for el in elements]
+            + [f"residual_{el}_serialized_qc_state" for el in elements]
+            + [f"residual_{el}_serialized_qc_reason" for el in elements])
+    df = ctx.comparison_df.copy() if ctx.comparison_df is not None else None
+    if df is not None:
+        for element in elements:
+            if f"residual_{element}" not in df.columns:
+                continue
+            decisions = icp_qc.serialized_residual_eligibility_decisions(df, element)
+            df[f"residual_{element}_serialized_qc_state"] = decisions.map(
+                lambda decision: decision.evidence_state)
+            df[f"residual_{element}_serialized_qc_reason"] = decisions.map(
+                lambda decision: decision.qc_reason)
     return {
         "source": "get_comparison_rows",
         "n_total": int(len(df)),

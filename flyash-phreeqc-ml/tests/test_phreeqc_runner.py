@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -205,18 +206,30 @@ def _fake_exe_db(tmp_path):
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     db = tmp_path / "cemdata.dat"
-    db.write_text("# fake db")
+    db.write_text(
+        "PHASES\nCal\n\tCaCO3 = CO3-2 + Ca+2\n"
+        "Portlandite\n\tCa(OH)2 = Ca+2 + 2 OH-\n")
     return str(exe), str(db)
+
+
+def _confirmation(generated_input, exe, database):
+    return pr.confirm_reviewed_input(
+        pr.review_input(generated_input), exe=exe, database=database)
+
+
+def _valid_input(basename="gen"):
+    return pr.build_design_input(0.5, 5.0, 25.0, "atm_CO2", sample_id=basename)
 
 
 def test_run_not_configured_without_database(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", None)
     with pytest.raises(pr.PhreeqcNotConfiguredError):
-        pr.run("INPUT", tmp_path, database=None, exe=str(tmp_path / "phreeqc_missing"))
+        pr.run(_valid_input(), tmp_path, database=None, exe=str(tmp_path / "phreeqc_missing"))
 
 
 def test_run_failure_propagates_phreeqc_error(monkeypatch, tmp_path):
     exe, db = _fake_exe_db(tmp_path)
+    generated = _valid_input("bad")
 
     def fake_run(cmd, **kw):
         Path(cmd[2]).write_text("ERROR: simulation did not converge\n")
@@ -224,19 +237,22 @@ def test_run_failure_propagates_phreeqc_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pr.subprocess, "run", fake_run)
     with pytest.raises(pr.PhreeqcRunError) as exc:
-        pr.run("INPUT", tmp_path, exe=exe, database=db, basename="bad")
+        pr.run(generated, tmp_path, exe=exe, database=db, basename="bad",
+               confirmation=_confirmation(generated, exe, db))
     assert "did not converge" in str(exc.value)
 
 
 def test_run_timeout_raises(monkeypatch, tmp_path):
     exe, db = _fake_exe_db(tmp_path)
+    generated = _valid_input("slow")
 
     def fake_run(cmd, **kw):
         raise pr.subprocess.TimeoutExpired(cmd, kw.get("timeout", 1))
 
     monkeypatch.setattr(pr.subprocess, "run", fake_run)
     with pytest.raises(pr.PhreeqcRunError) as exc:
-        pr.run("INPUT", tmp_path, exe=exe, database=db, timeout=1, basename="slow")
+        pr.run(generated, tmp_path, exe=exe, database=db, timeout=1, basename="slow",
+               confirmation=_confirmation(generated, exe, db))
     assert "timed out" in str(exc.value).lower()
 
 
@@ -262,6 +278,130 @@ def test_cemdata_compatible_false_without_a_real_file(tmp_path):
     assert not pr.is_cemdata_compatible(database=str(tmp_path / "missing.dat"))
 
 
+def test_arbitrary_text_with_every_old_marker_is_rejected_without_workspace(monkeypatch,
+                                                                            tmp_path):
+    raw = ("# Generated PHREEQC input\nSOLUTION 1\nNa 1\nSi 1 # ASSUMED stock\n"
+           "Al 1\nCa 1\nEQUILIBRIUM_PHASES 1\nEND\n")
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(pr.PhreeqcRunError):
+        pr.run(raw, tmp_path / "ws")
+    with pytest.raises(Exception):
+        pr.review_input(raw)
+    assert calls == [] and not (tmp_path / "ws").exists()
+
+
+def test_modified_builder_output_is_rejected_without_workspace(monkeypatch, tmp_path):
+    generated = _valid_input("modified")
+    modified = replace(
+        generated,
+        pqi_text=generated.pqi_text + "EQUILIBRIUM_PHASES 2\n    Gypsum 0 0\n")
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(Exception):
+        pr.review_input(modified)
+    with pytest.raises(pr.PhreeqcRunError):
+        pr.run(modified, tmp_path / "ws")
+    assert calls == [] and not (tmp_path / "ws").exists()
+
+
+def test_real_deterministic_builder_output_is_reviewable_and_environment_bound(tmp_path):
+    generated = _valid_input("valid")
+    exe, database = _fake_exe_db(tmp_path)
+    reviewed = pr.review_input(generated)
+    confirmation = pr.confirm_reviewed_input(reviewed, exe=exe, database=database)
+    assert reviewed.phreeqc_input_text == generated.pqi_text
+    assert reviewed.execution_basename == generated.basename
+    assert confirmation.execution_environment.database.resolved_path == str(Path(database).resolve())
+
+
+def test_expected_environment_cannot_rebind_after_same_path_replacement(tmp_path):
+    generated = _valid_input("expected-environment")
+    exe, database = _fake_exe_db(tmp_path)
+    reviewed = pr.review_input(generated)
+    from flyash_phreeqc_ml.simulation import phreeqc_executor
+    expected = phreeqc_executor.check_availability(
+        exe=exe, database=database).environment_identity
+    assert expected is not None
+
+    Path(database).write_text(
+        "PHASES\nCal\n changed reaction\nPortlandite\n changed reaction\n# replacement\n")
+    with pytest.raises(pr.PhreeqcNotConfiguredError) as exc:
+        pr.confirm_reviewed_input(reviewed, expected_environment=expected)
+    assert "changed after review" in str(exc.value).lower()
+
+
+def test_mismatched_basename_or_scenario_identity_rejected_without_workspace(monkeypatch,
+                                                                             tmp_path):
+    generated = _valid_input("expected")
+    exe, database = _fake_exe_db(tmp_path)
+    confirmation = _confirmation(generated, exe, database)
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(pr.PhreeqcRunError):
+        pr.run(generated, tmp_path / "ws", basename="different", exe=exe,
+               database=database, confirmation=confirmation)
+    from flyash_phreeqc_ml.simulation import phreeqc_run_contract as contract
+    with pytest.raises(contract.RunContractError):
+        contract.generated_text_preview(generated, scenario_id="different-scenario")
+    with pytest.raises(contract.RunContractError):
+        contract.generated_text_preview(replace(generated, scenario_id="different-scenario"))
+    assert calls == [] and not (tmp_path / "ws").exists()
+
+
+def test_incompatible_legacy_database_blocks_before_workspace_or_subprocess(monkeypatch,
+                                                                            tmp_path):
+    generated = _valid_input("incompatible")
+    exe, _ = _fake_exe_db(tmp_path)
+    database = tmp_path / "phreeqc.dat"
+    database.write_text(
+        "PHASES\nCalcite\n\tCaCO3 = CO3-2 + Ca+2\n"
+        "Portlandite\n\tCa(OH)2 = Ca+2 + 2 OH-\n")
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(pr.PhreeqcNotConfiguredError) as exc:
+        pr.confirm_reviewed_input(
+            pr.review_input(generated), exe=exe, database=str(database))
+    assert "cemdata" in str(exc.value).lower()
+    assert calls == [] and not (tmp_path / "ws").exists()
+
+
+def test_run_uses_exact_verified_absolute_paths_not_workdir_decoys(monkeypatch, tmp_path):
+    configured_dir = tmp_path / "configured"
+    configured_dir.mkdir()
+    exe, database = _fake_exe_db(configured_dir)
+    workdir = tmp_path / "different-cwd"
+    workdir.mkdir()
+    (workdir / "phreeqc").write_text("decoy executable")
+    (workdir / "cemdata.dat").write_text("decoy database")
+    monkeypatch.chdir(configured_dir)
+
+    generated = _valid_input("resolved-paths")
+    reviewed = pr.review_input(generated)
+    confirmation = pr.confirm_reviewed_input(
+        reviewed, exe="phreeqc", database="cemdata.dat")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        Path(cmd[2]).write_text("successful mocked PHREEQC output\n")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    out = pr.run(
+        generated, workdir, exe="phreeqc", database="cemdata.dat",
+        confirmation=confirmation)
+
+    assert out.exists() and len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[0] == str(Path(exe).resolve())
+    assert command[3] == str(Path(database).resolve())
+    assert Path(command[0]).is_absolute() and Path(command[3]).is_absolute()
+    assert command[0] != str(workdir / "phreeqc")
+    assert command[3] != str(workdir / "cemdata.dat")
+    assert kwargs["cwd"] == str(workdir)
+
+
 # --------------------------------------------------------------------------- #
 # Optional integration test (real PHREEQC) — runs only with a CEMDATA18-compatible
 # database, because the generated input uses CEMDATA phase names (e.g. ``Cal``).
@@ -270,10 +410,24 @@ def test_cemdata_compatible_false_without_a_real_file(tmp_path):
                     reason="no real PHREEQC binary + CEMDATA18-compatible PHREEQC_DATABASE "
                            "configured (the runner's input needs CEMDATA phases like 'Cal')")
 def test_integration_real_phreeqc(tmp_path):  # pragma: no cover - env-dependent
-    text, _ = pr.build_single_input(0.5, 5.0, 25.0, "atm_CO2", ph=13.1)
-    out = pr.run(text, tmp_path, basename="it")
+    generated = pr.build_design_input(0.5, 5.0, 25.0, "atm_CO2", sample_id="it")
+    reviewed = pr.review_input(generated)
+    confirmation = pr.confirm_reviewed_input(reviewed)
+    out = pr.run(generated, tmp_path, basename="it", confirmation=confirmation)
     keys = pr.ingest(out, condition_key="it_condition",
                      results_path=tmp_path / "results.csv",
                      metadata={"NaOH_M": 0.5, "liquid_solid_ratio": 5.0,
                                "CO2_condition": "atm_CO2", "temperature_C": 25.0})
     assert keys
+
+
+def test_configured_runner_requires_reviewed_confirmation(monkeypatch, tmp_path):
+    exe, db = _fake_exe_db(tmp_path)
+    generated = _valid_input()
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(pr.PhreeqcRunError) as exc:
+        pr.run(generated, tmp_path / "ws", exe=exe, database=db)
+    assert "confirmation" in str(exc.value).lower()
+    assert calls == []
+    assert not (tmp_path / "ws").exists()

@@ -35,8 +35,10 @@ def test_measured_only_is_not_validated_yet():
 
 def test_measured_plus_prediction_is_comparable():
     v = lab_modes.assess_validation(has_measured=True, has_simulation=True)
-    assert v.is_validated is True
+    assert v.is_validated is False
     assert v.status == lab_modes.VAL_COMPARED
+    assert "not validated" in v.label.lower()
+    assert "residual alone" in v.note.lower()
 
 
 # --------------------------------------------------------------------------- #

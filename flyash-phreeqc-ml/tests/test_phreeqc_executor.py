@@ -23,6 +23,9 @@ import pytest
 import flyash_phreeqc_ml as pkg
 from flyash_phreeqc_ml import config
 from flyash_phreeqc_ml.simulation import phreeqc_executor as E
+from flyash_phreeqc_ml.simulation import phreeqc_input_builder as B
+from flyash_phreeqc_ml.simulation import phreeqc_run_contract as C
+from flyash_phreeqc_ml.simulation import source_terms as ST
 
 PKG_DIR = Path(pkg.__file__).resolve().parent
 REAL_PQO = config.RAW_DIR / "PHREEQC outputs" / "L-S_5_atmCO2.pqo"
@@ -32,7 +35,25 @@ REAL_PQO = config.RAW_DIR / "PHREEQC outputs" / "L-S_5_atmCO2.pqo"
 # Fixtures / helpers
 # --------------------------------------------------------------------------- #
 def _preview(text="SOLUTION 1\n    pH 13\nEND\n", sid="SIM-001"):
-    return types.SimpleNamespace(scenario_id=sid, phreeqc_input_text=text)
+    return B.PhreeqcInputPreview(
+        scenario_id=sid, phreeqc_input_text=text, template_type=B.TEMPLATE_NAOH,
+        status=B.STATUS_READY, includes_source_terms=True,
+        source_term_mode=ST.MODE_GLOBAL, source_term_status=ST.STATUS_RELEASE_INCLUDED)
+
+
+def _confirmation(preview, *, exe=None, database=None):
+    availability = E.check_availability(exe=exe, database=database)
+    assert availability.environment_identity is not None
+    return C.confirm_reviewed(C.review_preview(preview), availability.environment_identity)
+
+
+def _execute(preview=None, **kwargs):
+    preview = preview or _preview()
+    confirmation = kwargs.pop("confirmation", None)
+    if confirmation is None:
+        confirmation = _confirmation(
+            preview, exe=kwargs.get("exe"), database=kwargs.get("database"))
+    return E.execute_preview(preview, confirmation=confirmation, **kwargs)
 
 
 def _fake_exe_db(tmp_path):
@@ -56,12 +77,16 @@ def _ok_run_writing(out_text):
 # Missing PHREEQC → graceful (no crash)
 # --------------------------------------------------------------------------- #
 def test_missing_phreeqc_is_graceful(monkeypatch, tmp_path):
+    preview = _preview()
+    exe, db = _fake_exe_db(tmp_path)
+    confirmation = _confirmation(preview, exe=exe, database=db)
     monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", None)
-    res = E.execute_preview(_preview(), workdir=tmp_path, exe="definitely_not_a_real_binary_xyz")
+    res = _execute(preview, confirmation=confirmation, workdir=tmp_path / "ws",
+                   exe="definitely_not_a_real_binary_xyz")
     assert res.status == E.STATUS_MISSING
-    assert res.error_message == E.NOT_CONFIGURED_MESSAGE
+    assert E.NOT_CONFIGURED_MESSAGE in res.error_message
     assert res.input_path is None                  # nothing written when it can't run
-    assert list(tmp_path.iterdir()) == []
+    assert not (tmp_path / "ws").exists()
 
 
 def test_check_availability_reports_missing(monkeypatch):
@@ -100,7 +125,7 @@ def test_no_execution_without_explicit_call(monkeypatch, tmp_path):
     assert calls == []
 
     # only the explicit execute call runs it
-    E.execute_preview(_preview(), workdir=tmp_path / "ws", exe=exe, database=db)
+    _execute(workdir=tmp_path / "ws", exe=exe, database=db)
     assert len(calls) == 1
 
 
@@ -111,7 +136,7 @@ def test_writes_only_to_given_workspace(monkeypatch, tmp_path):
     exe, db = _fake_exe_db(tmp_path)
     monkeypatch.setattr(E.subprocess, "run", _ok_run_writing("TITLE ok\n"))
     ws = tmp_path / "sims"
-    res = E.execute_preview(_preview(sid="SIM-007"), workdir=ws, exe=exe, database=db)
+    res = _execute(_preview(sid="SIM-007"), workdir=ws, exe=exe, database=db)
     assert res.status == E.STATUS_SUCCESS
     written = sorted(p.name for p in ws.iterdir())
     assert written == ["SIM_007.pqi", "SIM_007.pqo"]
@@ -124,7 +149,7 @@ def test_unsafe_workspace_refused(monkeypatch, tmp_path, bad_root):
     monkeypatch.setattr(E.subprocess, "run", _ok_run_writing("ok"))
     target = {"raw": config.RAW_DIR, "processed": config.PROCESSED_DIR,
               "package": config.PACKAGE_DIR}[bad_root] / "evil_sim_dir"
-    res = E.execute_preview(_preview(), workdir=target, exe=exe, database=db)
+    res = _execute(workdir=target, exe=exe, database=db)
     assert res.status == E.STATUS_FAILED
     assert "refusing" in (res.error_message or "")
     assert not target.exists()                     # never created the forbidden dir
@@ -148,7 +173,7 @@ def test_failed_run_returns_structured_error(monkeypatch, tmp_path):
         return types.SimpleNamespace(returncode=1, stdout="", stderr="ERROR: boom")
 
     monkeypatch.setattr(E.subprocess, "run", _bad)
-    res = E.execute_preview(_preview(), workdir=tmp_path / "ws", exe=exe, database=db)
+    res = _execute(workdir=tmp_path / "ws", exe=exe, database=db)
     assert res.status == E.STATUS_FAILED
     assert "did not converge" in res.error_message
     assert res.stderr_tail and res.runtime_seconds is not None
@@ -164,7 +189,7 @@ def test_timeout_returns_structured(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 1))
 
     monkeypatch.setattr(E.subprocess, "run", _slow)
-    res = E.execute_preview(_preview(), workdir=tmp_path / "ws", exe=exe, database=db, timeout=1)
+    res = _execute(workdir=tmp_path / "ws", exe=exe, database=db, timeout=1)
     assert res.status == E.STATUS_TIMEOUT
     assert "timed out" in res.error_message.lower()
 
@@ -222,7 +247,7 @@ def test_execution_does_not_touch_result_path_csv(monkeypatch, tmp_path):
     before = results_csv.stat().st_mtime if results_csv.exists() else None
     exe, db = _fake_exe_db(tmp_path)
     monkeypatch.setattr(E.subprocess, "run", _ok_run_writing("TITLE ok\n"))
-    E.execute_preview(_preview(), workdir=tmp_path / "ws", exe=exe, database=db)
+    _execute(workdir=tmp_path / "ws", exe=exe, database=db)
     after = results_csv.stat().st_mtime if results_csv.exists() else None
     assert before == after                         # the comparison CSV is never written/updated
 
@@ -246,7 +271,7 @@ def test_parse_real_pqo_output():
                     reason="no real PHREEQC binary + PHREEQC_DATABASE configured")
 def test_integration_real_execution(tmp_path):  # pragma: no cover - env-dependent
     pv = _preview(text=E.SMOKE_INPUT, sid="SMOKE")
-    res = E.execute_preview(pv, workdir=tmp_path / "ws")
+    res = _execute(pv, workdir=tmp_path / "ws")
     assert res.status == E.STATUS_SUCCESS
 
 

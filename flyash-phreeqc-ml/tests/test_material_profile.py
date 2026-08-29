@@ -6,8 +6,8 @@ Pins the contract the Simulate workflow depends on:
 * validation flags negatives (error), implausible oxide sums (warning), and a missing
   material name (error);
 * the **trust gate** — a draft / literature-unverified profile is never usable, so the
-  PHREEQC input preview stays ``needs_material_composition``; only a *confirmed* profile
-  reaches ``ready_for_review`` and adds its composition + source comments to the input;
+  PHREEQC input preview stays ``needs_material_composition``; a confirmed profile adds its
+  composition, while execution readiness additionally requires an explicit release/source term;
 * nothing is invented and nothing is written to disk.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from flyash_phreeqc_ml.materials import (
     CompositionEntry, CompositionSource, MaterialProfile, parse_composition_text,
     profile_from_literature_candidates, validate_profile)
 from flyash_phreeqc_ml.simulation import phreeqc_input_builder as B
+from flyash_phreeqc_ml.simulation import source_terms
 from flyash_phreeqc_ml.simulation.scenario_schema import SimulationScenario
 
 PKG_DIR = Path(pkg.__file__).resolve().parent
@@ -170,7 +171,9 @@ def test_draft_profile_not_treated_as_verified():
 def test_user_confirmed_profile_feeds_builder_ready():
     p = _oxide_profile(status=S.STATUS_USER_CONFIRMED)
     assert p.is_usable and p.usable_assay("Ca") is not None
-    pv = B.build_phreeqc_input_preview(_scenario(leachant_type="NaOH"), material_profile=p)
+    pv = B.build_phreeqc_input_preview(
+        _scenario(leachant_type="NaOH"), material_profile=p,
+        dissolution_model=source_terms.global_release(0.01))
     assert pv.status == B.STATUS_READY
     assert "Ca " in pv.phreeqc_input_text or "Ca =" in pv.phreeqc_input_text
 
@@ -212,7 +215,9 @@ def test_literature_profile_requires_confirmation():
     # explicit confirmation makes it usable
     p.verification_status = S.STATUS_USER_CONFIRMED
     assert p.is_usable and p.usable_assay("Ca") is not None
-    pv2 = B.build_phreeqc_input_preview(_scenario(), material_profile=p)
+    pv2 = B.build_phreeqc_input_preview(
+        _scenario(), material_profile=p,
+        dissolution_model=source_terms.global_release(0.01))
     assert pv2.status == B.STATUS_READY
 
 
@@ -271,7 +276,7 @@ def test_simulate_material_section_renders(tmp_path, monkeypatch):
     at = AppTest.from_file(str(app_path), default_timeout=60)
     at.run()
     # The Simulate workflow lives in the Workspace section (the assistant is the default).
-    at.session_state["nav_section"] = "Workspace"
+    at.session_state["nav_page"] = "Material Workspace"
     at.session_state["sim_parse_result"] = res
     at.session_state["sim_matrix"] = M.build_simulation_matrix(sc)
     at.session_state["sim_scenario"] = sc

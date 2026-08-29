@@ -122,6 +122,10 @@ def test_get_comparison_rows_caps_and_counts():
     assert out["n_total"] == 4
     assert out["n_returned"] == 2
     assert len(out["rows"]) == 2
+    # Historical numeric ICP residuals stay visible but are labelled legacy/unknown;
+    # the assistant must not receive the number without its fail-closed QC state.
+    assert out["rows"][0]["residual_Ca_serialized_qc_state"] == "legacy_unknown"
+    assert "Re-run the comparison" in out["rows"][0]["residual_Ca_serialized_qc_reason"]
     # The hard cap is honoured even if a huge limit is requested.
     out2 = A.get_comparison_rows(_ctx(), limit=10_000)
     assert len(out2["rows"]) == 4

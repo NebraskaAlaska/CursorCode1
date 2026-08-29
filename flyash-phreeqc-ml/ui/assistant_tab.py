@@ -628,12 +628,17 @@ def _render_pending_and_confirm(run, state, consent, cfg) -> None:
         "Confirmation required",
         f"Action **{state.pending_action.action_name}** is ready but will not run until you "
         "confirm. Nothing has executed.", level="warning")
+    environment = phreeqc_executor.check_availability(database=state.database_path)
+    environment_key = (environment.environment_identity.identity_hash[:12]
+                       if environment.environment_identity is not None else "unavailable")
     col1, col2 = st.columns(2)
-    if col1.button("✅ Yes, run it", key="asst_confirm_yes", use_container_width=True,
+    if col1.button("✅ Yes, run it", key=f"asst_confirm_yes_{environment_key}",
+                   use_container_width=True,
                    type="primary"):
         orch.confirm_pending_action(state)
         st.rerun()
-    if col2.button("✋ No, change something", key="asst_confirm_no", use_container_width=True):
+    if col2.button("✋ No, change something", key=f"asst_confirm_no_{environment_key}",
+                   use_container_width=True):
         orch.reject_pending_action(state)
         st.rerun()
 

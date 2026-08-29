@@ -180,21 +180,25 @@ def test_confidence_labels():
 # --------------------------------------------------------------------------- #
 # Evidence rows require source / provenance (store)
 # --------------------------------------------------------------------------- #
-def test_evidence_store_requires_provenance(tmp_path):
+def test_historical_evidence_store_is_read_only(tmp_path):
     path = evidence_store.evidence_path(tmp_path, E.SCHEMA_LEACHING)
     good = E.LeachingEvidence(provenance=E.Provenance(source="openalex", doi="10.1/x", title="t"),
                               pH=12.5)
-    evidence_store.add_evidence(path, good)
-    assert len(evidence_store.read_evidence(path)) == 1
-    with pytest.raises(evidence_store.MissingProvenanceError):
+    with pytest.raises(evidence_store.LegacyEvidenceReadOnlyError):
+        evidence_store.add_evidence(path, good)
+    with pytest.raises(evidence_store.LegacyEvidenceReadOnlyError):
         evidence_store.add_evidence(path, E.LeachingEvidence(pH=12.5))      # no source → rejected
+    with pytest.raises(evidence_store.LegacyEvidenceReadOnlyError):
+        evidence_store.save_evidence(path, [good])
+    assert not path.exists()
 
 
 def test_evidence_store_csv_export(tmp_path):
     path = evidence_store.evidence_path(tmp_path, E.SCHEMA_COMPOSITE)
     ev = E.CompositeEvidence(provenance=E.Provenance(source="openalex", doi="10.1/x", title="t"),
                              compressive_strength_MPa=30.0, extraction_scope=E.SCOPE_FULL_TEXT)
-    evidence_store.add_evidence(path, ev)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(ev.to_row()) + "\n", encoding="utf-8")
     csv_text = evidence_store.export_csv(path, E.SCHEMA_COMPOSITE)
     assert "compressive_strength_MPa" in csv_text.splitlines()[0]
     assert "30.0" in csv_text
@@ -202,9 +206,7 @@ def test_evidence_store_csv_export(tmp_path):
 
 def test_evidence_store_refuses_protected_paths(tmp_path):
     with pytest.raises(ValueError):
-        evidence_store.add_evidence(
-            Path("flyash_phreeqc_ml/data/raw/evidence.jsonl"),
-            E.LeachingEvidence(provenance=E.Provenance(source="x", doi="10.1/x")))
+        evidence_store.assert_safe_path(Path("flyash_phreeqc_ml/data/raw/evidence.jsonl"))
 
 
 # --------------------------------------------------------------------------- #

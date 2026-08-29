@@ -219,7 +219,10 @@ def _tool_run_single(state, args) -> ToolOutcome:
     if preview is None:
         return ToolOutcome(ok=False, status="no_preview",
                            summary="No input preview to run — build one first.")
-    execution, parsed = phreeqc_executor.run_and_parse(preview)
+    confirmation = (state.pending_confirmations[0]
+                    if state.pending_confirmations else None)
+    execution, parsed = phreeqc_executor.run_and_parse(
+        preview, confirmation=confirmation, database=state.database_path)
     state.execution_result = execution
     state.parsed_result = parsed
     state.batch_result = _wrap_single_run(execution, parsed)
@@ -269,11 +272,15 @@ def _tool_build_sweep_matrix(state, args) -> ToolOutcome:
 
 
 def _tool_run_sweep(state, args) -> ToolOutcome:
-    previews = state.sweep_previews or ([state.preview] if state.preview is not None else [])
+    previews = (state.pending_previews or state.sweep_previews
+                or ([state.preview] if state.preview is not None else []))
     if not previews:
         return ToolOutcome(ok=False, status="no_previews",
                            summary="No sweep previews to run — build the matrix first.")
-    batch = batch_executor.run_batch(previews, max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS)
+    batch = batch_executor.run_batch(
+        previews, confirmations=state.pending_confirmations,
+        max_scenarios=batch_executor.DEFAULT_MAX_SCENARIOS,
+        database=state.database_path)
     state.batch_result = batch
     state.result_table = batch_executor.build_result_table(batch, state.sweep_matrix)
     state.execution_status = agent_state.EXEC_DONE
@@ -489,6 +496,9 @@ def _preview_status_note(status: str) -> str:
         return ("It still needs a **confirmed material composition** before a meaningful run — "
                 "add one under **Advanced details → Material composition** and confirm it (the "
                 "release model alone is not enough).")
+    if status == phreeqc_input_builder.STATUS_NEEDS_SOURCE_TERM:
+        return ("The composition is previewable, but execution still needs an explicit usable "
+                "release/source term under **Advanced details → Material release**.")
     if status == phreeqc_input_builder.STATUS_MISSING_FIELD:
         return "Some required set-up fields are still missing — see the warnings."
     if status == phreeqc_input_builder.STATUS_UNSUPPORTED_LEACHANT:

@@ -10,6 +10,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from flyash_phreeqc_ml import replicates  # noqa: E402
+from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
 
 from ui.state import _NOT_VALID_YET, _VALID_NOW, _next_step_hint, _rel
 
@@ -44,6 +45,26 @@ def _render_valid_now_section() -> None:
 def _render_next_step(selected_run: str | None) -> None:
     """Render the one-line "next step" hint at the top of a tab."""
     st.info(f"➡️ **Next step:** {_next_step_hint(selected_run)}")
+
+
+def _render_legacy_icp_qc_warning(comparison: pd.DataFrame) -> int:
+    """Warn while keeping legacy/malformed serialized ICP residuals visible."""
+    evidence = icp_qc.serialized_icp_residual_evidence_table(comparison)
+    if evidence.empty:
+        return 0
+    legacy = evidence[
+        evidence["evidence_state"] == icp_qc.SERIALIZED_RESIDUAL_LEGACY_UNKNOWN
+    ]
+    if legacy.empty:
+        return 0
+    st.warning(
+        f"⚠️ **QC unverified / legacy unknown:** {len(legacy)} numeric ICP residual "
+        f"value(s) lack recognizable Phase 1B eligibility evidence. "
+        + icp_qc.SERIALIZED_ICP_QC_REGENERATION_MESSAGE
+        + " The rows remain visible, but their ICP residuals are excluded from "
+        "validation, bias statistics, plots, and residual-model training."
+    )
+    return int(len(legacy))
 
 def _audit_once(run_name: str, dedupe_key: str, log_fn) -> None:
     """Log a render-time event at most once per (run, key) per session (no spam).

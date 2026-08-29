@@ -28,6 +28,10 @@ FIGURES_DIR: Path = REPORTS_DIR / "figures"
 # not pipeline datasets. Gitignored like the other generated artifacts.
 OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
 TABLES_DIR: Path = OUTPUTS_DIR / "tables"
+# Durable Phase 2 product state.  Records are small, inspectable JSON documents;
+# external scientific artifacts remain in their existing stores and are referenced,
+# never copied here.
+VIRTUAL_LAB_WORKSPACE_DIR: Path = OUTPUTS_DIR / "virtual_lab_workspace"
 # Safe workspace for the Simulate tab's deterministic PHREEQC execution (Prompt:
 # execution layer). Generated .pqi/.pqo/.sel land here, never in data/raw or the
 # source tree, and are gitignored (see .gitignore: outputs/simulations/).
@@ -153,6 +157,11 @@ KEY_PHASES = [
 # Canonical column order for the measured-experimental-release template/file.
 # Editing this list is the single source of truth for the CSV schema, the parser,
 # and the tests.
+ICP_INPUT_STAGE_COLUMN = "icp_input_stage"
+ICP_STAGE_CONFIRMED_COLUMN = "icp_stage_confirmed"
+ICP_ROLE_COLUMN = "icp_role"
+ICP_RESOLUTION_PROVENANCE_COLUMN = "icp_resolution_provenance"
+
 EXPERIMENTAL_RELEASE_COLUMNS = [
     "sample_id",
     "experiment_date",
@@ -173,6 +182,13 @@ EXPERIMENTAL_RELEASE_COLUMNS = [
     "K_mM",
     "Sc_ppb",
     "total_REE_ppb",
+    # Wide ICP columns are final concentrations, not raw instrument readings.  These
+    # fields make that boundary and the measured role explicit.  Missing/unconfirmed
+    # stage provenance fails closed at the comparison gate.
+    ICP_INPUT_STAGE_COLUMN,
+    ICP_STAGE_CONFIRMED_COLUMN,
+    ICP_ROLE_COLUMN,
+    ICP_RESOLUTION_PROVENANCE_COLUMN,
     "filtration_notes",
     "precipitate_observed",
     "notes",

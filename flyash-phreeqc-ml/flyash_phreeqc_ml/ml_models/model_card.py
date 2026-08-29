@@ -34,7 +34,7 @@ def known_failure_cases(target: str) -> list:
     ]
 
 
-def limitations(validation_status: str, n_train: int) -> list:
+def limitations(validation_status: str, n_train: int, training_data_status=None) -> list:
     items = [
         "Surrogate / data-driven model — it learns correlations in the training rows, not "
         "mechanism. It does not validate against independently measured experiments.",
@@ -44,6 +44,12 @@ def limitations(validation_status: str, n_train: int) -> list:
     if validation_status == model_schema.VALIDATION_DEMO:
         items.insert(0, "DEMO MODEL — trained on SYNTHETIC data for workflow testing only. "
                         "Its numbers are meaningless; never present them as real or validated.")
+    elif training_data_status == model_schema.TRAINING_DATA_EXPLORATORY:
+        items.insert(0, "EXPLORATORY MODEL — training admitted rows outside the approved default "
+                        "eligibility gate. Do not present it as an approved-data model.")
+    elif training_data_status == model_schema.TRAINING_DATA_LEGACY_UNKNOWN:
+        items.insert(0, "LEGACY MODEL — its persisted artifact did not record training-data "
+                        "eligibility status. Treat the training provenance as unknown.")
     return items
 
 
@@ -56,7 +62,8 @@ def applicability_domain(feature_ranges: dict, categories_seen: dict) -> dict:
     }
 
 
-def build_model_card(*, model_type, target, source_type, validation_status, n_train, n_validation,
+def build_model_card(*, model_type, target, source_type, validation_status, training_data_status,
+                     n_train, n_validation,
                      numeric_features, categorical_features, metrics, feature_ranges,
                      categories_seen, training_provenance, date, version) -> dict:
     """Assemble the model card dict (see module docstring for the contract)."""
@@ -71,12 +78,15 @@ def build_model_card(*, model_type, target, source_type, validation_status, n_tr
         "not_intended_use": NOT_INTENDED_USE,
         "training_data_sources": dict(training_provenance or {}),
         "source_type": source_type,
+        "training_data_status": model_schema.normalize_training_data_status(training_data_status),
+        "training_data_status_label": model_schema.TRAINING_DATA_LABELS.get(
+            model_schema.normalize_training_data_status(training_data_status)),
         "n_rows": int(n_train),
         "n_validation_rows": int(n_validation),
         "feature_list": features,
         "feature_labels": {f: feature_schema.feature_label(f) for f in features},
         "metrics": dict(metrics or {}),
-        "limitations": limitations(validation_status, n_train),
+        "limitations": limitations(validation_status, n_train, training_data_status),
         "known_failure_cases": known_failure_cases(target),
         "applicability_domain": applicability_domain(feature_ranges, categories_seen),
         "validation_status": validation_status,
@@ -95,6 +105,9 @@ def render_markdown(card: dict) -> str:
     lines.append(f"- **Model type:** {c.get('model_type_label', c.get('model_type'))}")
     lines.append(f"- **Model family:** {c.get('model_family')}")
     lines.append(f"- **Validation status:** {c.get('validation_status_label', c.get('validation_status'))}")
+    training_status = model_schema.normalize_training_data_status(c.get("training_data_status"))
+    lines.append(f"- **Training-data status:** "
+                 f"{c.get('training_data_status_label') or model_schema.TRAINING_DATA_LABELS[training_status]}")
     lines.append(f"- **Date trained:** {c.get('date_trained')}  ·  **Version:** {c.get('version')}")
     lines.append(f"- **Training rows:** {c.get('n_rows')}  "
                  f"(validation rows: {c.get('n_validation_rows')})")

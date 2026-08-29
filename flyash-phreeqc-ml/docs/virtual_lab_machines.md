@@ -1,97 +1,125 @@
-# Virtual LAB — Machines layer (backend-only)
+# Virtual LAB — authoritative 12-machine contract
 
-> **Status: backend-only metadata catalogue. Not wired into the website.** This document describes
-> `flyash_phreeqc_ml/instruments/virtual_lab_machines.py`. Nothing here runs PHREEQC, calls an API,
-> imports Streamlit, or activates any machine in the live Streamlit app. Every machine's
-> `ui_activation_status` is `not_activated_backend_only`.
+`flyash_phreeqc_ml/instruments/virtual_lab_machines.py` is the one authoritative source for machine
+identity, deterministic order, scientific metadata, static maturity, safety, provenance requirements,
+validation requirements, and backend bindings. It is pure import-safe metadata: it does not import
+Streamlit, inspect this computer, load a model, call an external API, or execute a scientific engine.
 
-## Purpose
+The Phase 2/3 Machines page renders these definitions as its canonical gallery and shared
+**Overview · Prepare · Results · History** workspace. Hands-on ICP and XRD workflows delegate to
+their existing scientific authorities; Phase 3 persistence wraps rather than replaces them. See
+[`phase3_durable_workflows.md`](phase3_durable_workflows.md).
 
-Virtual LAB gives researchers a mini virtual lab of scientific *machines* to produce **estimates,
-simulations, screening, data processing, and experiment prioritisation** — so they can reduce
-trial-and-error and decide which *few physical experiments* are worth doing. **It never claims to
-replace real experimental validation.**
+## Canonical IDs and order
 
-This module is the honest **capability catalogue**: for each machine it declares what it can do, the
-inputs it needs, how its output must be labelled, what it must never claim, and how a result would be
-verified in the real world. It is pure, import-safe data + small query/audit helpers.
+1. `phreeqc_leaching_simulator`
+2. `xrd_advisory`
+3. `icp_data_processor`
+4. `ftir_raman_interpreter`
+5. `sem_eds_processor`
+6. `tga_dsc_processor`
+7. `mechanical_testing_processor`
+8. `ml_surrogate_predictor`
+9. `literature_evidence_engine`
+10. `sustainability_cost_screening`
+11. `experimental_design_assistant`
+12. `validation_uncertainty_assistant`
 
-## The honesty model
+`machine_ids()` returns this exact order. `canonical_machine_id(value)` is the sole alias normalizer.
+It accepts canonical IDs and the following saved/historical aliases, and returns `None` for unknown
+values without fuzzy matching:
 
-Every output must carry exactly one `output_data_type` label:
-
-| label | meaning |
+| historical ID | canonical ID |
 |---|---|
-| `user_provided_assumption` | a value the user supplied / assumed |
-| `synthetic_demo_data` | clearly-labelled synthetic demo data |
-| `literature_evidence` | sourced literature (with provenance) |
-| `measured_lab_data` | real measured laboratory data |
-| `simulated_model_estimate` | output of a physical simulation (e.g. PHREEQC) |
-| `ml_prediction` | output of a trained surrogate model |
-| `advisory_interpretation` | an advisory reading / planning aid |
-| `validated_result` | a measured-vs-model comparison that meets acceptance — **measured data required** |
+| `xrd_advisory_module` | `xrd_advisory` |
+| `mechanical_test_processor` | `mechanical_testing_processor` |
+| `sustainability_screening` | `sustainability_cost_screening` |
 
-The single hard gate: **a `validated_result` is only ever possible with measured data.** This is
-enforced by `machine_can_produce_validated_result(machine_id, has_measured_data)` and re-checked by
-`audit_virtual_lab_machines()`. Simulation is not validation; advisory interpretation is not
-validation; literature evidence is not validation; ML prediction is not validation unless compared
-against measured lab data.
+New router decisions and machine results use canonical IDs. A runner request made with an alias also
+records the supplied value as `provenance.input_machine_id`; historical files are not rewritten.
 
-## Machine schema (`VirtualLabMachine`)
+## Contract fields and vocabulary
 
-`machine_id`, `display_name`, `short_description`, `category`, `mode`, `execution_mode`, `status`,
-`what_it_can_do`, `required_inputs`, `optional_inputs`, `honest_outputs`, `output_data_type`,
-`verification_required`, `real_world_verification_method`, `must_not_claim`, `needs_measured_data`,
-`needs_trained_model`, `needs_reference_database`, `can_run_live`,
-`should_use_cached_or_precomputed_data`, `uncertainty_controls`, `safety_notes`,
-`example_user_prompts`, `future_backend_dependencies`, `ui_activation_status`.
+Each immutable `VirtualLabMachine` carries identity and UI text, `mode`, `execution_mode`, static
+`maturity`, required/optional inputs, honest outputs and allowed epistemic types, verification and
+real-world methods, prohibited claims, measured/model/reference requirements, uncertainty controls,
+safety notes, a stable `backend_binding`, backend capability classifications, provenance requirements,
+validation requirements, runtime requirements, and example prompts where useful.
 
-**Allowed `mode`:** `physical_simulation`, `data_processing`, `advisory_planning`,
-`trained_model_prediction`, `evidence_engine`, `cross_cutting_validation`.
+One vocabulary is defined here for:
 
-**Allowed `execution_mode`:** `advisory_only`, `data_processing`, `preview_then_confirm`,
-`trained_model_required`, `evidence_required`, `measured_data_required`.
+- mode: physical simulation, data processing, advisory planning, trained-model prediction, evidence,
+  and cross-cutting validation;
+- execution mode: advisory, data processing, preview-then-confirm, approved-model-required,
+  evidence-required, and measured-data-required;
+- static maturity: implemented backend, limited workflow, advisory backend, or blueprint only;
+- epistemic type: user assumption, synthetic demo, literature evidence, measured lab data, simulated
+  estimate, ML prediction, advisory interpretation, or validated result.
 
-**Allowed `status`:** `active_existing`, `phase_1_advisory`, `blueprint_only`,
-`requires_reference_data`, `requires_trained_model`, `requires_measured_data`.
+`instrument_schema.py` re-exports this vocabulary. It does not define a second one.
 
-## The 12 machines
+## Static maturity is not runtime availability
 
-| # | Machine | mode | execution_mode | status | honest output |
-|---|---|---|---|---|---|
-| 1 | PHREEQC Leaching Simulator | physical_simulation | preview_then_confirm | active_existing | simulated_model_estimate |
-| 2 | XRD Advisory / Pattern Planning | advisory_planning | advisory_only | phase_1_advisory | advisory_interpretation |
-| 3 | ICP-OES / ICP-MS Data Processor | data_processing | data_processing | active_existing | measured_lab_data + advisory |
-| 4 | FTIR / Raman Interpreter | advisory_planning | evidence_required | blueprint_only | advisory_interpretation |
-| 5 | SEM-EDS Processor | data_processing | measured_data_required | requires_measured_data | measured_lab_data + advisory |
-| 6 | TGA / DSC Processor | data_processing | measured_data_required | requires_measured_data | measured_lab_data + advisory |
-| 7 | Mechanical Testing Processor | data_processing | measured_data_required | requires_measured_data | measured_lab_data |
-| 8 | ML Surrogate Predictor | trained_model_prediction | trained_model_required | requires_trained_model | ml_prediction |
-| 9 | Literature Evidence Engine | evidence_engine | evidence_required | blueprint_only | literature_evidence |
-| 10 | Sustainability / Cost Screening | advisory_planning | advisory_only | blueprint_only | advisory + user_assumption |
-| 11 | Experimental Design Assistant | advisory_planning | advisory_only | blueprint_only | advisory_interpretation |
-| 12 | Validation & Uncertainty Assistant | cross_cutting_validation | measured_data_required | requires_measured_data | advisory **or** validated_result (measured only) |
+Static maturity says whether repository code exists. `MachineRuntimeAvailability` is a separate,
+lightweight observation for environment-specific state. For example, the PHREEQC builder/executor is
+implemented even when no executable/database is configured on this computer. Likewise, the ML
+prediction backend exists even when no approved trained model is selected. Runtime state is calculated
+outside the immutable catalogue and is never stored as `active=True/False` metadata.
 
-## Helper functions
+`instrument_registry.py` remains available for older callers but is a deprecated compatibility
+adapter. Its 12 read-only `InstrumentSpec` objects wrap the canonical `VirtualLabMachine` objects
+directly; it owns no independent scientific descriptions.
 
-- `list_virtual_lab_machines()` — all machines, in catalogue order.
-- `get_virtual_lab_machine(machine_id)` — one machine or `None`.
-- `list_machines_by_mode(mode)` / `list_machines_by_status(status)` — filtered tuples.
-- `machine_requires_measured_data(machine_id)` / `machine_requires_trained_model(machine_id)` /
-  `machine_requires_reference_database(machine_id)` — capability gates.
-- `machine_can_produce_validated_result(machine_id, has_measured_data)` — the validation gate.
-- `audit_virtual_lab_machines()` — returns a list of completeness/safety problems (empty == healthy).
+## Canonical maturity and deprecated query compatibility
 
-## What the audit enforces
+Canonical code uses `maturity`, `execution_mode`, the measured/model/reference requirement flags,
+`backend_capabilities`, and `runtime_requirements`. `list_machines_by_maturity(maturity)` filters only
+the canonical static maturity field.
 
-Unique ids; all required fields present; `must_not_claim` / `safety_notes` / `verification_required`
-/ `real_world_verification_method` non-empty for every machine; valid enum values; a `validated_result`
-is impossible without measured data; ML requires a trained model; the Literature engine requires
-provenance + human review and forbids scraping restricted sources (e.g. Google Scholar); Sustainability
-screening is advisory / order-of-magnitude; ICP cannot fabricate measured data; XRD states the
-formula-only / polymorph limitation.
+Historical `STATUS_*` strings remain distinct deprecated values; they are not aliases for maturity.
+`list_machines_by_status(status)` is a compatibility query that interprets requirement statuses
+through the corresponding canonical flags, execution modes, and backend capabilities. For example,
+the trained-model status returns only machines that require an approved trained model, while the
+measured-data and reference-data statuses return only machines carrying those actual prerequisites.
+`STATUS_ACTIVE_EXISTING` excludes an implemented backend that still lacks a required runtime,
+reference/evidence source, measured dataset, or approved model. `STATUS_PHASE_1_ADVISORY` selects the
+specific advisory capability rather than every machine whose broad canonical mode is advisory
+planning.
 
-## Not wired in (by design)
+Deprecated mode values are likewise compatibility inputs rather than canonical aliases.
+`signal_simulation` deterministically selects the historical XRD/FTIR signal-advisory meaning; it is
+not equal to canonical `advisory_planning` and therefore does not pull in sustainability or
+experimental-design workflows. These compatibility queries return the same canonical machine
+objects and do not constitute a second catalogue.
 
-This layer is **backend-only**. It is not imported by `app.py`, no `ui/` file renders it, and it does
-not change the live website. Activation into the UI is a separate, later step.
+## Specialized backend ownership
+
+The contract coordinates capabilities; it does not reimplement their science:
+
+| Machine | authoritative or delegated backend |
+|---|---|
+| PHREEQC | `simulation.phreeqc_input_builder`, `simulation.phreeqc_run_contract`, `simulation.phreeqc_executor` |
+| XRD | `instruments.xrd_advisory`, with durable coordination in `instruments.xrd_records` |
+| ICP | `instruments.icp_processor` and the Phase 1B QC contract, with durable coordination in `instruments.icp_review` |
+| FTIR/Raman, SEM/EDS, TGA/DSC, mechanical | explicitly limited runner-native processors over supplied data |
+| ML | `ml_models.predict` with an approved non-demo trained model |
+| Literature | `literature.research_agent`, `literature.evidence_store`, and durable `literature.evidence_review` |
+| Sustainability | limited assumption-based screening plus `experiments.sustainability_score` |
+| Experimental design | limited deterministic planning plus `experiments.plan_generator` |
+| Validation | existing comparison/QC/criteria paths plus a limited standard-envelope adapter |
+
+PHREEQC is never automatically executed. The generic runner authors no PHREEQC chemistry and cannot
+treat its bare `confirm` Boolean as Phase 1A review/environment confirmation evidence. The only
+scientific path remains preview → review → exact confirmation → existing executor.
+
+## Validation and audit gates
+
+`machine_can_produce_validated_result(machine_id, has_measured_data,
+has_explicit_criteria=False)` permits that epistemic type only for a machine that declares it and only
+when QC-eligible measured data and explicit criteria exist. The criteria-bearing workflow must still
+prove that the criteria were met. A simulation, advisory result, literature record, or ML prediction is
+never validated merely by passing through the machine runner.
+
+`audit_virtual_lab_machines()` checks the exact count, unique IDs, metadata completeness, vocabulary,
+backend/requirement consistency, aliases, and the scientific safety invariants. Architecture tests also
+prove the compatibility registry wraps these same 12 objects rather than maintaining a second catalogue.

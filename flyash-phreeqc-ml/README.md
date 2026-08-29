@@ -23,7 +23,8 @@ models) can be added modularly.
 
 - **Identity:** a broad **Materials Research Assistant** — a conversational front door (the
   **Assistant** tab) over deterministic simulation + validation tooling. PHREEQC leaching is the
-  first executable engine; everything else is planning-only for now, by design.
+  first external simulation engine. Other capabilities are honestly separated into measured-data
+  processors, advisory workflows, evidence/model-dependent engines, and limited planning workflows.
 - **Strongest executable + validation workflow:** the **Class C fly ash + PHREEQC** leaching demo —
   measured ICP data → mapping → residuals → mapping-status → one honest validity line. This is the
   part with the most machinery and tests, and it is an *example of* the platform, not its whole scope.
@@ -53,6 +54,24 @@ models) can be added modularly.
 - **Save provenance & export** — every simulation run and every validation comparison is saved
   with a full provenance chain (inputs, assumptions, database/executable paths, hashes) and can be
   exported as a self-contained report.
+- **Use one canonical 12-machine gallery and shared workspace** — the **Machines** page renders
+  metadata for PHREEQC, XRD, ICP, FTIR/Raman, SEM/EDS, TGA/DSC, mechanical testing, ML, literature,
+  sustainability, experimental design, and validation/uncertainty directly from the Phase 1C
+  contract. Default cards are concise and use human-readable readiness; full scientific detail remains
+  available after selection, and canonical IDs/backend bindings are collapsed under **Technical
+  details**. The selected shared workspace appears before the alternate-machine chooser and has
+  exactly four primary areas: **Overview**, **Prepare**, **Results**, and **History**. The hands-on ICP
+  and XRD modules remain available inside the selected machine context. Critical cautions such as
+  simulation-not-measured, advisory-not-confirmed, model/data requirements, QC blocks, and stale
+  results remain visible whenever they apply. See
+  [`docs/virtual_lab_machines.md`](docs/virtual_lab_machines.md).
+- **Complete durable review and advisory workflows** — ICP source review/finalization,
+  measured-XRD import plus user-reference matching, manual evidence review, explicit experiment
+  planning, and supplied-factor sustainability screening now save typed, revisioned artifacts and
+  exact linked runs. Results/History reopen the saved project, material, artifact hashes, and input
+  snapshot without silently rebinding newer state. XRD remains tentative, evidence remains
+  contextual, plans contain no outcomes, and sustainability remains screening-only. See
+  [`docs/phase3_durable_workflows.md`](docs/phase3_durable_workflows.md).
 
 ## What it cannot (yet) claim
 
@@ -138,14 +157,12 @@ Validation), so nothing technical competes with the assistant.
   a run is **blocked when required fields are missing** or no confirmed material composition exists.
 - **Current executable engine:** PHREEQC, for **leaching / geochemical (aqueous dissolution)**
   scenarios only.
-- **Unsupported domains are planning-only — and useful, not a dead-end.** For polymer/composite
+- **Non-PHREEQC domains are never presented as physical simulations.** For polymer/composite
   strength, thermal treatment, mechanical testing, corrosion/durability, battery materials, and a
-  cementitious binder not framed as leaching, the assistant **does not pretend to simulate**. Instead
-  it offers to **structure the experiment**, **build a data template**, and **identify the missing
-  variables**, and it suggests the domain's **response variables** (e.g. for a composite: compressive
-  strength, flexural strength, density, water absorption, toughness) and the inputs a **future model**
-  would need — so you can build a dataset now. Future engines (literature RAG, surrogate ML,
-  atomistic, mechanical-property models) can be added modularly.
+  cementitious binder not framed as leaching, the assistant structures the experiment, identifies
+  missing variables, and routes only to an existing measured-data processor, advisory workflow, or
+  approved trained model where one genuinely applies. Metadata or a limited workflow never implies
+  that an external scientific engine or measured result exists.
 - **Simulation is not validation.** Every estimate the assistant explains carries the standing
   "model estimate under reviewed assumptions — not measured, not validated" caveat, and measured ICP
   / pH data remain necessary to validate.
@@ -198,25 +215,29 @@ optional (for importing `flyash_phreeqc_ml` from notebooks).
 streamlit run app.py
 ```
 
-The app opens on the **Assistant** — the front door. A dark, compact left rail holds run
-management and a simple **nine-section** navigation:
+The app opens on **Home**. A dark technical left rail provides one **nine-page** navigation, while a
+compact product/context surface keeps the active project, material, and run visible without repeating
+a large global hero on every page:
 
 | Section | What's there |
 | --- | --- |
-| **Assistant** | the conversational workspace — chat on the left, a right experiment-state panel (Current experiment · Engine status · Missing details · Recommended next action) |
-| **Workspace** | the structured experiment builder (the full manual Simulate: material/release/database → input preview → gated run / sweep / ranking / target matching / save) |
-| **Results** | a clean read-out of the latest prediction (estimated pH, element totals, target match, sweep plots) — labelled **model prediction only, not validated** |
-| **Data & Validation** | measured data only — **Import · Validate · Match · Compare** (simulation predicts; validation compares with reality) |
-| **Projects** | saved simulation/planning/validation runs + material profiles, report export, audit trail, user guide |
-| **Evidence Library** | search official scholarly APIs, rank + AI-extract cited evidence, curate per-run datasets (no Google Scholar scraping) |
-| **Prediction Models** | train + use the **ML surrogate** (composite mechanical properties) on **approved** evidence/lab rows — experimental estimates with uncertainty, never validated |
-| **Engine Library** | the modular engine registry — PHREEQC executable now; composites/thermal/cementitious/battery planning-only; future engines |
-| **Settings** | AI provider/model + status, PHREEQC engine status, preferences, and the future AI-framework architecture |
+| **Home** | research cockpit: active context, capability blockers, recent durable runs, unresolved issues, and quick routes |
+| **Projects** | durable project CRUD/archive plus existing experiment-run reports and exports |
+| **Material Workspace** | durable material source of truth plus Assistant, authoritative PHREEQC planner, and measured-data import |
+| **Machines** | exactly 12 concise canonical cards and one shared **Overview · Prepare · Results · History** workspace |
+| **Results** | project-scoped durable results with filters, epistemic badges, provenance, validation state, and stale/current identity |
+| **Validation & Uncertainty** | existing Import · Validate · Match · Compare workflow with explicit QC and criteria gates |
+| **Evidence** | existing provenance-carrying Evidence Library plus active-material references |
+| **Run History** | immutable project/material/machine/input-bound records that can be reopened without rebinding |
+| **Settings & Diagnostics** | PHREEQC/configuration blockers, safe storage diagnostics, app settings, and engine information |
 
-No technical tab competes with the assistant — the Assistant is the product, and every advanced
-workflow is still reachable (none was removed). The design is a **dark, Apple/Squarespace-inspired
-research cockpit** (neutral dark background, clean cards, minimal borders, a restrained blue accent;
-palette in `.streamlit/config.toml` + `app_ui.py`).
+The Assistant remains available inside Material Workspace. Existing scientific workflows were
+re-homed rather than copied. The presentation uses a **dark technical/blueprint cockpit** with
+square geometry, visible borders, restrained steel-blue status accents, and strong
+context/empty/blocker states (`app_ui.py`). Default surfaces lead with purpose, state, the primary
+blocker, and the next action. Scientific details remain available through named expanders, technical
+identifiers and raw diagnostics are collapsed by default, and critical scientific cautions remain
+visible without relying on color alone.
 
 ## Configure AI safely (optional, off by default)
 
@@ -392,8 +413,8 @@ Only `experiments/README.md` is tracked under `experiments/`.
 
 The app was modularized so it stays maintainable; the layering is enforced by tests.
 
-- **`app.py` is a thin entry point** (~210 code lines): page config + hero, the run-management
-  sidebar + the seven-section nav, and inline dispatch to `ui.<module>.render(...)`. No workflow
+- **`app.py` is a thin entry point**: page config + compact product/context shell, the run-management
+  sidebar + the nine-page nav, and inline dispatch to `ui.<module>.render(...)`. No workflow
   logic lives here.
 - **`ui/` is the UI layer** — one module per workflow/section (`ui/<name>_tab.py` + `ui/engine_settings.py`,
   each exposing `render`) plus shared state (`ui/state.py`), shared render helpers (`ui/common.py`),
@@ -460,74 +481,31 @@ A non-PHREEQC model supplies predictions through the documented **model-predicti
 (`docs/model_prediction_format.md`). The Data tab's **"Import model predictions (CSV)"** path
 ingests it, and `scenarios.build_scenario_manifest` consumes it exactly like PHREEQC output.
 
-## Navigation — seven sections
+## Navigation — nine primary pages
 
-The dark left rail navigates seven sections (the **Assistant** is the default front door; every
-advanced workflow lives in one of the others).
+The durable Phase 2 page/workflow mapping is documented in
+[`docs/phase2_product_shell.md`](docs/phase2_product_shell.md). The previous Assistant, Workspace,
+Data & Validation, Projects/export, Evidence Library, Prediction Models, Engine Library, Digital Lab,
+and Settings functionality remains reachable under the nine pages above.
 
-### Assistant (the front door)
-A chat with example prompt chips and a right-side experiment-state panel (**Current experiment ·
-Engine status · Missing details · Recommended next action**). It asks for missing details, plans
-the route, and — only after you confirm — runs the deterministic tools and explains the estimate.
-For planning-only domains it shows a **planning-support** panel (suggested response variables + a
-downloadable data template + plan/missing-variable actions) instead of dead-ending. Technical detail
-(scenario JSON, policy decision, input preview, database report, release model, result table,
-provenance trace) is tucked under expanders, so the default view stays conversational.
+The former conversational Assistant and structured PHREEQC Workspace are sub-workspaces of
+**Material Workspace**. The complete measured workflow remains the four tabs under **Validation &
+Uncertainty**. Model management is reached from the ML machine workspace; ICP/XRD hands-on panels
+are reached from their canonical machine workspaces; and Engine Library is under **Settings &
+Diagnostics**. This keeps every important workflow reachable without a second navigation system.
 
-### Workspace (the structured builder)
-The structured version of what the assistant builds — the full manual Simulate workflow:
-
-- describe → AI/rule scenario → confirm → plan matrix → material profile → release model → database
-  & phases → draft `.pqi` preview → **gated PHREEQC run + small sweep + plots** → ranking / refined
-  sweep / target matching → save provenance. Plan generation runs nothing; execution is a separate
-  confirmed step. Advanced controls; the assistant is the simple way in.
-
-### Results
-A clean read-out of the latest prediction — estimated pH, key element totals, target-match status,
-sweep plots — always labelled **model prediction only, not validated**. Raw tables under expanders.
-
-### Data & Validation
-Measured data only — the rigorous measured-vs-model workflow, as sub-tabs (*simulation predicts;
-validation compares with reality*, kept separate):
-
-- **Import** — run-type-specific entry: a **generic** `.csv`/`.xlsx`/`.xls` importer (sheet
-  pick → fuzzy column mapping → unit conversion mg/L·ppm·ppb→mM → leachant/provenance → pre-save
-  validation → confirm-gated save) and a special-case **Class C fly ash dissolution-workbook**
-  parser; plus literature CSV upload, manual rows, row editing, and CSV/pipeline export.
-- **Validate** — measured-data overview, data-quality validation, the **Calculation Verification**
-  view (formula registry, per-row residual audit, calculators), and the model raw-outputs viewer.
-- **Match** — replicate-aware guided mapping of measured data to model predictions (current model:
-  PHREEQC): a Scenario Explorer (with the sol1/sol2/sol3 = replicate/batch explanation and the
-  OA/PF/GS cup-cover caveat), condition-level mapping with replicate inheritance, a collision
-  check, and the **"conditions needing new simulations"** table.
-- **Compare** — run the pipeline, then read the **measured-vs-model comparison** (inclusion
-  counts, residuals, systematic bias, the validity line; default replicate mean ± std), with the
-  "workflow check, not final validation" warning unless mappings are exact, plus the grounded
-  assistant and the experimental surrogate (display-only). **Simulation outputs are not validation
-  until compared here** against measured data.
-
-### Projects
-Saved simulation / planning / validation runs + material profiles, **report export**, the **audit
-trail**, and the in-app user guide.
-
-### Engine Library
-The modular **engine registry** — PHREEQC executable now (mature demo: Class C fly ash alkaline
-leaching); composites / mechanical / thermal / cementitious / battery / corrosion **planning-only**;
-future engines (literature RAG, ML surrogate, atomistic / MatterSim, mechanical-property
-prediction). PHREEQC is one engine in a library, not the whole app.
-
-### Settings
-The **AI** provider/model selector and status (never the key), the **PHREEQC** executable/database
-status + how to configure it, preferences (developer mode), and the **future AI-framework
-architecture** note (a LangGraph-style orchestrator + plugin-engine registry + RAG / ML / simulation
-/ validation agents) — see [`docs/ai_architecture.md`](docs/ai_architecture.md).
+The Phase 3 durable record, import, review, export, staleness, and licensing contracts are documented
+in [`docs/phase3_durable_workflows.md`](docs/phase3_durable_workflows.md). Runtime artifacts live in
+the gitignored `outputs/virtual_lab_workspace/`; uploaded instrument/reference files and generated
+research records are not repository content.
 
 ## Experiment runs / save files
 
-The app keeps several independent experiments side by side, like **save files** — each in its own
+The app keeps several independent legacy experiments side by side, like **save files** — each in its own
 `experiments/<safe_run_name>/` folder with a `run_config.yaml`, `data/`, and `outputs/`. This is an
-app-level save/open layer over the existing pipeline. Create one in the sidebar (**Experiment
-runs → ➕ Create new run**); see [`experiments/README.md`](experiments/README.md).
+app-level save/open layer over the existing pipeline. Manage/open these from **Projects**; see
+[`experiments/README.md`](experiments/README.md). The new durable project/material/run identity layer
+is separate and references existing artifacts without migrating or rewriting them.
 
 **Run types** decide which data file a run uses and how its data is treated:
 
@@ -605,13 +583,13 @@ python scripts/10_sample_design.py --run "<run>" --n-samples 200  # LHS design -
 
 ```
 flyash-phreeqc-ml/
-├── app.py                          # THIN entry point: sidebar + tab dispatch only
+├── app.py                          # THIN entry point: nine-page dispatch only
 ├── ui/                             # UI layer (one module per tab + shared state/helpers)
-│   ├── state.py · common.py · formatters.py
+│   ├── state.py · common.py · formatters.py · product_shell.py
 │   └── start_tab.py · simulate_tab.py · import_tab.py · validate_tab.py
 │       · match_tab.py · compare_tab.py · export_tab.py
 ├── flyash_phreeqc_ml/              # the importable package (the science)
-│   ├── config.py                   # all paths + domain constants in one place
+│   ├── config.py · workspace_store.py  # paths + durable Project/Material/Run records
 │   ├── parsers/                    # .pqi / .pqo / SELECTED_OUTPUT / ICP parsers
 │   ├── compare/                    # Phase 2: residuals + inclusion/validity
 │   ├── scenarios.py · replicates.py · mapping_table.py   # mapping + suggestion (no ML)
@@ -642,6 +620,7 @@ flyash-phreeqc-ml/
 | [`docs/mass_balance.md`](docs/mass_balance.md) · [`docs/defining_a_material.md`](docs/defining_a_material.md) | closure + new materials |
 | [`docs/ai_configuration.md`](docs/ai_configuration.md) | AI setup + safety |
 | [`docs/refactor_plan.md`](docs/refactor_plan.md) | UI architecture (developer note) |
+| [`docs/phase2_product_shell.md`](docs/phase2_product_shell.md) | Phase 2 pages, durable schema, workflow mapping, and staleness contract |
 | [`docs/user_guide/`](docs/user_guide/) | in-app user guide (also rendered in the Export tab) |
 
 ## Tests

@@ -8,6 +8,7 @@ emits a strength number.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 
 import pytest
@@ -137,8 +138,24 @@ def test_approved_rows_train_a_model_with_metrics_and_card():
 def test_demo_model_is_flagged_demo_and_bypasses_gate():
     model = train.train_demo_model(n=12)
     assert model.is_demo and model.validation_status == model_schema.VALIDATION_DEMO
+    assert model.training_status == model_schema.TRAINING_DATA_SYNTHETIC_DEMO
     assert model.source_type == training_data.SOURCE_DEMO
     assert any("DEMO" in lim for lim in model.card["limitations"])
+
+
+@sklearn_only
+def test_demo_true_rejects_approved_non_synthetic_rows():
+    with pytest.raises(train.DemoTrainingDataError):
+        train.train_model(_approved_lab_rows(n=14), demo=True)
+
+
+@sklearn_only
+def test_training_status_is_derived_from_exploratory_rows_not_a_transient_ui_label():
+    rows = _approved_lab_rows(n=14)
+    rows[0].user_review_status = training_data.REVIEW_PENDING
+    model = train.train_model(rows)
+    assert model.training_data_status == model_schema.TRAINING_DATA_EXPLORATORY
+    assert model.card["training_data_status"] == model_schema.TRAINING_DATA_EXPLORATORY
 
 
 @sklearn_only
@@ -197,6 +214,70 @@ def test_registry_save_load_list_overwrite(tmp_path):
 
 
 @sklearn_only
+def test_exploratory_status_survives_registry_card_and_prediction(tmp_path):
+    rows = _approved_lab_rows(n=14)
+    rows[0].user_review_status = training_data.REVIEW_PENDING
+    model = train.train_model(rows, exploratory=True)
+    assert model.training_status == model_schema.TRAINING_DATA_EXPLORATORY
+
+    reg = model_registry.ModelRegistry(tmp_path / "reg")
+    reg.save(model)
+    loaded = reg.load(model.name)
+    record = reg.list_models()[0]
+    card = reg.model_card(model.name)
+    prediction = predict_mod.predict(loaded, {"plastic_dosage_percent": 10})
+
+    assert loaded.training_status == model_schema.TRAINING_DATA_EXPLORATORY
+    assert record["training_data_status"] == model_schema.TRAINING_DATA_EXPLORATORY
+    assert card["training_data_status"] == model_schema.TRAINING_DATA_EXPLORATORY
+    assert prediction.training_data_status == model_schema.TRAINING_DATA_EXPLORATORY
+    assert any("EXPLORATORY MODEL" in warning for warning in prediction.warnings)
+    assert "accuracy" not in {str(k).lower() for k in loaded.metrics}
+
+
+@sklearn_only
+def test_approved_training_status_is_not_accidentally_converted_to_exploratory():
+    model = train.train_model(_approved_lab_rows(n=14))
+    prediction = predict_mod.predict(model, {"plastic_dosage_percent": 10})
+    assert model.training_status == model_schema.TRAINING_DATA_APPROVED
+    assert model.card["training_data_status"] == model_schema.TRAINING_DATA_APPROVED
+    assert prediction.training_data_status == model_schema.TRAINING_DATA_APPROVED
+    assert not any("EXPLORATORY MODEL" in warning for warning in prediction.warnings)
+
+
+@sklearn_only
+def test_legacy_artifact_without_training_status_is_conservative_everywhere(tmp_path):
+    import joblib
+
+    model = train.train_model(_approved_lab_rows(n=14))
+    reg = model_registry.ModelRegistry(tmp_path / "reg")
+    reg.save(model)
+    model_dir = reg.model_dir(model.name)
+
+    del model.__dict__["training_data_status"]
+    model.card.pop("training_data_status", None)
+    model.card.pop("training_data_status_label", None)
+    joblib.dump(model, model_dir / model_registry.MODEL_ARTIFACT)
+    for filename in (model_registry.CARD_FILE, model_registry.META_FILE):
+        path = model_dir / filename
+        data = json.loads(path.read_text())
+        data.pop("training_data_status", None)
+        data.pop("training_data_status_label", None)
+        path.write_text(json.dumps(data))
+
+    loaded = reg.load(model.name)
+    record = reg.list_models()[0]
+    card = reg.model_card(model.name)
+    prediction = predict_mod.predict(loaded, {"plastic_dosage_percent": 10})
+    legacy = model_schema.TRAINING_DATA_LEGACY_UNKNOWN
+    assert loaded.training_status == legacy
+    assert record["training_data_status"] == legacy
+    assert card["training_data_status"] == legacy
+    assert prediction.training_data_status == legacy
+    assert any("LEGACY MODEL" in warning for warning in prediction.warnings)
+
+
+@sklearn_only
 def test_has_strength_model_query(tmp_path):
     base = tmp_path / "reg"
     assert model_registry.has_strength_model(base) is False
@@ -205,6 +286,28 @@ def test_has_strength_model_query(tmp_path):
     assert model_registry.has_strength_model(base) is True
     assert model_registry.has_strength_model(base, include_demo=False) is False
     assert model_schema.TARGET_COMPRESSIVE in model_registry.available_targets(base)
+
+
+@sklearn_only
+def test_approved_experimental_model_is_discoverable_as_ordinary_surrogate(tmp_path):
+    base = tmp_path / "approved"
+    model = train.train_model(_approved_lab_rows(n=14))
+    model_registry.ModelRegistry(base).save(model)
+    assert model.training_status == model_schema.TRAINING_DATA_APPROVED
+    assert model.validation_status == model_schema.VALIDATION_EXPERIMENTAL
+    assert model_registry.has_strength_model(base, include_demo=False) is True
+
+
+@sklearn_only
+def test_demo_validation_is_excluded_even_if_training_status_says_approved(tmp_path):
+    base = tmp_path / "defensive-demo"
+    model = train.train_model(_approved_lab_rows(n=14))
+    model.validation_status = model_schema.VALIDATION_DEMO
+    model.name = "approved_rows_but_demo_validation"
+    model_registry.ModelRegistry(base).save(model)
+    assert model.training_status == model_schema.TRAINING_DATA_APPROVED
+    assert model_registry.has_strength_model(base, include_demo=True) is True
+    assert model_registry.has_strength_model(base, include_demo=False) is False
 
 
 def test_default_registry_dir_under_outputs():

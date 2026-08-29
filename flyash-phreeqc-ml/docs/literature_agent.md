@@ -18,12 +18,20 @@ future model would need.
 | rank candidates transparently + explain why each is useful | invent a value, a paper, or a citation |
 | extract structured values with AI **when text is available** | treat AI-extracted values as measured truth |
 | keep every value's **source + confidence + scope** | store raw model responses or full-text PDFs |
-| build a per-run evidence dataset (CSV-exportable) | train a model or predict strength *itself* |
+| build a durable, review-gated evidence dataset (CSV-exportable) | train a model or predict strength *itself* |
 
 The **literature package itself** does not simulate, train, or predict — it builds an *evidence
 database* with citations + provenance throughout. That curated database is what the separate
 **Prediction Models** engine (`ml_models`) trains a surrogate on — but only **approved** rows, and
 the resulting model is an *experimental* (never validated) screening estimate, not a measurement.
+
+Phase 3 also provides a durable manual editor and human-review lifecycle under the existing
+Evidence page. New manual, legacy-search, and AI-assisted entries route to typed, revisioned
+`ArtifactRecord` evidence. Historical per-run JSONL files are read-only compatibility input, not a
+second writable scientific authority. Manual records start as drafts, AI-origin records start as needs-review, and
+only an explicit named human action can mark evidence reviewed. Exact page/table/figure/source
+locations and deterministic CSV/JSON/provenance-package exports are retained. See
+[`phase3_durable_workflows.md`](phase3_durable_workflows.md#manual-evidence-and-human-review).
 
 ## Google Scholar is manual-only (never scraped)
 
@@ -57,9 +65,10 @@ raises, and nothing is fabricated.
 | `source_schema.py` | the supported sources + the provenance-carrying `PaperCandidate`; the Google-Scholar guard |
 | `search_clients.py` | the API clients behind one mockable `_http_get_json`; multi-source search + de-dup; manual entry |
 | `ranking.py` | transparent, deterministic relevance ranking + an explanation + an *extractable-data* flag |
-| `evidence_schema.py` | `LeachingEvidence` + `CompositeEvidence` (provenance required, missing → null, confidence + scope) |
+| `evidence_schema.py` | `LeachingEvidence` + `CompositeEvidence` (citation/discovery/source-location provenance, review state, missing → null, confidence + scope) |
 | `extraction.py` | the **only** AI module — extracts values from a paper's abstract; never fabricates; no raw response stored |
-| `evidence_store.py` | the per-run JSONL store (provenance enforced) + CSV export; safe location only |
+| `evidence_store.py` | read-only compatibility access for historical per-run JSONL evidence plus legacy export helpers; new records are never appended here |
+| `evidence_review.py` | durable manual/AI evidence creation, editing, submission, human review/rejection, revision, linking, filtering, and exports |
 | `research_agent.py` | query generation + the search orchestration (ranked, cited candidates) |
 
 ## Evidence schemas

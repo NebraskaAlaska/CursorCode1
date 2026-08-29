@@ -24,10 +24,12 @@ Pure — no Streamlit, no plotting. Operates on the frames handed in.
 from __future__ import annotations
 
 from collections import Counter
+import math
 
 import pandas as pd
 
 from .. import profiles, replicates
+from ..instruments import icp_processor as icp_qc
 
 # variable -> (measured_col, model_prediction_col). The fly-ash spec is the default,
 # sourced from the dataset profile (the single source of truth) so another dataset can
@@ -39,10 +41,13 @@ REASON_NO_MAPPING = "no saved mapping"
 REASON_UNSAFE = "mapping is unsafe (excluded by default)"
 REASON_NO_PREDICTION = "model prediction missing this variable"
 REASON_NO_MEASURED = "measured value missing/non-numeric"
-REASONS = [REASON_NO_MAPPING, REASON_UNSAFE, REASON_NO_PREDICTION, REASON_NO_MEASURED]
+REASON_ICP_QC = "ICP QC blocks ordinary residual validation"
+REASON_ICP_QC_UNVERIFIED = "ICP QC unverified / legacy unknown"
+REASONS = [REASON_NO_MAPPING, REASON_UNSAFE, REASON_NO_PREDICTION, REASON_NO_MEASURED,
+           REASON_ICP_QC, REASON_ICP_QC_UNVERIFIED]
 
 EXCLUDED_COLUMNS = ["sample_id", "condition_key", "phreeqc_record_key",
-                    "mapping_status", "reason"]
+                    "mapping_status", "reason", "qc_reasons"]
 PLOTTED_COLUMNS = ["sample_id", "condition_key", "phreeqc_record_key", "mapping_status",
                    "measured", "predicted", "residual", "flagged"]
 
@@ -80,7 +85,10 @@ COLLAPSE_MESSAGE = (
 def _num(value):
     """Best-effort float, or None for blank/non-numeric/NaN."""
     n = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    return None if pd.isna(n) else float(n)
+    if pd.isna(n):
+        return None
+    result = float(n)
+    return result if math.isfinite(result) else None
 
 
 def _blank_key(value) -> bool:
@@ -153,15 +161,21 @@ def comparison_inclusion(data: pd.DataFrame, mapping, comparison_df: pd.DataFram
 
     preds: dict[str, dict] = {}
     if manifest is not None and not manifest.empty and "phreeqc_record_key" in manifest.columns:
-        for _, r in manifest.iterrows():
-            preds[str(r.get("phreeqc_record_key", "")).strip()] = r.to_dict()
+        keys = manifest["phreeqc_record_key"].astype(str).str.strip()
+        counts = keys.value_counts(dropna=False)
+        for idx, key in keys.items():
+            if key and key.lower() != "nan" and int(counts.get(key, 0)) == 1:
+                preds[key] = manifest.loc[idx].to_dict()
 
     smap: dict[str, str] = {}
     if mapping is not None and not mapping.empty and "sample_id" in mapping.columns:
+        sample_ids = mapping["sample_id"].astype(str).str.strip()
+        counts = sample_ids.value_counts(dropna=False)
         for _, m in mapping.iterrows():
             sid = str(m.get("sample_id", "")).strip()
             key = str(m.get("phreeqc_record_key", "")).strip()
-            if sid and key and key.lower() != "nan":
+            if (sid and key and key.lower() != "nan"
+                    and int(counts.get(sid, 0)) == 1):
                 smap[sid] = key
 
     if comparison_df is None:
@@ -174,6 +188,14 @@ def comparison_inclusion(data: pd.DataFrame, mapping, comparison_df: pd.DataFram
         replicates.MAPPING_STATUS_EXACT, replicates.MAPPING_STATUS_SCENARIO,
         replicates.MAPPING_STATUS_UNSAFE, replicates.MAPPING_STATUS_NEEDS_NEW)}
     n_measured = n_mapped = n_pred = 0
+    measured_col_for_call = spec[0] if spec else variable
+    duplicate_samples: dict[str, int] = {}
+    if (measured_col_for_call in {f"{el}_mM" for el in ("Ca", "Si", "Al", "Fe")}
+            and "sample_id" in comparison_df.columns
+            and measured_col_for_call in comparison_df.columns):
+        numeric = pd.to_numeric(comparison_df[measured_col_for_call], errors="coerce")
+        finite = numeric.map(lambda value: pd.notna(value) and math.isfinite(float(value)))
+        duplicate_samples = comparison_df.loc[finite, "sample_id"].astype(str).value_counts().to_dict()
 
     for _, row in comparison_df.iterrows():
         rd = row.to_dict()
@@ -197,8 +219,25 @@ def comparison_inclusion(data: pd.DataFrame, mapping, comparison_df: pd.DataFram
         status = replicates.mapping_status(sample, scenario, profile)
         status_counts[status] = status_counts.get(status, 0) + 1
 
-        measured = _num(rd.get(spec[0])) if spec else _num(rd.get(variable))
-        predicted = _num(rd.get(spec[1])) if spec else None
+        measured_col = spec[0] if spec else variable
+        predicted_col = spec[1] if spec else None
+        measured = _num(rd.get(measured_col))
+        predicted = _num(rd.get(predicted_col)) if predicted_col else None
+        qc_blocked = False
+        qc_reasons = ""
+        residual_value = None
+        if measured_col in {f"{el}_mM" for el in ("Ca", "Si", "Al", "Fe")}:
+            element = measured_col.removesuffix("_mM")
+            residual_qc = icp_qc.serialized_residual_eligibility(rd, element)
+            residual_eligible = residual_qc.validation_eligible
+            qc_reasons = residual_qc.qc_reason
+            if duplicate_samples.get(sid, 0) > 1:
+                residual_eligible = False
+                duplicate_reason = (
+                    f"duplicate comparison rows for ({sid}, {element}); explicit selection required")
+                qc_reasons = "|".join(filter(None, (qc_reasons, duplicate_reason)))
+            qc_blocked = not bool(residual_eligible)
+            residual_value = _num(rd.get(f"residual_{element}"))
         if measured is not None:
             n_measured += 1
         if mapped:
@@ -215,6 +254,9 @@ def comparison_inclusion(data: pd.DataFrame, mapping, comparison_df: pd.DataFram
             reason = REASON_NO_PREDICTION
         elif measured is None:
             reason = REASON_NO_MEASURED
+        elif qc_blocked:
+            reason = (REASON_ICP_QC_UNVERIFIED
+                      if residual_qc.is_legacy_unknown else REASON_ICP_QC)
         else:
             reason = None
 
@@ -222,14 +264,14 @@ def comparison_inclusion(data: pd.DataFrame, mapping, comparison_df: pd.DataFram
             plotted_rows.append({
                 "sample_id": sid, "condition_key": ck, "phreeqc_record_key": rk,
                 "mapping_status": status, "measured": measured, "predicted": predicted,
-                "residual": measured - predicted,
+                "residual": residual_value if residual_value is not None else measured - predicted,
                 "flagged": status == replicates.MAPPING_STATUS_UNSAFE,
             })
         else:
             reason_counts[reason] += 1
             excluded_rows.append({
                 "sample_id": sid, "condition_key": ck, "phreeqc_record_key": rk,
-                "mapping_status": status, "reason": reason,
+                "mapping_status": status, "reason": reason, "qc_reasons": qc_reasons,
             })
 
     plotted = pd.DataFrame(plotted_rows, columns=PLOTTED_COLUMNS)

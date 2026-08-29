@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from . import units
+from .instruments import icp_processor as icp_qc
 
 # Atomic masses (g/mol) used for the ICP mg/L -> mM conversion. The single registry
 # lives in :mod:`flyash_phreeqc_ml.units`; this is a back-compat alias so existing
@@ -219,6 +220,7 @@ RESIDUAL_AUDITS: tuple[tuple[str, str, str, str, str], ...] = (
 AUDIT_COLUMNS = [
     "sample_id", "formula", "input_1", "input_2",
     "calculated_value", "stored_value", "difference", "status",
+    "serialized_icp_qc_state", "validation_eligible", "qc_reason",
 ]
 
 
@@ -299,6 +301,13 @@ def audit_comparison(df: pd.DataFrame,
             predicted = row.get(pheq_col)
             stored = row.get(resid_col)
             res = audit_residual(measured, predicted, stored, pass_tol, warn_tol)
+            if key == "pH":
+                qc_state, validation_eligible, qc_reason = "not_applicable", None, ""
+            else:
+                qc = icp_qc.serialized_residual_eligibility(row, key)
+                qc_state = qc.evidence_state
+                validation_eligible = qc.validation_eligible
+                qc_reason = qc.qc_reason
             records.append({
                 "sample_id": sample_id,
                 "formula": f"residual_{key} = {meas_col} - {pheq_col}",
@@ -308,6 +317,9 @@ def audit_comparison(df: pd.DataFrame,
                 "stored_value": res["stored_value"],
                 "difference": res["difference"],
                 "status": res["status"],
+                "serialized_icp_qc_state": qc_state,
+                "validation_eligible": validation_eligible,
+                "qc_reason": qc_reason,
             })
     return pd.DataFrame(records, columns=AUDIT_COLUMNS)
 

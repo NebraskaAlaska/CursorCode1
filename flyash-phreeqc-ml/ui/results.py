@@ -48,6 +48,7 @@ def _render_results(selected_run: str | None) -> None:
                        "**Workspace**). Results appear here once a simulation has been executed.")
         return
 
+    app_ui.render_epistemic_badge("simulated_model_estimate")
     app_ui.render_warning_panel("Not validation", NOT_VALIDATED, level="warning")
 
     # ---- headline cards ------------------------------------------------- #

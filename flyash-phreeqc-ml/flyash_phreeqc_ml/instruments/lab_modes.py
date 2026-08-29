@@ -2,10 +2,10 @@
 
 Phase 1 implements these as *deterministic state + honest helpers*, not full engines:
 
-* **Validation mode** — only a comparison against **measured** data counts as validation. A
-  simulation (or a prediction) on its own is **never** "validated". :func:`assess_validation`
-  returns the honest verdict and an ``is_validated`` flag that is True *only* when measured data is
-  present to compare against.
+* **Validation mode** — measured and predicted data make a comparison possible, but comparison or
+  residual existence alone is **never** "validated". :func:`assess_validation` does not receive
+  mapping quality, QC eligibility, acceptance criteria, or their result, so it always leaves the
+  validation claim false and directs callers to the criteria-bearing validation workflow.
 * **Uncertainty / sensitivity mode** — suggests which variables to vary (release fraction, L/S,
   reagent concentration, composition uncertainty …). It never fabricates a statistical certainty.
 * **Evidence mode** — points at sourced literature/measured evidence; it never invents sources.
@@ -34,7 +34,7 @@ VAL_COMPARED = "compared_to_measured"
 
 @dataclass(frozen=True)
 class ValidationVerdict:
-    """An honest validation verdict. ``is_validated`` is True only with a measured comparison."""
+    """An honest availability verdict; this criteria-free helper never validates a model."""
 
     has_measured: bool
     has_simulation: bool
@@ -58,20 +58,20 @@ def assess_validation(*, has_measured: bool, has_simulation: bool) -> Validation
     """The honest validation verdict for what data is on hand.
 
     * no measured data → **not validated** (simulation-only or nothing), whatever the model says;
-    * measured + a model prediction → a comparison is possible (``is_validated=True``);
+    * measured + a model prediction → a comparison is possible but is not itself validation;
     * measured only → nothing to compare against yet.
 
-    ``is_validated`` is True **only** when both measured data and a model prediction exist — so
-    validation mode can never label a bare simulation "validated".
+    This helper has no acceptance criteria or QC/mapping result, so ``is_validated`` is always
+    False. The Validation & Uncertainty machine owns the separate criteria-bearing claim gate.
     """
     has_measured = bool(has_measured)
     has_simulation = bool(has_simulation)
     if has_measured and has_simulation:
         return ValidationVerdict(
-            True, True, VAL_COMPARED, True,
-            "Comparable — measured data is available to compare against the model.",
-            "Compute residuals (e.g. via the ICP Data Processor) to quantify agreement; agreement "
-            "is meaningful only if the mapping is scientifically valid.")
+            True, True, VAL_COMPARED, False,
+            "Comparison available — measured and predicted data are present; not validated.",
+            "Compute QC-eligible residuals and evaluate explicit acceptance criteria in the "
+            "Validation & Uncertainty workflow. A residual alone is not validation.")
     if has_simulation:
         return ValidationVerdict(
             False, True, VAL_SIMULATION_ONLY, False,

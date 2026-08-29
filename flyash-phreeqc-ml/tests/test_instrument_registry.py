@@ -1,10 +1,4 @@
-"""Pins for the Digital Lab **instrument registry** + metadata schema.
-
-These keep the registry honest: every instrument is fully described (no half-registered
-instruments), the mode / execution-mode vocabularies are respected, exactly the three Phase-1
-instruments carry real behavior, readiness is derived consistently, and no instrument's metadata
-ever leaks a secret / API key.
-"""
+"""Phase 1C pins for the deprecated instrument-registry compatibility view."""
 from __future__ import annotations
 
 import re
@@ -12,18 +6,27 @@ from pathlib import Path
 
 from flyash_phreeqc_ml.instruments import instrument_registry as reg
 from flyash_phreeqc_ml.instruments import instrument_schema as schema
+from flyash_phreeqc_ml.instruments import virtual_lab_machines as machines
 
-EXPECTED_IDS = {
-    "phreeqc_leaching_simulator", "icp_data_processor", "xrd_advisory_module",
-    "mechanical_test_processor", "ml_surrogate_predictor", "literature_evidence_engine",
-    "sustainability_screening", "ftir_raman_interpreter", "sem_eds_processor", "tga_dsc_processor",
-}
+EXPECTED_IDS = (
+    "phreeqc_leaching_simulator",
+    "xrd_advisory",
+    "icp_data_processor",
+    "ftir_raman_interpreter",
+    "sem_eds_processor",
+    "tga_dsc_processor",
+    "mechanical_testing_processor",
+    "ml_surrogate_predictor",
+    "literature_evidence_engine",
+    "sustainability_cost_screening",
+    "experimental_design_assistant",
+    "validation_uncertainty_assistant",
+)
 
 
 def test_all_required_instruments_registered():
-    ids = set(reg.instrument_ids())
-    assert EXPECTED_IDS <= ids, f"missing instruments: {EXPECTED_IDS - ids}"
-    assert len(reg.all_instruments()) == len(reg.instrument_ids()) == 10
+    assert reg.instrument_ids() == EXPECTED_IDS
+    assert len(reg.all_instruments()) == len(reg.instrument_ids()) == 12
 
 
 def test_registry_metadata_completeness():
@@ -39,19 +42,33 @@ def test_modes_and_execution_modes_are_from_the_vocabulary():
             f"{spec.instrument_id}: bad execution_mode {spec.execution_mode!r}"
 
 
-def test_only_phreeqc_icp_xrd_are_active():
-    active = {s.instrument_id for s in reg.active_instruments()}
-    assert active == {"phreeqc_leaching_simulator", "icp_data_processor", "xrd_advisory_module"}
+def test_registry_is_a_read_only_view_over_the_canonical_contract():
+    canonical = machines.list_virtual_lab_machines()
+    compatibility = reg.all_instruments()
+    assert tuple(spec.canonical_machine for spec in compatibility) == canonical
+    assert all(spec.canonical_machine is machine
+               for spec, machine in zip(compatibility, canonical, strict=True))
+    assert reg.instrument_ids() is not machines.machine_ids()  # equal values, no shared mutable list
+    assert reg.instrument_ids() == machines.machine_ids()
+
+
+def test_deprecated_active_view_is_static_implementation_not_runtime_availability():
+    active = reg.active_instruments()
+    assert active
+    assert all(spec.active == spec.canonical_machine.has_static_implementation for spec in active)
+    phreeqc = reg.require(machines.PHREEQC_LEACHING)
+    assert phreeqc.active is True
+    assert "executable" in " ".join(phreeqc.runtime_requirements).lower()
 
 
 def test_readiness_is_derived_consistently():
     assert reg.require("phreeqc_leaching_simulator").readiness() == schema.READY
     assert reg.require("icp_data_processor").readiness() == schema.DATA_PROCESSING
-    assert reg.require("xrd_advisory_module").readiness() == schema.ADVISORY
+    assert reg.require("xrd_advisory").readiness() == schema.ADVISORY
     assert reg.require("ml_surrogate_predictor").readiness() == schema.TRAINED_MODEL_REQUIRED
     assert reg.require("literature_evidence_engine").readiness() == schema.EVIDENCE_REQUIRED
-    # advisory-only placeholders → planning
-    assert reg.require("ftir_raman_interpreter").readiness() == schema.PLANNING
+    assert reg.require("ftir_raman_interpreter").readiness() == schema.EVIDENCE_REQUIRED
+    assert reg.require("experimental_design_assistant").readiness() == schema.PLANNING
     for spec in reg.all_instruments():
         assert spec.readiness_badge() in ("success", "info", "warning", "neutral")
 
@@ -62,15 +79,10 @@ def test_every_instrument_states_a_limitation_and_safety_note():
         assert spec.safety_notes, f"{spec.instrument_id} has no safety notes"
 
 
-def test_placeholders_declare_no_executable_engine_in_limitations():
-    """The non-active placeholders must say plainly that no engine exists yet (honest UI)."""
+def test_every_compatibility_view_exposes_honest_runtime_requirements():
     for spec in reg.all_instruments():
-        if spec.active:
-            continue
-        blob = " ".join(spec.limitations).lower()
-        assert ("no " in blob and ("engine" in blob or "model" in blob or "library" in blob
-                                   or "lca" in blob)) or "not a" in blob or "require" in blob, \
-            f"{spec.instrument_id} does not state its limitation clearly: {spec.limitations}"
+        assert spec.runtime_requirements
+        assert spec.backend_binding
 
 
 def test_to_dict_is_json_safe_and_lists_readiness():
@@ -78,6 +90,28 @@ def test_to_dict_is_json_safe_and_lists_readiness():
     assert d["instrument_id"] == "icp_data_processor"
     assert isinstance(d["required_inputs"], list) and d["required_inputs"]
     assert d["readiness"] == schema.DATA_PROCESSING
+
+
+def test_legacy_ids_resolve_but_never_escape_as_new_ids():
+    aliases = {
+        "xrd_advisory_module": "xrd_advisory",
+        "mechanical_test_processor": "mechanical_testing_processor",
+        "sustainability_screening": "sustainability_cost_screening",
+    }
+    for legacy, canonical in aliases.items():
+        assert reg.require(legacy).instrument_id == canonical
+        assert reg.get(legacy) is reg.get(canonical)
+        assert reg.display_name(legacy) == reg.display_name(canonical)
+
+
+def test_unknown_registry_id_fails_explicitly():
+    assert reg.get("unrelated-string") is None
+    try:
+        reg.require("unrelated-string")
+    except KeyError as exc:
+        assert "unknown instrument" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("unknown registry id did not fail")
 
 
 _SECRET_RE = re.compile(r"sk-[A-Za-z0-9]{8,}|api[_-]?key\s*[:=]\s*\S+|secret\s*[:=]\s*\S+", re.I)
