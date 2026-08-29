@@ -72,8 +72,17 @@ def _mock_execution_environment(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_ai(monkeypatch):
     """AI disabled + no Streamlit secrets, so AI runs only when a fake client is injected."""
-    for name in (ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV):
+    for name in (
+        ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV,
+        ai_config.AI_PROVIDER_ENV, ai_config.AI_MODEL_ENV, ai_config.AI_BASE_URL_ENV,
+        ai_config.AI_LOCATION_ENV, ai_config.AI_ALLOWED_HOSTS_ENV,
+        ai_config.AI_ADMIN_MANAGED_ENV, ai_config.AI_API_KEY_ENV,
+        ai_config.OPENAI_API_KEY_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ai_config.DEPLOYMENT_MODE_ENV, "local")
+    monkeypatch.setattr(config, "PHREEQC_EXE_PATH", None)
+    monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", None)
     ai_config.clear_runtime_overrides()
     monkeypatch.setattr(ai_config, "_secrets_get", lambda name: None)
     yield
@@ -169,6 +178,7 @@ def test_failed_ai_call_falls_back_one_turn(monkeypatch):
 def test_phreeqc_env_makes_both_report_ready(monkeypatch, tmp_path):
     exe = tmp_path / "phreeqc"
     exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
     db = tmp_path / "phreeqc.dat"
     db.write_text("# fake database")
     monkeypatch.setattr(config, "PHREEQC_EXE_PATH", str(exe))
@@ -187,6 +197,7 @@ def test_phreeqc_env_ready_in_settings_and_assistant_ui(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
     exe = tmp_path / "phreeqc"
     exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
     db = tmp_path / "phreeqc.dat"
     db.write_text("# fake database")
     monkeypatch.setattr(config, "PHREEQC_EXE_PATH", str(exe))

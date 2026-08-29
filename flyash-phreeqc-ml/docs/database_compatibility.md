@@ -22,7 +22,9 @@ phases (**Portlandite, Ettringite, C-S-H**) that actually buffer Ca/Al/Si at pH 
 `phreeqc.dat`, a fly-ash alkaline-activation prediction under-constrains Ca/Al/Si solubility.
 
 **CEMDATA18** is the cementitious thermodynamic database designed for exactly these systems. It is
-**not redistributable**, so the project never ships it.
+**`external_only`** because reviewed official evidence did not establish explicit redistribution
+permission. The project does not bundle, mirror, or commit it; a user/admin imports an officially
+obtained copy only after rights confirmation and hashing.
 
 ## Configuring CEMDATA18 (if you have it locally)
 

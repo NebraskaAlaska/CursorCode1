@@ -19,8 +19,9 @@ from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
 from flyash_phreeqc_ml.ai import import_assist  # noqa: E402  (optional AI helpers)
+from flyash_phreeqc_ml.security.identity import current_identity  # noqa: E402
 
-from ui.common import _render_next_step
+from ui.common import _guard_table_shape, _guard_uploaded_file, _render_next_step
 from ui.state import MANUAL_ENTRY_FILENAME, _read_csv, _rel, _scenario_manifest
 
 MANUAL_ENTRY_PATH = config.EXPERIMENTAL_ICP_DIR / MANUAL_ENTRY_FILENAME
@@ -46,10 +47,10 @@ def _run_type_warning(run_type: str) -> None:
     else:  # plastic_composite
         st.warning(f"♻️ {msg}")
 
-def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]:
+def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str, bytes | None]:
     """Read an uploaded CSV/Excel into a raw frame (handles sheet selection).
 
-    Returns ``(raw_df_or_None, kind, sheet_name)``. Renders the file-type / sheet
+    Returns ``(raw_df_or_None, kind, sheet_name, validated_bytes)``. Renders the file-type / sheet
     widgets and any read error inline. ``raw_df`` is None when the file can't be
     read yet (bad type, unreadable, or empty).
     """
@@ -57,16 +58,19 @@ def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]
         kind = import_mapping.file_kind(up.name)
     except import_mapping.ImportMappingError as exc:
         st.error(str(exc))
-        return None, "", ""
+        return None, "", "", None
 
-    data = up.getvalue()
+    validated = _guard_uploaded_file(up, allowed_extensions={".csv", ".xlsx", ".xls"})
+    if validated is None:
+        return None, kind, "", None
+    data = validated.data
     sheet_name = ""
     if kind == "excel":
         try:
             sheets = import_mapping.list_excel_sheets(io.BytesIO(data))
         except import_mapping.ImportMappingError as exc:
             st.error(str(exc))
-            return None, kind, ""
+            return None, kind, "", None
         sheet_name = st.selectbox(
             "Select sheet", sheets, key=f"lab_import_sheet_{run_name}",
             help="Excel workbooks can hold several sheets — pick the one to import.",
@@ -76,15 +80,17 @@ def _import_raw_frame(run_name: str, up) -> tuple[pd.DataFrame | None, str, str]
         raw = import_mapping.read_tabular(io.BytesIO(data), kind=kind, sheet=sheet_name or None)
     except import_mapping.ImportMappingError as exc:
         st.error(str(exc))
-        return None, kind, sheet_name
+        return None, kind, sheet_name, None
     except Exception as exc:  # pragma: no cover - UI guard
         st.error(f"Could not read file: {exc}")
-        return None, kind, sheet_name
+        return None, kind, sheet_name, None
 
+    if not _guard_table_shape(raw):
+        return None, kind, sheet_name, None
     if raw.empty:
         st.warning("The selected file / sheet has no rows.")
-        return None, kind, sheet_name
-    return raw, kind, sheet_name
+        return None, kind, sheet_name, None
+    return raw, kind, sheet_name, data
 
 def _import_render_report(report: dict) -> None:
     """Render the pre-save validation summary (Feature 7) inline."""
@@ -155,6 +161,11 @@ def _render_model_predictions_import(run_name: str) -> None:
     """
     from flyash_phreeqc_ml.parsers import generic_prediction_parser as gpp
 
+    if current_identity().is_hosted:
+        st.info("The legacy shared model-prediction import is unavailable in hosted mode. "
+                "Use tenant-scoped simulation runs instead.")
+        return
+
     with st.expander("Import model predictions (CSV) — a model other than PHREEQC",
                      expanded=False):
         st.caption(
@@ -167,10 +178,15 @@ def _render_model_predictions_import(run_name: str) -> None:
                               key=f"mp_up_{run_name}")
         if up is None:
             return
+        validated = _guard_uploaded_file(up, allowed_extensions={".csv"})
+        if validated is None:
+            return
         try:
-            raw = pd.read_csv(up)
+            raw = pd.read_csv(io.BytesIO(validated.data))
         except Exception as exc:  # noqa: BLE001 - surface any read error to the user
             st.error(f"Could not read CSV: {exc}")
+            return
+        if not _guard_table_shape(raw):
             return
         st.markdown("**Uploaded preview**")
         st.dataframe(raw.head(20), use_container_width=True, height=180)
@@ -202,8 +218,8 @@ def _render_model_predictions_import(run_name: str) -> None:
             dest = config.PROCESSED_DIR / config.MODEL_PREDICTIONS_CSV
             dest.parent.mkdir(parents=True, exist_ok=True)
             parsed.to_csv(dest, index=False)
-            audit.log_event(run_name, "model_predictions_import", {
-                "file_name": getattr(up, "name", None),
+            audit.log_event(run_name, audit.EVENT_MODEL_PREDICTIONS_IMPORT, {
+                "file": validated.to_safe_dict(),
                 "model_names": model_names, "n_rows": int(len(parsed))})
             _scenario_manifest.clear()
             st.success(f"Saved {len(parsed)} model prediction(s) → "
@@ -215,11 +231,10 @@ def _render_model_predictions_import(run_name: str) -> None:
 # Everything it proposes flows into the existing review/confirm UI below; nothing
 # AI-touched is saved without the explicit confirm-gated save.
 # --------------------------------------------------------------------------- #
-def _ai_sheet_previews(up, kind: str, raw: pd.DataFrame) -> list[dict]:
+def _ai_sheet_previews(data: bytes, kind: str, raw: pd.DataFrame) -> list[dict]:
     """Build minimal per-sheet previews (headers + first rows) for classify_sheets."""
     n = import_assist.MAX_SAMPLE_ROWS
     if kind == "excel":
-        data = up.getvalue()
         previews: list[dict] = []
         try:
             sheets = import_mapping.list_excel_sheets(io.BytesIO(data))
@@ -270,7 +285,7 @@ def _render_ai_names_table(names: list[dict]) -> None:
     st.caption("Suggestions only — saved rows keep their mapped values; the saved CSV "
                "records each row's provenance (`rule` / `ai-confirmed` / `manual`).")
 
-def _render_ai_import_assist(run_name: str, up, kind: str, raw: pd.DataFrame) -> None:
+def _render_ai_import_assist(run_name: str, data: bytes, kind: str, raw: pd.DataFrame) -> None:
     """The 'AI assist (optional)' expander: consent gate + a button per AI function.
 
     Suggestions land in session_state and are consumed by the existing column-mapping
@@ -279,9 +294,9 @@ def _render_ai_import_assist(run_name: str, up, kind: str, raw: pd.DataFrame) ->
     with st.expander("🤖 AI assist (optional) — propose interpretations of messy files"):
         if not import_assist.is_enabled():
             st.caption(
-                "AI assist is disabled. Set the `ANTHROPIC_API_KEY` environment variable "
-                "and `pip install anthropic` to enable optional suggestions. The importer "
-                "works fully without it."
+                "AI assist is disabled. Configure an approved provider and explicitly enable "
+                "live AI in Settings & Diagnostics to use optional suggestions. The importer "
+                "works fully without AI."
             )
             return
 
@@ -298,7 +313,7 @@ def _render_ai_import_assist(run_name: str, up, kind: str, raw: pd.DataFrame) ->
         if b1.button("Classify sheets", key=f"ai_sheets_btn_{run_name}"):
             with st.spinner("Asking the model to classify sheets…"):
                 st.session_state[f"ai_sheets_{run_name}"] = import_assist.classify_sheets(
-                    _ai_sheet_previews(up, kind, raw))
+                    _ai_sheet_previews(data, kind, raw))
         if b2.button("Suggest column mapping", key=f"ai_colmap_btn_{run_name}"):
             with st.spinner("Asking the model to map columns…"):
                 st.session_state[f"ai_colmap_{run_name}"] = import_assist.propose_column_mapping(
@@ -351,7 +366,7 @@ def _generic_table_import(run_name: str) -> None:
     if up is None:
         return
 
-    raw, kind, sheet_name = _import_raw_frame(run_name, up)
+    raw, kind, sheet_name, validated_data = _import_raw_frame(run_name, up)
     if raw is None:
         return
 
@@ -366,7 +381,7 @@ def _generic_table_import(run_name: str) -> None:
     st.caption("Detected columns: " + ", ".join(f"`{c}`" for c in map(str, raw.columns)))
 
     # Optional AI assist — sets suggestion state consumed by the editors below.
-    _render_ai_import_assist(run_name, up, kind, raw)
+    _render_ai_import_assist(run_name, validated_data or b"", kind, raw)
 
     # AI column-mapping suggestions (if any) become the editor defaults, layered
     # over the fuzzy guess. They are defaults only — the user still confirms.
@@ -560,6 +575,9 @@ def _dissolution_import(run_name: str) -> None:
     )
     if up is None:
         return
+    validated = _guard_uploaded_file(up, allowed_extensions={".xlsx", ".xls"})
+    if validated is None:
+        return
 
     # Feature 6 — shared metadata the user sets once for every imported row.
     st.markdown("**1 · Default metadata for all imported rows**")
@@ -592,7 +610,7 @@ def _dissolution_import(run_name: str) -> None:
 
     try:
         transformed, report = dissolution_workbook.normalize_dissolution_workbook(
-            io.BytesIO(up.getvalue()), defaults=defaults, include_hcl=include_hcl,
+            io.BytesIO(validated.data), defaults=defaults, include_hcl=include_hcl,
             filename=up.name,
         )
     except dissolution_workbook.DissolutionWorkbookError as exc:
@@ -600,6 +618,9 @@ def _dissolution_import(run_name: str) -> None:
         return
     except Exception as exc:  # pragma: no cover - UI guard
         st.error(f"Could not parse workbook: {exc}")
+        return
+
+    if not _guard_table_shape(transformed):
         return
 
     if transformed.empty:
@@ -730,8 +751,13 @@ def _literature_entry(run_name: str) -> None:
     )
     up = st.file_uploader("Upload a literature CSV", type=["csv"], key=f"lit_up_{run_name}")
     if up is not None:
+        validated = _guard_uploaded_file(up, allowed_extensions={".csv"})
+        if validated is None:
+            return
         try:
-            df = pd.read_csv(up)
+            df = pd.read_csv(io.BytesIO(validated.data))
+            if not _guard_table_shape(df):
+                return
             path = run_manager.save_literature_dataframe(run_name, df)
             st.success(f"Saved {len(df)} row(s) to {_rel(path)}.")
             _read_csv.clear()
@@ -941,6 +967,10 @@ def _render_import_tab(selected_run: str | None) -> None:
         _render_legacy_global_form()
 
 def _render_legacy_global_form() -> None:
+    if current_identity().is_hosted:
+        st.info("Legacy shared pipeline data entry is disabled in hosted mode. Use the "
+                "tenant-scoped run form above.")
+        return
     st.write(
         f"Submitting appends one row to `{_rel(MANUAL_ENTRY_PATH)}` "
         "(existing rows are never overwritten). Leave a field blank if not measured."

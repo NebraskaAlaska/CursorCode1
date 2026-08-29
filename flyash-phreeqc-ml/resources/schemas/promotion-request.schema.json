@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/promotion-request.schema.json",
+  "title": "Explicit human-admin promotion request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "proposal_id", "candidate_sha256", "actor_type", "actor_role", "admin_confirmation"],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.resource-promotion-request"},
+    "version": {"const": 1},
+    "proposal_id": {"type": "string", "pattern": "^proposal-[0-9a-f]{24}$"},
+    "candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "actor_type": {"const": "human"},
+    "actor_role": {"const": "admin"},
+    "admin_confirmation": {"type": "string", "pattern": "^PROMOTE proposal-[0-9a-f]{24} [0-9a-f]{64}$"}
+  }
+}

@@ -156,7 +156,7 @@ def test_database_parse():
     assert csp.parse_database("use the wateq4f.dat database").name == "wateq4f.dat"
     assert csp.parse_database("leach fly ash with NaOH") is None
     cem = csp.parse_database("use the CEMDATA18 database")
-    assert cem.name == "CEMDATA18" and cem.warnings                # carries the not-redistributable note
+    assert cem.name == "CEMDATA18" and cem.warnings  # carries the external-only rights-evidence note
 
 
 # --------------------------------------------------------------------------- #

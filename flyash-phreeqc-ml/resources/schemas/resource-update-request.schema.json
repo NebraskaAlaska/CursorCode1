@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/resource-update-request.schema.json",
+  "title": "Phase 5 resource-update request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "request_id", "action", "resource_id", "resource_kind", "requested_at", "requested_by", "constraints", "notes"],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.resource-update-request"},
+    "version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^request-[0-9a-f]{24}$"},
+    "action": {"const": "check"},
+    "resource_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$"},
+    "resource_kind": {"enum": ["phreeqc_runtime", "phreeqc_official_database", "external_thermodynamic_database", "database_extension", "documentation_knowledge_pack", "ai_provider_model"]},
+    "requested_at": {"type": "string", "format": "date-time"},
+    "requested_by": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor_id", "actor_type", "actor_role"],
+      "properties": {
+        "actor_id": {"type": "string", "minLength": 1},
+        "actor_type": {"enum": ["human", "council_operator"]},
+        "actor_role": {"enum": ["user", "admin", "council_operator"]}
+      }
+    },
+    "constraints": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sandbox_only", "allow_live_checkout_modification", "allow_main_modification", "allow_deploy", "allow_database_switch", "requires_human_promotion"],
+      "properties": {
+        "sandbox_only": {"const": true},
+        "allow_live_checkout_modification": {"const": false},
+        "allow_main_modification": {"const": false},
+        "allow_deploy": {"const": false},
+        "allow_database_switch": {"const": false},
+        "requires_human_promotion": {"const": true}
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

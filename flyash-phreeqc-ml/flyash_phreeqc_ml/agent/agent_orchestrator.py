@@ -33,7 +33,7 @@ from . import (agent_council, agent_policy, agent_state, chat_setup_parser, doma
 # Per-session consent notice (same spirit as the other AI features).
 AGENT_DATA_NOTICE = (
     "The assistant sends your conversation (your experiment description + replies) and the "
-    "current structured scenario to the Anthropic API to plan the next step — data leaves this "
+    "current structured scenario to the configured AI provider to plan the next step — data leaves this "
     "machine for this feature only. It never sends measured data, API keys, or files; it only "
     "proposes the next action, and nothing runs or is saved without your explicit confirmation.")
 AGENT_CONSENT_LABEL = (

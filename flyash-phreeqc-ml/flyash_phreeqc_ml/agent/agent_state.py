@@ -236,6 +236,10 @@ class AgentState:
     last_ai_error_type: str | None = None                   # stable category of the last AI failure
     last_ai_error_message: str | None = None                # sanitized reason (no key, no raw text)
 
+    # Exact versioned scientific-resource facts supplied to the model on its latest turn.
+    # This contains public resource identity/citation metadata only—never a key or raw response.
+    resource_knowledge_provenance: dict = field(default_factory=dict)
+
     # advisory council review (a CouncilReview; duck-typed so this module imports no AI/council)
     last_council: object = None
 
@@ -499,6 +503,7 @@ class AgentState:
             "confirmed_assumptions": self.confirmed_assumptions(),
             "material_profile_summary": mp_summary,
             "release_model_status": self.release_model_status,
+            "resource_knowledge_provenance": dict(self.resource_knowledge_provenance),
             "warnings": list(self.warnings),
             "council_review": council,
             "not_validated_warning": NOT_VALIDATED_WARNING,

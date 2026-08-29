@@ -1,31 +1,35 @@
-"""Safe Anthropic client wrapper.
+"""Safe provider-neutral AI client wrapper.
 
-Builds an Anthropic client *only* when AI is enabled, fails gracefully (a structured
-result, never an exception) when the key or SDK is missing, and **never exposes the API
-key** — not in a return value, an error message, or a log. Every AI helper resolves its
-client through here, so the "disabled" path is identical everywhere and the key/model
-logic lives in exactly one place (:mod:`.config`).
+Builds the selected provider client *only* when AI is enabled, fails gracefully (a
+structured result, never an exception) when required configuration is missing, and
+**never exposes credentials** in a return value, error message, or log. Every live AI
+helper resolves its client through here, so the disabled path is identical everywhere
+and provider/model rules live in exactly one place (:mod:`.config`).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from . import config as ai_config
+from . import provider_contract
 
 # --------------------------------------------------------------------------- #
 # Structured error codes (stable strings the UI / tests can switch on).
 # --------------------------------------------------------------------------- #
 ERROR_NONE: str | None = None
+ERROR_DISABLED = "ai_disabled"
 ERROR_NO_KEY = "no_api_key"
 ERROR_NO_SDK = "sdk_unavailable"
 ERROR_UNSUPPORTED_PROVIDER = "unsupported_provider"
+ERROR_CONFIGURATION = "unsafe_configuration"
 ERROR_CLIENT_INIT = "client_init_failed"
 
 _ERROR_MESSAGES = {
-    ERROR_NO_KEY: (f"No API key found. Set the {ai_config.API_KEY_ENV} environment "
-                   "variable or add it to your Streamlit secrets."),
+    ERROR_DISABLED: "AI is disabled by the global live-AI setting.",
+    ERROR_NO_KEY: "No administrator/user API credential was found for this provider.",
     ERROR_NO_SDK: "The optional 'anthropic' SDK is not installed (pip install anthropic).",
     ERROR_UNSUPPORTED_PROVIDER: "The selected AI provider is not supported.",
+    ERROR_CONFIGURATION: "The selected AI provider configuration is unavailable or unsafe.",
     ERROR_CLIENT_INIT: "The AI client could not be initialised.",
 }
 
@@ -58,12 +62,18 @@ def _construct_anthropic(api_key: str):
     backoff. Both are non-secret config values.
     """
     import anthropic
-    return anthropic.Anthropic(api_key=api_key, timeout=ai_config.REQUEST_TIMEOUT_S,
-                               max_retries=ai_config.MAX_RETRIES)
+    inner = anthropic.Anthropic(api_key=api_key, timeout=ai_config.REQUEST_TIMEOUT_S,
+                                max_retries=ai_config.MAX_RETRIES)
+    return provider_contract.guard_client(inner)
+
+
+def _construct_provider(settings: provider_contract.ProviderSettings, secret: str | None):
+    """Construct a non-Anthropic adapter client without contacting the endpoint."""
+    return provider_contract.create_adapter(settings, secret=secret).client()
 
 
 def get_client(injected=None, *, provider: str | None = None,
-               model: str | None = None) -> ClientResult:
+               model: str | None = None, respect_master_switch: bool = True) -> ClientResult:
     """Resolve a usable client as a structured result (never raises).
 
     * ``injected`` (a test/fake client) is returned as-is with ``ok=True`` — the injection
@@ -74,16 +84,30 @@ def get_client(injected=None, *, provider: str | None = None,
     cfg = ai_config.resolve_config(provider=provider, model=model)
     if injected is not None:
         return ClientResult(injected, True, ERROR_NONE, None, cfg)
-    if cfg.provider not in ai_config.SUPPORTED_PROVIDERS:   # defensive; provider is clamped
+    if cfg.provider not in ai_config.SUPPORTED_PROVIDERS:
         return ClientResult(None, False, ERROR_UNSUPPORTED_PROVIDER,
                             _ERROR_MESSAGES[ERROR_UNSUPPORTED_PROVIDER], cfg)
-    if not cfg.sdk_available:
+    if cfg.configuration_error:
+        return ClientResult(None, False, ERROR_CONFIGURATION,
+                            _ERROR_MESSAGES[ERROR_CONFIGURATION], cfg)
+    if cfg.provider == ai_config.PROVIDER_DISABLED:
+        return ClientResult(None, False, ERROR_DISABLED, _ERROR_MESSAGES[ERROR_DISABLED], cfg)
+    if respect_master_switch and ai_config._under_streamlit_runtime() \
+            and not ai_config.is_enabled(provider=provider, model=model):
+        return ClientResult(None, False, ERROR_DISABLED, _ERROR_MESSAGES[ERROR_DISABLED], cfg)
+    if cfg.provider == ai_config.PROVIDER_ANTHROPIC and not cfg.sdk_available:
         return ClientResult(None, False, ERROR_NO_SDK, _ERROR_MESSAGES[ERROR_NO_SDK], cfg)
-    key, _source = ai_config.detect_api_key()
-    if not key:
+    key, _source = ai_config.detect_api_key(cfg.provider)
+    key_required = cfg.provider == ai_config.PROVIDER_ANTHROPIC \
+        or (cfg.provider == ai_config.PROVIDER_OPENAI_COMPATIBLE and cfg.location == "cloud")
+    if key_required and not key:
         return ClientResult(None, False, ERROR_NO_KEY, _ERROR_MESSAGES[ERROR_NO_KEY], cfg)
     try:
-        client = _construct_anthropic(key)
+        if cfg.provider == ai_config.PROVIDER_ANTHROPIC:
+            client = _construct_anthropic(key)
+        else:
+            settings = ai_config.resolve_provider_settings(provider=cfg.provider, model=cfg.model)
+            client = _construct_provider(settings, key)
     except Exception as exc:   # never surface the key — only the exception *type*
         msg = f"{_ERROR_MESSAGES[ERROR_CLIENT_INIT]} ({type(exc).__name__})"
         return ClientResult(None, False, ERROR_CLIENT_INIT, msg, cfg)
@@ -116,6 +140,7 @@ CALL_INVALID_JSON = "invalid_json_response"
 CALL_PROCESSING = "response_processing_error"
 CALL_EMPTY = "empty_response"
 CALL_UNKNOWN = "unknown_error"
+CALL_SCIENTIFIC_BOUNDARY = "scientific_boundary"
 
 _CALL_MESSAGES = {
     CALL_AUTH: "authentication failed — the API key was rejected (check ANTHROPIC_API_KEY).",
@@ -131,6 +156,9 @@ _CALL_MESSAGES = {
     CALL_PROCESSING: "the model's reply could not be processed.",
     CALL_EMPTY: "the API returned an empty reply.",
     CALL_UNKNOWN: "the live AI call failed for an unexpected reason.",
+    CALL_SCIENTIFIC_BOUNDARY: (
+        "AI output was withheld because scientific claims and actions must come from reviewed "
+        "deterministic state."),
 }
 
 
@@ -153,7 +181,9 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     def has(*subs: str) -> bool:
         return any(any(sub in n for n in names) for sub in subs)
 
-    if has("AuthenticationError", "PermissionDenied") or status in (401, 403):
+    if has("ScientificOutputBoundaryError"):
+        cat = CALL_SCIENTIFIC_BOUNDARY
+    elif has("AuthenticationError", "PermissionDenied") or status in (401, 403):
         cat = CALL_AUTH
     elif has("RateLimitError") or status == 429:
         cat = CALL_RATE_LIMIT
@@ -200,7 +230,7 @@ def smoke_test(*, model: str | None = None,
     category. Never raises.
     """
     used_model = ai_config.resolve_model(model)
-    res = get_client(model=model)
+    res = get_client(model=model, respect_master_switch=False)
     if not res.ok or res.client is None:
         return SmokeResult(False, res.error, res.message, used_model)
     try:
@@ -218,5 +248,5 @@ def smoke_test(*, model: str | None = None,
 
 
 def is_enabled(*, provider: str | None = None, model: str | None = None) -> bool:
-    """True when a key + the ``anthropic`` SDK are present (delegates to :mod:`.config`)."""
+    """Return the global provider capability/master-switch decision."""
     return ai_config.is_enabled(provider=provider, model=model)

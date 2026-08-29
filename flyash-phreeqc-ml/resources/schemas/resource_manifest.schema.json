@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/resource_manifest.schema.json",
+  "title": "WPI Virtual LAB scientific-resource manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_schema", "manifest_version", "resource_id", "installation_id",
+    "resource_kind", "display_name", "provider", "official_source_url",
+    "discovered_version", "installed_version", "active_version", "archive_filename",
+    "source_sha256", "executable_sha256", "database_sha256", "content_sha256",
+    "architectures", "operating_system_targets", "build_toolchain", "install_path",
+    "installed_at", "verified_at", "citation", "rights_notice", "licence_notice",
+    "redistribution_state", "temperature_range", "database_family", "dependencies",
+    "conflicts", "requires_database_family", "extension_for_resource_id",
+    "duplicate_species_phase_risk", "domain_notes", "supported_summary",
+    "compatibility_status", "test_status", "standalone_test_status",
+    "base_include_test_status", "warnings", "superseded_by", "rollback_state"
+  ],
+  "properties": {
+    "manifest_schema": {"const": "wpi.virtual-lab.scientific-resource"},
+    "manifest_version": {"const": 1},
+    "resource_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$"},
+    "installation_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,190}$"},
+    "resource_kind": {"enum": ["phreeqc_runtime", "phreeqc_official_database", "external_thermodynamic_database", "database_extension", "documentation_knowledge_pack", "ai_provider_model"]},
+    "display_name": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "official_source_url": {"type": "string"},
+    "discovered_version": {"type": "string"},
+    "installed_version": {"type": "string"},
+    "active_version": {"type": "string"},
+    "archive_filename": {"type": "string"},
+    "source_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "executable_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "database_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "content_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "architectures": {"$ref": "#/$defs/uniqueStrings"},
+    "operating_system_targets": {"$ref": "#/$defs/uniqueStrings"},
+    "build_toolchain": {"$ref": "#/$defs/uniqueStrings"},
+    "install_path": {"type": "string"},
+    "installed_at": {"type": "string"},
+    "verified_at": {"type": "string"},
+    "citation": {"$ref": "#/$defs/citation"},
+    "rights_notice": {"type": "string"},
+    "licence_notice": {"type": "string"},
+    "redistribution_state": {"enum": ["permitted", "external_only", "user_supplied", "unknown", "prohibited"]},
+    "temperature_range": {"$ref": "#/$defs/temperatureRange"},
+    "database_family": {"type": "string"},
+    "dependencies": {"$ref": "#/$defs/uniqueStrings"},
+    "conflicts": {"$ref": "#/$defs/uniqueStrings"},
+    "requires_database_family": {"type": "string"},
+    "extension_for_resource_id": {"type": "string"},
+    "duplicate_species_phase_risk": {"type": "string"},
+    "domain_notes": {"$ref": "#/$defs/uniqueStrings"},
+    "supported_summary": {"$ref": "#/$defs/supportedSummary"},
+    "compatibility_status": {"enum": ["unknown", "compatible", "partial", "incompatible", "review_required"]},
+    "test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+    "standalone_test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+    "base_include_test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+    "warnings": {"$ref": "#/$defs/uniqueStrings"},
+    "superseded_by": {"type": "string"},
+    "rollback_state": {"enum": ["candidate", "active", "superseded", "rollback_available", "rolled_back"]}
+  },
+  "$defs": {
+    "optionalSha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"},
+    "uniqueStrings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["title", "authors", "year", "doi", "url", "source_location", "extraction_confidence"],
+      "properties": {
+        "title": {"type": "string"}, "authors": {"$ref": "#/$defs/uniqueStrings"},
+        "year": {"type": ["integer", "null"]}, "doi": {"type": "string"},
+        "url": {"type": "string"}, "source_location": {"type": "string"},
+        "extraction_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "temperatureRange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["minimum_celsius", "maximum_celsius", "notes"],
+      "properties": {
+        "minimum_celsius": {"type": ["number", "null"]},
+        "maximum_celsius": {"type": ["number", "null"]}, "notes": {"type": "string"}
+      }
+    },
+    "supportedSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["master_species", "solution_species", "phases", "master_species_count", "solution_species_count", "phase_count"],
+      "properties": {
+        "master_species": {"$ref": "#/$defs/uniqueStrings"},
+        "solution_species": {"$ref": "#/$defs/uniqueStrings"},
+        "phases": {"$ref": "#/$defs/uniqueStrings"},
+        "master_species_count": {"type": "integer", "minimum": 0},
+        "solution_species_count": {"type": "integer", "minimum": 0},
+        "phase_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

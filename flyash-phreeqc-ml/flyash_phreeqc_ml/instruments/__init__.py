@@ -13,17 +13,7 @@ remain calculation authorities, and PHREEQC execution stays on its confirmation-
 """
 from __future__ import annotations
 
-from . import (
-    icp_processor,
-    icp_review,
-    instrument_registry,
-    instrument_router,
-    instrument_schema,
-    lab_modes,
-    virtual_lab_machine_runner,
-    virtual_lab_machines,
-    xrd_advisory,
-)
+from importlib import import_module
 
 __all__ = [
     "icp_processor",
@@ -36,3 +26,12 @@ __all__ = [
     "virtual_lab_machines",
     "xrd_advisory",
 ]
+
+
+def __getattr__(name: str):
+    """Load instrument modules on demand and keep package import order cycle-free."""
+    if name not in __all__:
+        raise AttributeError(name)
+    module = import_module(f"{__name__}.{name}")
+    globals()[name] = module
+    return module

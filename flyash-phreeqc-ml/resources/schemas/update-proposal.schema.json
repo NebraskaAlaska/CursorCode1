@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/update-proposal.schema.json",
+  "title": "Resource Steward update proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "version", "proposal_id", "resource_id", "resource_kind",
+    "candidate_version", "source_url", "archive_filename", "status", "created_at",
+    "updated_at", "current_installation_id", "previous_active_installation_id",
+    "candidate_installation_id", "expected_source_sha256", "observed_source_sha256",
+    "candidate_sha256", "quarantine_path", "candidate_file_hashes", "rights_notice", "redistribution_state",
+    "build_evidence", "test_evidence", "findings", "comparison"
+  ],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.resource-update-proposal"},
+    "version": {"const": 1},
+    "proposal_id": {"type": "string", "pattern": "^proposal-[0-9a-f]{24}$"},
+    "resource_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$"},
+    "resource_kind": {"enum": ["phreeqc_runtime", "phreeqc_official_database", "external_thermodynamic_database", "database_extension", "documentation_knowledge_pack", "ai_provider_model"]},
+    "candidate_version": {"type": "string", "minLength": 1},
+    "source_url": {"type": "string", "pattern": "^https://"},
+    "archive_filename": {"type": "string", "minLength": 1},
+    "status": {"enum": ["proposed", "downloaded", "verified", "built", "tested", "promoted", "rolled_back", "rejected"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "current_installation_id": {"type": "string"},
+    "previous_active_installation_id": {"type": "string"},
+    "candidate_installation_id": {"type": "string"},
+    "expected_source_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "observed_source_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "candidate_sha256": {"$ref": "#/$defs/optionalSha256"},
+    "quarantine_path": {"type": "string"},
+    "candidate_file_hashes": {
+      "type": "object",
+      "propertyNames": {"pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\]+$"},
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "rights_notice": {"type": "string"},
+    "redistribution_state": {"enum": ["permitted", "external_only", "user_supplied", "unknown", "prohibited"]},
+    "build_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "test_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "comparison": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/comparison"}]}
+  },
+  "$defs": {
+    "optionalSha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"},
+    "strings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evidence_id", "status", "details", "artifact_sha256"],
+      "properties": {
+        "evidence_id": {"type": "string"}, "status": {"enum": ["passed", "failed", "skipped"]},
+        "details": {"type": "string"}, "artifact_sha256": {"$ref": "#/$defs/optionalSha256"}
+      }
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["finding_id", "severity", "summary", "resolved", "resolution"],
+      "properties": {
+        "finding_id": {"type": "string"}, "severity": {"enum": ["high", "medium", "low", "info"]},
+        "summary": {"type": "string", "minLength": 1}, "resolved": {"type": "boolean"},
+        "resolution": {"type": "string"}
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["current_installation_id", "candidate_installation_id", "current_version", "candidate_version", "current_sha256", "candidate_sha256", "added_master_species", "removed_master_species", "added_solution_species", "removed_solution_species", "added_phases", "removed_phases", "warnings"],
+      "properties": {
+        "current_installation_id": {"type": "string"}, "candidate_installation_id": {"type": "string"},
+        "current_version": {"type": "string"}, "candidate_version": {"type": "string"},
+        "current_sha256": {"$ref": "#/$defs/optionalSha256"},
+        "candidate_sha256": {"$ref": "#/$defs/optionalSha256"},
+        "added_master_species": {"$ref": "#/$defs/strings"},
+        "removed_master_species": {"$ref": "#/$defs/strings"},
+        "added_solution_species": {"$ref": "#/$defs/strings"},
+        "removed_solution_species": {"$ref": "#/$defs/strings"},
+        "added_phases": {"$ref": "#/$defs/strings"},
+        "removed_phases": {"$ref": "#/$defs/strings"}, "warnings": {"$ref": "#/$defs/strings"}
+      }
+    }
+  }
+}

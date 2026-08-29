@@ -5,6 +5,7 @@ layout, and re-pointing the pipeline at a different dataset is a one-line change
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -19,6 +20,9 @@ PROJECT_ROOT: Path = PACKAGE_DIR.parent
 DATA_DIR: Path = PROJECT_ROOT / "data"
 RAW_DIR: Path = DATA_DIR / "raw"
 PROCESSED_DIR: Path = DATA_DIR / "processed"
+# Container/hosted releases keep user imports in a dedicated durable volume rather than the
+# repository's legacy raw-data tree. Source-mode development retains the historical default.
+IMPORTS_DIR: Path = Path(os.environ.get("VLAB_IMPORT_ROOT", str(RAW_DIR))).expanduser()
 
 REPORTS_DIR: Path = PROJECT_ROOT / "reports"
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
@@ -58,7 +62,7 @@ ICP_DIR: Path = RAW_DIR / "icp_mix_design"
 
 # Phase 2: measured experimental release data (filled from the lab/ICP results).
 # A separate directory from ICP_DIR (mix-design inputs) — they hold different data.
-EXPERIMENTAL_ICP_DIR: Path = RAW_DIR / "experimental_icp"
+EXPERIMENTAL_ICP_DIR: Path = IMPORTS_DIR / "experimental_icp"
 
 # --------------------------------------------------------------------------- #
 # Processed output file names (written to PROCESSED_DIR)
@@ -267,12 +271,25 @@ EXPERIMENTAL_RELEASE_COLUMNS = EXPERIMENTAL_RELEASE_COLUMNS + BATCH_REACTION_COL
 # PHREEQC execution (Prompt 11 — the on-demand simulation runner)
 # --------------------------------------------------------------------------- #
 # The PHREEQC binary + database are **user-supplied and never committed**. The
-# CEMDATA18 database the project uses is not redistributable. Both are read from
-# the environment so a deployment configures them without code changes; when
+# Explicit redistribution permission for CEMDATA18 was not found in the reviewed official
+# evidence, so it remains external-only/user-or-administrator-supplied and is never bundled.
+# Both are read from the environment so a deployment configures them without code changes; when
 # unset, the runner raises a typed PhreeqcNotConfiguredError with setup guidance.
 PHREEQC_EXE_PATH: str = os.environ.get("PHREEQC_EXE", "phreeqc")  # CLI name / abs path
 PHREEQC_DATABASE_PATH: str | None = os.environ.get("PHREEQC_DATABASE") or None
-PHREEQC_RUN_TIMEOUT_S: float = float(os.environ.get("PHREEQC_TIMEOUT_S", "120"))
+
+
+def _positive_timeout_env(name: str, default: float, maximum: float) -> float:
+    """Invalid deployment text must not crash configuration import or disable the timeout."""
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and 0 < value <= maximum else default
+
+
+PHREEQC_RUN_TIMEOUT_S: float = _positive_timeout_env(
+    "PHREEQC_TIMEOUT_S", 120.0, 24 * 60 * 60)
 
 # Solution chemistry the template cannot know from a measured condition's metadata
 # alone (fly-ash release is not measured up front). These are **ASSUMED** defaults

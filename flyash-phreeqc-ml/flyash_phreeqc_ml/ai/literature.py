@@ -40,6 +40,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .. import profiles, run_manager
+from . import config as ai_config
 from . import import_assist
 from .import_assist import (  # reuse the shared, tested helpers
     _clamp_confidence,
@@ -47,7 +48,6 @@ from .import_assist import (  # reuse the shared, tested helpers
     _model,
     _parse_json,
     _resolve_client,
-    is_enabled,
 )
 
 __all__ = [
@@ -74,6 +74,13 @@ LITERATURE_STORE_FILENAME = "literature_values.jsonl"
 MAX_QUOTE_WORDS = 25
 MAX_CANDIDATES = 12            # cap how many proposals we keep per query
 MAX_TOKENS = 2500
+
+
+def is_enabled() -> bool:
+    """Literature web search is intentionally Anthropic-only until another adapter
+    implements an equivalent source-bearing search-tool contract."""
+    return (ai_config.resolve_provider() == ai_config.PROVIDER_ANTHROPIC
+            and ai_config.is_enabled())
 
 # The Anthropic server-side web-search tool (the model searches; the API runs it).
 WEB_SEARCH_TOOL_TYPE = "web_search_20250305"
@@ -375,6 +382,8 @@ def propose_literature_values(query: dict, *, client=None, model=None,
     dropped here, in code). Returns ``[]`` when disabled or on any API/parse failure, and
     when the model honestly reports "no reliable sourced value found".
     """
+    if client is None and ai_config.resolve_provider() != ai_config.PROVIDER_ANTHROPIC:
+        return []
     client = _resolve_client(client)
     if client is None:
         return []

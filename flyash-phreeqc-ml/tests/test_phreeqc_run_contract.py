@@ -1,7 +1,6 @@
 """Regression coverage for the authoritative PHREEQC scientific run contract."""
 from __future__ import annotations
 
-import types
 from pathlib import Path
 
 import pytest
@@ -127,10 +126,10 @@ def test_executor_writes_and_runs_exact_confirmed_snapshot(monkeypatch, tmp_path
 
     def _run(cmd, **kwargs):
         captured["input"] = Path(cmd[1]).read_text()
-        Path(cmd[2]).write_text("TITLE successful mock\n")
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        Path(cmd[2]).write_text("TITLE successful mock\nEnd of Run\n")
+        return 0, "", "", False, None
 
-    monkeypatch.setattr(executor.subprocess, "run", _run)
+    monkeypatch.setattr(executor, "_bounded_subprocess_run", _run)
     result = executor.execute_preview(
         preview, confirmation=confirmation, workdir=tmp_path / "ws",
         exe=exe, database=database)

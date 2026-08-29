@@ -195,7 +195,20 @@ Validate/Compare graphs. (Pinned by `tests/test_ai_boundary.py`.)
 
 ---
 
-## Install
+## Phase 4 release-candidate distribution
+
+The supported private-beta distribution is a checksum-pinned, multi-stage, non-root container with separate local and authenticated-server Compose bundles. It includes official USGS PHREEQC `3.8.6-17100`, databases at `/opt/phreeqc/database/`, official examples under `/opt/phreeqc/share/examples/`, and the complete USGS rights notice. The source archive SHA-256 is `b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1`; bundled `phreeqc.dat` is `59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10`.
+
+```bash
+./scripts/launch-local.sh --build
+./scripts/check-local-install.sh
+```
+
+Windows equivalents are under `scripts/*.ps1`. AI is disabled by default. User state persists in named volumes; stop retains it, and backup/restore covers all five durable roots. Raw/local records, downloaded databases, models, secrets, and workspaces are excluded from every image target.
+
+See [`docs/local_installation.md`](docs/local_installation.md), [`docs/hosted_deployment.md`](docs/hosted_deployment.md), and [`docs/NSF_DEMO_SCRIPT.md`](docs/NSF_DEMO_SCRIPT.md). Server Compose fails without auth/TLS paths and exposes neither app nor optional Ollama directly. A release candidate is not promoted/public, and an official example is an operability check—not experimental validation.
+
+## Developer install
 
 ```bash
 python3 -m venv .venv
@@ -282,8 +295,10 @@ The thermodynamic **database controls which minerals/phases PHREEQC can predict*
   speciates Na/Ca/Si/Al/Fe and defines common minerals (Calcite, Gibbsite, SiO2(a), Gypsum…). But
   it is **weak for high-pH cementitious systems**: it lacks Portlandite, Ettringite, C-S-H, so a
   fly-ash alkaline-activation prediction is under-constrained.
-- **CEMDATA18** is the cement-chemistry database designed for these systems. It is **not
-  redistributable**, so this project **never ships it**. If you have a licensed copy:
+- **CEMDATA18** is a cement-chemistry database designed for these systems. Reviewed official
+  evidence did not establish explicit redistribution permission, so its release state is
+  **`external_only`**: this project does not bundle, mirror, or commit it. A local user or hosted
+  administrator may import an officially obtained copy only after rights confirmation and hashing:
 
 ```bash
 export PHREEQC_DATABASE=/path/to/CEMDATA18-xx.dat
@@ -361,7 +376,8 @@ PHREEQC)** require `PHREEQC_EXE` + `PHREEQC_DATABASE` configured.
   precipitation and saturation-index results from the *same* input.
 - **`phreeqc.dat` is fine for a smoke test but weak for cementitious high-pH systems** (no
   Portlandite/Ettringite/C-S-H). High-pH fly-ash chemistry needs **CEMDATA18**.
-- **CEMDATA18 is not shipped** (not redistributable) — you supply it locally.
+- **CEMDATA18 is `external_only`** because reviewed evidence did not establish redistribution
+  permission; an authorized user/admin supplies and rights-confirms it outside the release.
 - **Simulation outputs are not validated** until compared with measured / lab data in the
   **Compare** tab. A near-zero residual only indicates agreement **if the mapping is
   scientifically valid**.

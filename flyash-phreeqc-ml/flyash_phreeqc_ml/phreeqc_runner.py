@@ -145,6 +145,7 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
                        material_inputs: dict | None = None,
                        candidate_phases=None,
                        selected_output_elements=None,
+                       database_family: str = "cemdata",
                        ) -> tuple[str, list[str]]:
     """Template one ``.pqi`` text + its list of assumptions for one CO₂ scenario.
 
@@ -164,6 +165,9 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
     * ``selected_output_elements`` — emit, per element, moles in solution and per phase
       moles via SELECTED_OUTPUT/USER_PUNCH (so the attribution can read them back).
     """
+    if database_family not in {"cemdata", "usgs"}:
+        raise PhreeqcRunnerError(f"Unknown database family: {database_family!r}")
+    carbonate_phase = "Cal" if database_family == "cemdata" else "Calcite"
     scenario = config.CO2_SCENARIO_ALIASES.get(str(co2_scenario), str(co2_scenario))
     if scenario not in config.CO2_SCENARIO_ENCODING:
         raise PhreeqcRunnerError(f"Unknown CO2 scenario: {co2_scenario!r}")
@@ -226,10 +230,15 @@ def build_single_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: 
         lines.append(f"    CO2(g)    {_fmt(si, 2)}   {reservoir:g}")
     else:
         lines.append("    # no CO2(g) phase — sealed scenario")
-    lines.append("    Cal           0      0")
-    lines.append("    Portlandite   0      0")
+    lines.append(f"    {carbonate_phase:<13} 0      0")
+    if database_family == "cemdata":
+        lines.append("    Portlandite   0      0")
+    else:
+        lines.append("    # Portlandite omitted: official phreeqc.dat does not define that phase")
     if candidate_phases:
-        present = {"Cal", "Portlandite", "CO2(g)"}
+        present = {carbonate_phase, "CO2(g)"}
+        if database_family == "cemdata":
+            present.add("Portlandite")
         for ph_name in candidate_phases:
             if ph_name not in present:
                 lines.append(f"    {ph_name:<13} 0      0   # candidate precipitate")
@@ -348,16 +357,22 @@ def build_input(condition: dict, profile=None, template=None) -> list[GeneratedI
 
 
 def build_design_input(naoh_m: float, liquid_solid_ratio: float, temperature_C: float,
-                       co2_scenario: str, *, sample_id: str) -> GeneratedInput:
+                       co2_scenario: str, *, sample_id: str,
+                       database_family: str = "cemdata") -> GeneratedInput:
     """Issue one deterministic, provenance-sealed input for the surrogate-design workflow."""
     text, assumptions = build_single_input(
-        naoh_m, liquid_solid_ratio, temperature_C, co2_scenario, label=str(sample_id))
+        naoh_m, liquid_solid_ratio, temperature_C, co2_scenario, label=str(sample_id),
+        database_family=database_family)
     scenario = config.CO2_SCENARIO_ALIASES.get(str(co2_scenario), str(co2_scenario))
     return _issue_generated_input(
         model_label=scenario, condition_code="design", source_condition_key=str(sample_id),
         pqi_text=text, assumptions=assumptions,
         metadata={"NaOH_M": float(naoh_m), "liquid_solid_ratio": float(liquid_solid_ratio),
-                  "CO2_condition": scenario, "temperature_C": float(temperature_C)},
+                  "CO2_condition": scenario, "temperature_C": float(temperature_C),
+                  "database_family": database_family,
+                  "required_database_phases": (["Cal", "Portlandite"]
+                                                if database_family == "cemdata"
+                                                else ["Calcite"])},
         basename=str(sample_id), scenario_id=str(sample_id))
 
 
@@ -448,8 +463,8 @@ def run(generated_input: GeneratedInput, workdir, *, basename: str | None = None
         confirmation=None) -> Path:
     """Run one intact deterministic :class:`GeneratedInput`; return its ``.pqo`` path.
 
-    Writes ``<basename>.pqi`` + ``<basename>.pqo`` under ``workdir`` and invokes the
-    CLI as ``phreeqc <input> <output> <database>``. Raises
+    Writes ``<basename>.pqi`` + ``<basename>.pqo`` in an isolated per-job child of
+    ``workdir`` and invokes the CLI as ``phreeqc <input> <output> <database>``. Raises
     :class:`PhreeqcNotConfiguredError` when the exe/database are missing, and
     :class:`PhreeqcRunError` (carrying the PHREEQC error text) on timeout, non-zero
     exit, missing output, or an ``ERROR`` line in the output.
@@ -480,37 +495,30 @@ def run(generated_input: GeneratedInput, workdir, *, basename: str | None = None
     if not exe_path or not db_path or not Path(exe_path).is_absolute() or not Path(db_path).is_absolute():
         raise PhreeqcRunError(
             "PHREEQC execution blocked: verified executable/database paths are not absolute.")
-    if not is_cemdata_compatible(db_path):
-        required = ", ".join(REQUIRED_DATABASE_PHASES)
+    required_phases = tuple(
+        generated_input.metadata.get("required_database_phases") or REQUIRED_DATABASE_PHASES)
+    if not database_defines_phases(required_phases, db_path):
+        required = ", ".join(required_phases)
+        family = "CEMDATA-compatible " if required_phases == REQUIRED_DATABASE_PHASES else ""
         raise PhreeqcNotConfiguredError(
-            "The legacy generated-condition runner requires a CEMDATA-compatible database "
-            f"defining {required}. Select a compatible database, review its identity, and "
+            f"The legacy generated-condition input requires a {family}database "
+            f"defining {required}. Select that database, review its identity, and "
             "confirm again; no PHREEQC run was started.")
-    input_text = confirmation.phreeqc_input_text
-    timeout = config.PHREEQC_RUN_TIMEOUT_S if timeout is None else timeout
-
-    workdir = Path(workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
-    in_path = workdir / f"{basename}.pqi"
-    out_path = workdir / f"{basename}.pqo"
-    in_path.write_text(input_text, encoding="utf-8")
-
-    try:
-        proc = subprocess.run(
-            [exe_path, str(in_path), str(out_path), str(db_path)],
-            capture_output=True, text=True, timeout=timeout, cwd=str(workdir),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise PhreeqcRunError(f"PHREEQC timed out after {timeout:g}s.") from exc
-
-    out_text = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
-    error_lines = [ln.strip() for ln in (proc.stdout + "\n" + proc.stderr + "\n" + out_text).splitlines()
-                   if "ERROR" in ln.upper()]
-    if proc.returncode != 0 or not out_path.exists() or error_lines:
-        detail = "\n".join(error_lines[:20]) or (proc.stderr.strip() or proc.stdout.strip()
-                                                 or f"exit code {proc.returncode}")
-        raise PhreeqcRunError(f"PHREEQC run failed:\n{detail}")
-    return out_path
+    result = _executor.execute_preview(
+        preview,
+        confirmation=confirmation,
+        workdir=workdir,
+        exe=exe_path,
+        database=db_path,
+        timeout=timeout,
+        scenario_id=generated_input.scenario_id,
+    )
+    if result.status == _executor.STATUS_MISSING:
+        raise PhreeqcNotConfiguredError(result.error_message or _SETUP_HELP)
+    if result.status != _executor.STATUS_SUCCESS or not result.output_path:
+        raise PhreeqcRunError(
+            result.error_message or f"PHREEQC run failed with status {result.status}.")
+    return Path(result.output_path)
 
 
 def review_input(generated_input: GeneratedInput):
@@ -520,7 +528,7 @@ def review_input(generated_input: GeneratedInput):
 
 
 def confirm_reviewed_input(reviewed, *, exe: str | None = None, database: str | None = None,
-                           expected_environment=None):
+                           expected_environment=None, required_database_phases=None):
     """Bind a reviewed legacy snapshot to one exact executable/database identity.
 
     When ``expected_environment`` is supplied, its resolved files are re-hashed immediately and
@@ -545,10 +553,13 @@ def confirm_reviewed_input(reviewed, *, exe: str | None = None, database: str | 
         raise PhreeqcNotConfiguredError(
             "The PHREEQC executable or thermodynamic database changed after review; "
             "execution was blocked. Review the environment identity and confirm again.")
-    if not is_cemdata_compatible(current_environment.database.resolved_path):
-        required = ", ".join(REQUIRED_DATABASE_PHASES)
+    required_phases = tuple(required_database_phases or REQUIRED_DATABASE_PHASES)
+    if not database_defines_phases(
+            required_phases, current_environment.database.resolved_path):
+        required = ", ".join(required_phases)
+        family = "CEMDATA-compatible " if required_phases == REQUIRED_DATABASE_PHASES else ""
         raise PhreeqcNotConfiguredError(
-            "The legacy generated-condition runner requires a CEMDATA-compatible database "
+            f"The legacy generated-condition input requires a {family}database "
             f"defining {required}; review and select a compatible database before confirming.")
     binding = expected_environment if expected_environment is not None else current_environment
     return _contract.confirm_reviewed(reviewed, binding)

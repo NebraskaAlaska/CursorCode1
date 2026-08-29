@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/test-evidence.schema.json",
+  "title": "Resource build/test evidence bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "proposal_id", "candidate_sha256", "evidence", "findings"],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.resource-test-evidence"},
+    "version": {"const": 1},
+    "proposal_id": {"type": "string", "pattern": "^proposal-[0-9a-f]{24}$"},
+    "candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evidence_id", "status", "details", "artifact_sha256"],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"},
+        "status": {"enum": ["passed", "failed", "skipped"]},
+        "details": {"type": "string"},
+        "artifact_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"}
+      }
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["finding_id", "severity", "summary", "resolved", "resolution"],
+      "properties": {
+        "finding_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"},
+        "severity": {"enum": ["high", "medium", "low", "info"]},
+        "summary": {"type": "string", "minLength": 1},
+        "resolved": {"type": "boolean"}, "resolution": {"type": "string"}
+      }
+    }
+  }
+}

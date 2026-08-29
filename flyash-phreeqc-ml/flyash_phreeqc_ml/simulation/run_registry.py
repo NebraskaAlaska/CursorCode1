@@ -43,6 +43,8 @@ import pandas as pd
 
 from .. import __version__ as APP_VERSION
 from .. import config
+from ..security.identity import IdentityContext, ROLE_MEMBER, current_identity
+from ..storage_scope import StorageScope, StorageScopeError
 from . import batch_executor as _batch
 from . import phreeqc_executor as _exec
 
@@ -52,6 +54,36 @@ ASSUMPTIONS_WARNINGS_FILE = "assumptions_warnings.json"
 SCENARIO_MATRIX_FILE = "scenario_matrix.csv"
 PARSED_RESULTS_FILE = "parsed_results.csv"
 INPUTS_SUBDIR = "inputs"
+MAX_RUN_METADATA_BYTES = 8 * 1024 * 1024
+MAX_RUN_AUXILIARY_BYTES = 4 * 1024 * 1024
+MAX_RUN_TABLE_ROWS = 10_000
+MAX_RUN_TABLE_COLUMNS = 2_000
+MAX_COPIED_INPUT_BYTES = 25 * 1024 * 1024
+MAX_EXPORTED_BUNDLE_BYTES = 100 * 1024 * 1024
+MAX_LISTED_RUNS = 10_000
+
+_RESOURCE_IDENTITY_FIELDS = (
+    "phreeqc_version",
+    "executable_sha256",
+    "database_resource_id",
+    "database_version",
+    "database_sha256",
+    "environment_identity_hash",
+    "container_image_digest",
+    "resource_manifest_version",
+    "runtime_resource_id",
+    "runtime_installation_id",
+    "database_installation_id",
+    "runtime_manifest_sha256",
+    "resource_catalog_hash",
+    "resource_catalog_generation",
+    "resource_bootstrap_result_sha256",
+    "knowledge_pack_hash",
+    "source_manifest_sha256",
+    "app_version",
+    "app_vcs_ref",
+    "resource_identity_status",
+)
 
 # Standing honesty label stamped into every saved record.
 SIM_RUN_LABEL = ("Simulation run — PHREEQC execution of reviewed inputs. Not validated "
@@ -59,6 +91,13 @@ SIM_RUN_LABEL = ("Simulation run — PHREEQC execution of reviewed inputs. Not v
 MISSING_PROFILE_WARNING = ("No material profile was selected — material composition was not "
                            "included, so the predicted dissolution is structural only "
                            "(composition is never invented).")
+
+_SECRET_VALUE_RE = re.compile(
+    r"(?:\bBearer\s+[A-Za-z0-9._~+/=-]+|\bsk-[A-Za-z0-9_-]{8,}|"
+    r"\b(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+)", re.IGNORECASE)
+_SECRET_KEY_RE = re.compile(
+    r"(^|_)(api_?key|token|authorization|cookie|password|secret|credential)(_|$)",
+    re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +122,32 @@ def _json_safe(obj):
 
 def _dump_json(obj) -> str:
     return json.dumps(_json_safe(obj), indent=2, allow_nan=False)
+
+
+def _assert_no_credentials(obj, *, depth: int = 0) -> None:
+    """Refuse credential-like material before a run bundle reaches disk."""
+    if depth > 12:
+        raise ValueError("run provenance nesting exceeds the safe limit")
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if _SECRET_KEY_RE.search(str(key)):
+                raise ValueError("run provenance contains a credential-like field")
+            _assert_no_credentials(value, depth=depth + 1)
+    elif isinstance(obj, (list, tuple, set)):
+        for value in obj:
+            _assert_no_credentials(value, depth=depth + 1)
+    elif isinstance(obj, str) and _SECRET_VALUE_RE.search(obj):
+        raise ValueError("run provenance contains credential-like content")
+
+
+def _bounded_csv(rows: list) -> str:
+    table = pd.DataFrame(rows or [])
+    if table.shape[0] > MAX_RUN_TABLE_ROWS or table.shape[1] > MAX_RUN_TABLE_COLUMNS:
+        raise ValueError("run table exceeds the registry shape limit")
+    text = table.to_csv(index=False)
+    if len(text.encode("utf-8")) > MAX_RUN_AUXILIARY_BYTES:
+        raise ValueError("run table exceeds the registry size limit")
+    return text
 
 
 # --------------------------------------------------------------------------- #
@@ -116,8 +181,11 @@ class SimulationOutputRecord:
     output_path: str | None = None
     selected_output_path: str | None = None
     runtime_seconds: float | None = None
+    executed_at: str | None = None
+    input_sha256: str | None = None
     error_message: str | None = None
     warnings: list = field(default_factory=list)
+    resource_identity: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -126,8 +194,9 @@ class SimulationOutputRecord:
             "element_totals_mM": self.element_totals_mM,
             "saturation_indices": self.saturation_indices,
             "output_path": self.output_path, "selected_output_path": self.selected_output_path,
-            "runtime_seconds": self.runtime_seconds, "error_message": self.error_message,
-            "warnings": list(self.warnings),
+            "runtime_seconds": self.runtime_seconds, "executed_at": self.executed_at,
+            "input_sha256": self.input_sha256, "error_message": self.error_message,
+            "warnings": list(self.warnings), "resource_identity": self.resource_identity,
         }
 
 
@@ -151,6 +220,7 @@ class SimulationRunRecord:
     phreeqc_output_paths: list = field(default_factory=list)
     phreeqc_database_path: str | None = None
     phreeqc_executable_path: str | None = None
+    scientific_resource_identities: list = field(default_factory=list)
     execution_status_summary: dict = field(default_factory=dict)
     parsed_result_table: list = field(default_factory=list)
     plot_axis: str | None = None
@@ -187,6 +257,7 @@ class SimulationRunRecord:
             "material_profile_verification_status": self.material_profile_verification_status,
             "phreeqc_executable_path": self.phreeqc_executable_path,
             "phreeqc_database_path": self.phreeqc_database_path,
+            "scientific_resource_identities": list(self.scientific_resource_identities),
             "phreeqc_input_paths": list(self.phreeqc_input_paths),
             "phreeqc_output_paths": list(self.phreeqc_output_paths),
             "execution_status_summary": self.execution_status_summary,
@@ -246,6 +317,15 @@ def _safe_run_id(run_id: str) -> str:
     return cleaned or "run"
 
 
+def _validated_run_id(run_id: str) -> str:
+    """Return an already-safe run id; never reinterpret a path probe as another id."""
+    raw = str(run_id or "")
+    safe = _safe_run_id(raw)
+    if not raw or len(raw) > 160 or raw != safe:
+        raise ValueError("run id must contain only letters, numbers, '.', '_' or '-'")
+    return safe
+
+
 # --------------------------------------------------------------------------- #
 # Build a record from the app's session objects (defensive; pure)
 # --------------------------------------------------------------------------- #
@@ -302,6 +382,7 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
     output_records: list[SimulationOutputRecord] = []
     input_paths: list[str] = []
     output_paths: list[str] = []
+    resource_identities: list[dict] = []
     exe_path = db_path = None
     meta_by_id = {str(r.get("scenario_id")): r for r in matrix_rows}
 
@@ -314,6 +395,12 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
             output_paths.append(ex.output_path)
         exe_path = exe_path or ex.phreeqc_executable
         db_path = db_path or ex.database_path
+        resource_identity = {
+            key: getattr(ex, key, None) for key in _RESOURCE_IDENTITY_FIELDS
+            if getattr(ex, key, None) is not None
+        }
+        if resource_identity and resource_identity not in resource_identities:
+            resource_identities.append(resource_identity)
         scenario_records.append(SimulationScenarioRecord(
             scenario_id=sid, metadata=meta_by_id.get(str(sid), {}),
             input_status=preview_status.get(sid), input_path=ex.input_path))
@@ -321,8 +408,9 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
             scenario_id=sid, status=r.status, parse_status=r.parse_status, pH=r.pH, pe=r.pe,
             element_totals_mM=r.element_totals_mM, saturation_indices=r.saturation_indices,
             output_path=ex.output_path, selected_output_path=ex.selected_output_path,
-            runtime_seconds=r.runtime_seconds, error_message=ex.error_message,
-            warnings=r.warnings))
+            runtime_seconds=r.runtime_seconds, executed_at=ex.timestamp,
+            input_sha256=ex.input_hash, error_message=ex.error_message,
+            warnings=r.warnings, resource_identity=resource_identity))
 
     return SimulationRunRecord(
         run_id=run_id, created_at=created_at, user_label=label or None,
@@ -332,6 +420,7 @@ def build_run_record(*, run_id: str, created_at: str, batch, matrix=None, scenar
         material_profile_verification_status=mp_status, matrix_rows=matrix_rows,
         phreeqc_input_paths=input_paths, phreeqc_output_paths=output_paths,
         phreeqc_database_path=db_path, phreeqc_executable_path=exe_path,
+        scientific_resource_identities=resource_identities,
         execution_status_summary=batch.status_counts(), parsed_result_table=parsed_table,
         plot_axis=plot_axis, notes=notes or None, refinement=(dict(refinement) if refinement
                                                               else None),
@@ -369,11 +458,30 @@ def _collect_warnings(parse_result, material_profile) -> list:
 class SimulationRunRegistry:
     """Reads/writes saved simulation runs under a **safe** generated-output folder."""
 
-    def __init__(self, base_dir=None):
-        self.base_dir = Path(base_dir) if base_dir is not None else config.SIMULATION_RUNS_DIR
+    def __init__(self, base_dir=None, *, identity: IdentityContext | None = None):
+        principal = identity or current_identity()
+        root = Path(base_dir) if base_dir is not None else config.SIMULATION_RUNS_DIR
+        try:
+            self.storage_scope = StorageScope.for_identity(root, principal)
+        except StorageScopeError as exc:
+            raise ValueError(str(exc)) from exc
+        # Local mode intentionally preserves the historical layout. Hosted mode
+        # receives a deterministic opaque tenant root below ``base_dir/tenants``.
+        self.base_dir = self.storage_scope.tenant_root
 
     def run_dir(self, run_id: str) -> Path:
-        return self.base_dir / _safe_run_id(run_id)
+        candidate = self.base_dir / _validated_run_id(run_id)
+        root = self.base_dir.resolve(strict=False)
+        try:
+            candidate.resolve(strict=False).relative_to(root)
+        except ValueError as exc:
+            raise ValueError("run path escapes the scoped registry") from exc
+        current = self.base_dir
+        for part in candidate.relative_to(self.base_dir).parts:
+            current = current / part
+            if current.exists() and current.is_symlink():
+                raise ValueError("symlink-backed run paths are not permitted")
+        return candidate
 
     def _assert_safe(self, path: Path) -> Path:
         # Reuse the executor's single safe-workspace authority (forbids data/raw,
@@ -382,27 +490,56 @@ class SimulationRunRegistry:
 
     def save_run(self, record: SimulationRunRecord, *, copy_inputs: bool = True) -> Path:
         """Write a run's provenance bundle; return its folder. Refuses an unsafe path."""
+        self.storage_scope.identity.require_role(ROLE_MEMBER)
         d = self.run_dir(record.run_id)
         self._assert_safe(d)
-        d.mkdir(parents=True, exist_ok=True)
+        metadata = record.to_metadata_dict()
+        metadata["storage_scope"] = {
+            "schema_version": 1,
+            "tenant_scoped": not self.storage_scope.is_local_compatibility_mode,
+        }
+        assumptions = record.assumptions_warnings_dict()
+        _assert_no_credentials(metadata)
+        _assert_no_credentials(assumptions)
+        metadata_text = _dump_json(metadata)
+        assumptions_text = _dump_json(assumptions)
+        matrix_text = _bounded_csv(record.matrix_rows)
+        results_text = _bounded_csv(record.parsed_result_table)
+        if len(metadata_text.encode("utf-8")) > MAX_RUN_METADATA_BYTES:
+            raise ValueError("run metadata exceeds the registry size limit")
+        if len(assumptions_text.encode("utf-8")) > MAX_RUN_AUXILIARY_BYTES:
+            raise ValueError("run assumptions/warnings exceed the registry size limit")
+        input_sources: list[Path] = []
+        copied_bytes = 0
+        if copy_inputs:
+            for value in record.phreeqc_input_paths[:MAX_RUN_TABLE_ROWS]:
+                source = Path(value)
+                if source.is_symlink() or not source.is_file():
+                    continue
+                copied_bytes += source.stat().st_size
+                if copied_bytes > MAX_COPIED_INPUT_BYTES:
+                    raise ValueError("reviewed input copies exceed the registry size limit")
+                input_sources.append(source)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        if self.base_dir.is_symlink():
+            raise ValueError("registry root must not be a symlink")
+        # ``exist_ok=False`` is an atomic no-clobber claim. Concurrent saves can
+        # never overwrite a completed/partial run with the same id.
+        d.mkdir(exist_ok=False)
 
-        (d / RUN_METADATA_FILE).write_text(_dump_json(record.to_metadata_dict()),
-                                           encoding="utf-8")
-        (d / ASSUMPTIONS_WARNINGS_FILE).write_text(
-            _dump_json(record.assumptions_warnings_dict()), encoding="utf-8")
-        _write_csv(record.matrix_rows, d / SCENARIO_MATRIX_FILE)
-        _write_csv(record.parsed_result_table, d / PARSED_RESULTS_FILE)
+        (d / RUN_METADATA_FILE).write_text(metadata_text, encoding="utf-8")
+        (d / ASSUMPTIONS_WARNINGS_FILE).write_text(assumptions_text, encoding="utf-8")
+        (d / SCENARIO_MATRIX_FILE).write_text(matrix_text, encoding="utf-8")
+        (d / PARSED_RESULTS_FILE).write_text(results_text, encoding="utf-8")
 
-        if copy_inputs and record.phreeqc_input_paths:
+        if input_sources:
             inputs_dir = d / INPUTS_SUBDIR
             inputs_dir.mkdir(parents=True, exist_ok=True)
-            for p in record.phreeqc_input_paths:
-                src = Path(p)
-                if src.is_file():
-                    try:
-                        shutil.copy2(src, inputs_dir / src.name)
-                    except OSError:
-                        pass
+            for src in input_sources:
+                try:
+                    shutil.copy2(src, inputs_dir / src.name)
+                except OSError:
+                    pass
         return d
 
     def list_runs(self) -> list:
@@ -410,9 +547,14 @@ class SimulationRunRegistry:
         if not self.base_dir.exists():
             return []
         out = []
-        for d in self.base_dir.iterdir():
+        for index, d in enumerate(self.base_dir.iterdir()):
+            if index >= MAX_LISTED_RUNS:
+                break
+            if d.is_symlink() or not d.is_dir():
+                continue
             meta = d / RUN_METADATA_FILE
-            if not meta.is_file():
+            if meta.is_symlink() or not meta.is_file() \
+                    or meta.stat().st_size > MAX_RUN_METADATA_BYTES:
                 continue
             try:
                 m = json.loads(meta.read_text(encoding="utf-8"))
@@ -424,7 +566,8 @@ class SimulationRunRegistry:
     def load_run(self, run_id: str) -> dict | None:
         """The saved ``run_metadata.json`` as a dict (or None if absent/unreadable)."""
         meta = self.run_dir(run_id) / RUN_METADATA_FILE
-        if not meta.is_file():
+        if meta.is_symlink() or not meta.is_file() \
+                or meta.stat().st_size > MAX_RUN_METADATA_BYTES:
             return None
         try:
             return json.loads(meta.read_text(encoding="utf-8"))
@@ -433,22 +576,34 @@ class SimulationRunRegistry:
 
     def load_parsed_results(self, run_id: str):
         path = self.run_dir(run_id) / PARSED_RESULTS_FILE
-        return pd.read_csv(path) if path.is_file() else None
+        return (pd.read_csv(path) if path.is_file() and not path.is_symlink()
+                and path.stat().st_size <= MAX_RUN_AUXILIARY_BYTES else None)
 
     def export_zip(self, run_id: str) -> bytes:
         """Zip a run's whole folder into bytes (for a 'download run package')."""
         d = self.run_dir(run_id)
         buf = io.BytesIO()
+        total_bytes = 0
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            if d.is_dir():
+            if d.is_dir() and not d.is_symlink():
                 for p in sorted(d.rglob("*")):
-                    if p.is_file():
-                        zf.write(p, arcname=str(Path(run_id) / p.relative_to(d)))
+                    if p.is_symlink() or not p.is_file():
+                        continue
+                    try:
+                        p.resolve(strict=True).relative_to(d.resolve(strict=True))
+                    except (OSError, ValueError):
+                        continue
+                    total_bytes += p.stat().st_size
+                    if total_bytes > MAX_EXPORTED_BUNDLE_BYTES:
+                        raise ValueError("run bundle exceeds the export size limit")
+                    zf.write(p, arcname=str(Path(_validated_run_id(run_id)) /
+                                             p.relative_to(d)))
         return buf.getvalue()
 
 
 def _write_csv(rows: list, path: Path) -> None:
-    pd.DataFrame(rows or []).to_csv(path, index=False)
+    """Backwards-compatible internal helper with the registry's bounded table policy."""
+    path.write_text(_bounded_csv(rows), encoding="utf-8")
 
 
 def _summary_from_metadata(m: dict) -> dict:

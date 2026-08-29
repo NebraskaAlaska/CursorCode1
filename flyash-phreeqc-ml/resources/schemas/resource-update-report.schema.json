@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/resource-update-report.schema.json",
+  "title": "Phase 5 resource-update request/report envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "request_id", "status", "proposal_id", "active_installation_unchanged", "report_paths", "summary", "next_action"],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.resource-update-report"},
+    "version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^request-[0-9a-f]{24}$"},
+    "status": {"enum": ["not_started", "proposal_created", "candidate_ready", "blocked", "review_required", "complete"]},
+    "proposal_id": {"type": "string", "pattern": "^$|^proposal-[0-9a-f]{24}$"},
+    "active_installation_unchanged": {"const": true},
+    "report_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "summary": {"type": "string"},
+    "next_action": {"enum": ["run_steward_check", "review_proposal", "review_evidence", "human_admin_decision", "none"]}
+  }
+}

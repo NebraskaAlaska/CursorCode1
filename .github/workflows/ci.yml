@@ -1,0 +1,209 @@
+name: Phase 4 CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase4-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_DIR: flyash-phreeqc-ml
+
+jobs:
+  python-and-release-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: flyash-phreeqc-ml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: 3.12.10
+          cache: pip
+          cache-dependency-path: |
+            flyash-phreeqc-ml/requirements*.txt
+            flyash-phreeqc-ml/constraints-py312.txt
+      - name: Create isolated Python 3.12 verification environment
+        run: |
+          python -m venv /tmp/wpi-phase4-ci-venv
+          echo "/tmp/wpi-phase4-ci-venv/bin" >> "$GITHUB_PATH"
+      - name: Install exactly constrained dependencies
+        run: python -m pip install -c constraints-py312.txt setuptools==83.0.0 -r requirements-dev.txt
+      - name: Validate dependencies and release boundary
+        run: |
+          python scripts/validate_dependency_lock.py --installed
+          python scripts/release_scan.py --tracked --docker-context
+          python -m compileall -q flyash_phreeqc_ml scripts tests
+      - name: Validate resource schemas, rights, and non-promotion contracts
+        run: |
+          python -m pytest -q \
+            tests/test_resource_manager_phase4.py \
+            tests/test_resource_steward_phase4.py \
+            tests/test_database_registry_phase4.py \
+            tests/test_knowledge_pack_phase4.py \
+            tests/test_release_resource_bootstrap_phase4.py \
+            tests/test_release_distribution_phase4.py
+      - name: Run complete Python suite
+        run: python -m pytest -q -o addopts=''
+      - name: Boot Streamlit and check health
+        run: |
+          python -m streamlit run app.py --server.headless=true --server.port=8501 >/tmp/wpi-streamlit.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:8501/_stcore/health && exit 0
+            sleep 2
+          done
+          sed -n '1,160p' /tmp/wpi-streamlit.log
+          exit 1
+
+  dependency-vulnerability-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: flyash-phreeqc-ml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: 3.12.10
+      - name: Install pinned vulnerability-audit tool
+        run: python -m pip install --disable-pip-version-check pip-audit==2.10.1
+      - name: Audit every exact Python 3.12 constraint
+        run: python scripts/audit_dependencies.py
+
+  container-and-compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: flyash-phreeqc-ml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Validate Compose bundles
+        env:
+          WPI_AUTH_FILE: /tmp/wpi-auth.htpasswd
+          WPI_TLS_CERT_FILE: /tmp/wpi-server.crt
+          WPI_TLS_KEY_FILE: /tmp/wpi-server.key
+          VLAB_STREAMLIT_SECRETS_FILE: /tmp/wpi-streamlit-secrets.toml
+          VLAB_ALLOWED_SUBJECTS: ci-invited-subject
+        run: |
+          docker compose -f docker-compose.local.yml config --quiet
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.server.yml config --quiet
+      - name: Build test image without cache
+        run: docker build --pull --no-cache --target test -t wpi-virtual-lab:test .
+      - name: Run full suite in exact test image
+        run: docker run --rm -e PHREEQC_INTEGRATION_REQUIRED=1 --entrypoint python wpi-virtual-lab:test -m pytest -q -o addopts=''
+      - name: Bootstrap pinned resources and offline knowledge fail-closed
+        run: |
+          docker volume create wpi-ci-resources >/dev/null
+          trap 'docker volume rm wpi-ci-resources >/dev/null 2>&1 || true' EXIT
+          docker run --rm -v wpi-ci-resources:/var/lib/wpi/resources \
+            --entrypoint python wpi-virtual-lab:test \
+            -m flyash_phreeqc_ml.resource_steward \
+            --store-root /var/lib/wpi/resources bootstrap-release \
+            --runtime-manifest /opt/phreeqc/share/manifest/runtime-manifest.json \
+            --executable /opt/phreeqc/bin/phreeqc \
+            --database-dir /opt/phreeqc/database \
+            --registry /app/resources/official_usgs_3.8.6-17100_databases.json \
+            --knowledge-output-dir /var/lib/wpi/resources/knowledge
+      - name: Run bundled official PHREEQC example
+        run: |
+          docker run --rm --entrypoint /bin/sh wpi-virtual-lab:test -c \
+            'set -eu; test "$PHREEQC_VERSION" = 3.8.6-17100; phreeqc /opt/phreeqc/share/examples/ex1 /tmp/ex1.pqo "$PHREEQC_DATABASE" >/tmp/ex1.screen 2>&1; test -s /tmp/ex1.pqo; echo "59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10  /opt/phreeqc/database/phreeqc.dat" | sha256sum -c -'
+      - name: Build final release target
+        run: docker build --target release -t wpi-virtual-lab:release-candidate .
+      - name: Exercise hosted authentication fail-closed through Compose
+        env:
+          WPI_IMAGE: wpi-virtual-lab:release-candidate
+          WPI_AUTH_FILE: /tmp/wpi-auth.htpasswd
+          WPI_TLS_CERT_FILE: /tmp/wpi-server.crt
+          WPI_TLS_KEY_FILE: /tmp/wpi-server.key
+          VLAB_STREAMLIT_SECRETS_FILE: /tmp/wpi-streamlit-secrets.toml
+          VLAB_ALLOWED_SUBJECTS: ci-invited-subject
+        run: |
+          touch /tmp/wpi-auth.htpasswd /tmp/wpi-server.crt /tmp/wpi-server.key /tmp/wpi-streamlit-secrets.toml
+          if docker compose -f docker-compose.server.yml run --rm --no-deps -T \
+            --entrypoint python app -c \
+            'from types import SimpleNamespace; from flyash_phreeqc_ml.security.identity import resolve_streamlit_identity; resolve_streamlit_identity(SimpleNamespace(user={"is_logged_in": False}))'; then
+            echo "hosted Compose identity unexpectedly failed open" >&2
+            exit 1
+          fi
+          if docker run --rm -e VLAB_DEPLOYMENT_MODE=hosted \
+            -e WPI_AUTH_ENFORCED=true -e VLAB_ALLOWED_SUBJECTS=ci-invited-subject \
+            wpi-virtual-lab:release-candidate; then
+            echo "hosted entrypoint unexpectedly accepted missing OIDC secrets" >&2
+            exit 1
+          fi
+      - name: Exercise simulated hosted OIDC success path through Compose
+        env:
+          WPI_IMAGE: wpi-virtual-lab:release-candidate
+          WPI_AUTH_FILE: /tmp/wpi-auth.htpasswd
+          WPI_TLS_CERT_FILE: /tmp/wpi-server.crt
+          WPI_TLS_KEY_FILE: /tmp/wpi-server.key
+          VLAB_STREAMLIT_SECRETS_FILE: /tmp/wpi-streamlit-secrets.toml
+          VLAB_ALLOWED_SUBJECTS: ci-invited-subject
+          VLAB_MEMBER_SUBJECTS: ci-invited-subject
+        run: |
+          # This exercises deterministic application authorization with simulated
+          # st.user claims. It is not evidence of a live identity-provider exchange.
+          touch /tmp/wpi-auth.htpasswd /tmp/wpi-server.crt /tmp/wpi-server.key /tmp/wpi-streamlit-secrets.toml
+          docker compose -f docker-compose.server.yml run --rm --no-deps -T \
+            --entrypoint python app -c \
+            'from pathlib import Path; from types import SimpleNamespace; from flyash_phreeqc_ml.security.identity import ROLE_MEMBER, DeploymentMode, resolve_streamlit_identity; from flyash_phreeqc_ml.storage_scope import StorageScope; identity=resolve_streamlit_identity(SimpleNamespace(user={"is_logged_in": True, "sub": "ci-invited-subject", "exp": 4102444800})); assert identity.deployment_mode is DeploymentMode.HOSTED; assert ROLE_MEMBER in identity.roles; scope=StorageScope.for_identity(Path("/tmp/wpi-hosted-stage"), identity); assert not scope.is_local_compatibility_mode; assert scope.tenant_root != Path("/tmp/wpi-hosted-stage").absolute(); print("simulated hosted authorization and tenant scope passed (no live IdP exchange claimed)")'
+      - name: Inspect non-root runtime identity
+        run: |
+          test "$(docker image inspect wpi-virtual-lab:release-candidate --format '{{.Config.User}}')" = "10001:10001"
+          docker run --rm --entrypoint /bin/sh wpi-virtual-lab:release-candidate -c \
+            'test "$PHREEQC_DATABASE" = /opt/phreeqc/database/phreeqc.dat; test -f "$PHREEQC_RUNTIME_MANIFEST"; test -f "$PHREEQC_SOURCE_MANIFEST"'
+
+  per-architecture-phreeqc-integration:
+    name: PHREEQC integration (${{ matrix.platform }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            tag_suffix: amd64
+          - platform: linux/arm64
+            tag_suffix: arm64
+    defaults:
+      run:
+        working-directory: flyash-phreeqc-ml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2b91f6f2f9 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Build exact single-platform test image
+        run: |
+          docker buildx build \
+            --pull \
+            --platform '${{ matrix.platform }}' \
+            --target test \
+            --load \
+            --tag 'wpi-virtual-lab:test-${{ matrix.tag_suffix }}' \
+            .
+      - name: Execute PHREEQC contract tests inside that architecture
+        run: |
+          docker run --rm \
+            --platform '${{ matrix.platform }}' \
+            --env PHREEQC_INTEGRATION_REQUIRED=1 \
+            --entrypoint python \
+            'wpi-virtual-lab:test-${{ matrix.tag_suffix }}' \
+            -m pytest -q -o addopts='' \
+            tests/test_phreeqc_runtime_phase4.py \
+            tests/test_phreeqc_executor.py \
+            tests/test_phreeqc_runner.py \
+            tests/test_phreeqc_run_contract.py

@@ -1,0 +1,11 @@
+{
+  "active_installation_unchanged": true,
+  "next_action": "run_steward_check",
+  "proposal_id": "",
+  "report_paths": [],
+  "request_id": "request-000000000000000000000000",
+  "schema": "wpi.virtual-lab.resource-update-report",
+  "status": "not_started",
+  "summary": "Template only. The Steward writes proposal evidence without changing the active resource.",
+  "version": 1
+}

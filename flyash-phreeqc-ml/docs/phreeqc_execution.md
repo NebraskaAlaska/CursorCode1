@@ -36,8 +36,10 @@ the **Validate** and **Compare Results** tabs.
 
 ## Configuring PHREEQC
 
-The PHREEQC binary and the thermodynamic database are **user-supplied and never committed** (the
-CEMDATA18 database is not redistributable). Set two environment variables:
+The PHREEQC binary/database may be supplied by the pinned container or an approved external
+installation. CEMDATA18 is `external_only`: reviewed official evidence did not establish explicit
+redistribution permission, so it is never bundled, mirrored, or committed; a user/admin must import
+an officially obtained copy after rights confirmation and hashing. Set two environment variables:
 
 ```bash
 export PHREEQC_EXE=phreeqc                          # the PHREEQC CLI binary (or put it on PATH)

@@ -28,6 +28,7 @@ from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation
 from flyash_phreeqc_ml.simulation import strategy as sim_strategy  # noqa: E402  (objective + ranking)
 from flyash_phreeqc_ml.simulation import target_matching as sim_target  # noqa: E402  (inverse search)
 
+from ui.common import _guard_table_shape, _guard_uploaded_file
 from ui.state import _rel
 
 # --------------------------------------------------------------------------- #
@@ -320,15 +321,20 @@ def _material_profile_upload(store: dict):
     if up is None:
         return [], source
     source.source_reference = up.name
+    validated = _guard_uploaded_file(up, allowed_extensions={".csv", ".xlsx", ".xls"})
+    if validated is None:
+        return [], source
     try:
         kind = import_mapping.file_kind(up.name)
         sheet = None
         if kind == "excel":
-            sheets = import_mapping.list_excel_sheets(io.BytesIO(up.getvalue()))
+            sheets = import_mapping.list_excel_sheets(io.BytesIO(validated.data))
             sheet = st.selectbox("Sheet", sheets, key="sim_mp_sheet")
-        raw = import_mapping.read_tabular(io.BytesIO(up.getvalue()), kind=kind, sheet=sheet)
+        raw = import_mapping.read_tabular(io.BytesIO(validated.data), kind=kind, sheet=sheet)
     except Exception as exc:                      # noqa: BLE001 — report, never crash the tab
         st.error(f"Could not read the file: {type(exc).__name__}: {exc}")
+        return [], source
+    if not _guard_table_shape(raw):
         return [], source
     cols = list(raw.columns)
     if len(cols) < 2:
@@ -1641,7 +1647,8 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         "**Compare Results** tab.")
 
     cfg = ai_config.resolve_config()
-    if cfg.enabled:
+    live_ai_enabled = ai_config.is_enabled()
+    if live_ai_enabled:
         st.caption(f"AI extraction is available (model `{cfg.model}`). Tick consent below to use "
                    "it, or parse with rule-based extraction.")
     else:
@@ -1658,7 +1665,7 @@ def _render_simulate_tab(selected_run, dev_mode: bool) -> None:
         placeholder="e.g. simulate what should be in the liquid and what may have precipitated")
 
     use_ai = False
-    if cfg.enabled:
+    if live_ai_enabled:
         st.caption(ai_scenario_parser.SCENARIO_DATA_NOTICE)
         use_ai = st.checkbox(ai_scenario_parser.SCENARIO_CONSENT_LABEL, key="sim_ai_consent")
 

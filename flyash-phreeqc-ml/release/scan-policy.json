@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "forbidden_suffixes": [
+    ".env", ".key", ".pem", ".p12", ".pfx", ".sqlite", ".sqlite3",
+    ".xlsx", ".xls",
+    ".joblib", ".pkl", ".pickle", ".onnx", ".pt", ".pth", ".bin",
+    ".tar", ".tar.gz", ".tgz", ".zip"
+  ],
+  "forbidden_path_fragments": [
+    "/flyash-phreeqc-ml/outputs/",
+    "/flyash-phreeqc-ml/resources/installed/",
+    "/flyash-phreeqc-ml/resources/downloads/",
+    "/flyash-phreeqc-ml/experiments/",
+    "/flyash-phreeqc-ml/databases/",
+    "/flyash-phreeqc-ml/models/"
+  ],
+  "forbidden_basename_patterns": [
+    "*CEMDATA*.dat", "*cemdata*.dat", "*measured*.csv", "*release*.csv"
+  ],
+  "tracked_baseline_exceptions": {
+    "flyash-phreeqc-ml/data/raw/icp_mix_design/CFA + MK design mix_UMass.xlsx": "509673216176d443fb52b596028b5aa4ac72830ba172a3cf36eddd0f268c64d3",
+    "flyash-phreeqc-ml/data/raw/experimental_icp/experimental_release_template.csv": "3dc2a0f62725d0f0986c337f5769101eb8cce8f394909556bb5df1ffd5f4a818",
+    "flyash-phreeqc-ml/experiments/README.md": "ALLOW_TEXT_BASELINE"
+  },
+  "content_baseline_exceptions": {
+    "flyash-phreeqc-ml/tests/test_ai_client.py": "dd57a412881ebc8107ce0f43d44f9173a46406a127bf906a76e210d6951c7944",
+    "flyash-phreeqc-ml/tests/test_ai_config.py": "2d5d8ed9b7b1d1eccc6ca4a9966312a040531e0f2fde896bfd19dd12698af55e"
+  },
+  "required_docker_ignored_canaries": [
+    "outputs/virtual_lab_workspace/project.json",
+    "outputs/simulation_runs/run.json",
+    "experiments/private/data/upload.json",
+    "resources/installed/CEMDATA18.dat",
+    "resources/downloads/phreeqc.tar.gz",
+    "databases/CEMDATA18.dat",
+    "models/model.bin",
+    ".env",
+    "private.key"
+  ]
+}

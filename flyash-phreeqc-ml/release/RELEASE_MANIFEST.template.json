@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "release_status": "candidate_unverified",
+  "app_version": "0.1.0-phase4-rc",
+  "git_commit": null,
+  "created_at_utc": null,
+  "image": {
+    "reference": null,
+    "digest": null,
+    "platforms": ["linux/amd64", "linux/arm64"]
+  },
+  "phreeqc_source_manifest": "release/PHREEQC_SOURCE_MANIFEST.json",
+  "phreeqc_usgs_rights_notice": "release/PHREEQC_USGS_RIGHTS_NOTICE.txt",
+  "runtime_manifest": "/opt/phreeqc/share/manifest/runtime-manifest.json",
+  "database_registry": "resources/official_usgs_3.8.6-17100_databases.json",
+  "dependency_constraints": "constraints-py312.txt",
+  "verification": {
+    "container_build": "not_recorded",
+    "full_tests": "not_recorded",
+    "phreeqc_integration": "not_recorded",
+    "local_compose_boot": "not_recorded",
+    "server_compose_boot": "not_recorded",
+    "nsf_demo": "not_recorded"
+  },
+  "data_statement": "No database, model weights, secrets, or user/research records belong in this manifest."
+}

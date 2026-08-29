@@ -169,9 +169,10 @@ def test_selected_output_includes_target_and_released_elements():
     assert "-pe" in pv.phreeqc_input_text
 
 
-def test_release_with_no_phases_warns_limited_precipitation():
+def test_release_with_no_phases_warns_limited_precipitation(tmp_path):
     pv = B.build_phreeqc_input_preview(_scenario(), material_profile=_profile(),
-                                       dissolution_model=ST.global_release(0.01))
+                                       dissolution_model=ST.global_release(0.01),
+                                       database_path=str(tmp_path / "missing.dat"))
     assert any("no candidate precipitate phases" in w.lower() or "saturation-index" in w.lower()
                for w in pv.warnings)
 
