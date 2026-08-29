@@ -910,9 +910,9 @@ def _render_import_tab(selected_run: str | None) -> None:
         current=0,
     )
     if not selected_run:
-        st.info("Select or create a run in the **Experiment runs** sidebar (left) to import "
-                "data. Use **lab_experiment** for measured ICP/pH data, **literature_benchmark** "
-                "for reported values, or **synthetic_demo** for testing.")
+        st.info("Select a legacy run from the **Legacy experiment run** selector on "
+                "**Projects** to import data. Use **lab_experiment** for measured ICP/pH data, "
+                "**literature_benchmark** for reported values, or **synthetic_demo** for testing.")
         return
     cfg = run_manager.load_run_config(selected_run)
     rt = cfg.get("run_type")

@@ -24,9 +24,20 @@ the product should *look and feel*, not how the science should work.
 Anything in this folder is design intent. Turning it into shipped UI is a separate, reviewed step
 that edits `app.py` / `ui/` deliberately — never an automatic copy-paste of an export.
 
-Phase 1C does not implement this shell. It only makes `instruments/virtual_lab_machines.py` the
-authoritative 12-machine metadata contract and lets the existing Digital Lab render those metadata
-cards while retaining its current ICP/XRD layout.
+Phase 2 implements the shell deliberately in Streamlit. It consumes
+`instruments/virtual_lab_machines.py` as the authoritative 12-machine contract, keeps specialized
+science in its existing modules, and adapts the prior ICP/XRD workflows into the selected shared
+machine workspace. The exported HTML remains reference-only and no mock scientific value was copied.
+
+The implemented presentation intentionally refines the exported mockups for progressive disclosure.
+It uses a compact product/context header, concise default page and machine surfaces, and a selected
+machine workspace with exactly four primary areas: **Overview**, **Prepare**, **Results**, and
+**History**. Full scientific limits, warnings, inputs, provenance, validation, and verification remain
+available through clearly named detail controls. Canonical IDs, backend bindings, raw data, hashes,
+paths, schemas, and engine metadata are collapsed under **Technical details** by default. Critical
+scientific cautions remain visible whenever relevant and are not delegated to color or an expander.
+Dense catalogue or workspace anatomy shown in a design export documents the reference artifact, not
+the final default disclosure level.
 
 ---
 

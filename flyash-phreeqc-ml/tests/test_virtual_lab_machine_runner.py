@@ -7,6 +7,7 @@ explicit criteria.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -340,8 +341,12 @@ def _porcelain(*pathspec):
     return res.stdout.strip()
 
 
-def test_app_py_unchanged():
-    assert _porcelain("app.py") == ""
+def test_phase2_app_does_not_embed_machine_dispatch_or_science():
+    """Phase 2 legitimately changes app.py, but the entry point remains orchestration-only."""
+    source = (Path(_ROOT) / "app.py").read_text(encoding="utf-8")
+    assert "run_virtual_lab_machine(" not in source
+    assert "VirtualLabMachine(" not in source
+    assert "canonical_machine_id(" not in source
 
 
 def test_dispatch_table_has_exactly_the_canonical_twelve_ids():

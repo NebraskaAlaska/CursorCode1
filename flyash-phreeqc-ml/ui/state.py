@@ -178,11 +178,13 @@ def _next_step_hint(selected_run: str | None) -> str:
     tab names (Import / Match / Compare / Export).
     """
     if not selected_run:
-        return "Create or open a run in the **Experiment runs** sidebar (left)."
+        return ("Create or select a legacy run from the **Legacy experiment run** "
+                "selector on **Projects**.")
     try:
         cfg = run_manager.load_run_config(selected_run)
     except run_manager.RunManagerError:
-        return "Create or open a run in the **Experiment runs** sidebar (left)."
+        return ("Create or select a legacy run from the **Legacy experiment run** "
+                "selector on **Projects**.")
     rt = cfg.get("run_type")
     data = run_manager.read_data_file(selected_run)
     lab_like = rt in run_manager.LAB_LIKE_RUN_TYPES

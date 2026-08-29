@@ -170,7 +170,10 @@ def _render_stale_results_warning(run_name: str) -> None:
 def _render_results_summary(run_name: str | None) -> None:
     """Honest, presentation-friendly summary of this run's comparison."""
     if not run_name:
-        st.info("Select a lab run in the **Experiment runs** sidebar (left) to see its results.")
+        st.info(
+            "Select a legacy lab run from the **Legacy experiment run** selector on "
+            "**Projects** to see its results."
+        )
         return
     comp_path = _run_comparison_path(run_name)
     if comp_path is None:
@@ -330,8 +333,8 @@ def _render_run_workflow_tab(selected_run: str | None) -> None:
     )
     if not selected_run:
         st.info(
-            "Select or create a run in the **Experiment runs** sidebar (left) first, then "
-            "this button will run the workflow for it."
+            "Select a legacy run from the **Legacy experiment run** selector on "
+            "**Projects** first, then this button will run the workflow for it."
         )
     else:
         rt = run_manager.load_run_config(selected_run).get("run_type")

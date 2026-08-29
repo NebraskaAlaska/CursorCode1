@@ -505,7 +505,9 @@ def test_chat_composition_autofills_advanced_details_in_ui(monkeypatch, tmp_path
 # AppTest helpers
 # --------------------------------------------------------------------------- #
 def _goto(at, section):
-    [r for r in at.radio if getattr(r, "key", None) == "nav_section"][0].set_value(section).run()
+    page = {"Settings": "Settings & Diagnostics", "Assistant": "Material Workspace"}.get(
+        section, section)
+    [r for r in at.radio if getattr(r, "key", None) == "nav_page"][0].set_value(page).run()
     return at
 
 

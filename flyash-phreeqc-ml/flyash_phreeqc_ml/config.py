@@ -28,6 +28,10 @@ FIGURES_DIR: Path = REPORTS_DIR / "figures"
 # not pipeline datasets. Gitignored like the other generated artifacts.
 OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
 TABLES_DIR: Path = OUTPUTS_DIR / "tables"
+# Durable Phase 2 product state.  Records are small, inspectable JSON documents;
+# external scientific artifacts remain in their existing stores and are referenced,
+# never copied here.
+VIRTUAL_LAB_WORKSPACE_DIR: Path = OUTPUTS_DIR / "virtual_lab_workspace"
 # Safe workspace for the Simulate tab's deterministic PHREEQC execution (Prompt:
 # execution layer). Generated .pqi/.pqo/.sel land here, never in data/raw or the
 # source tree, and are gitignored (see .gitignore: outputs/simulations/).

@@ -67,6 +67,21 @@ STATUS_STYLES: dict[str, tuple[str, str]] = {
     "muted": (_NEUTRAL, "rgba(133,142,156,.14)"),
 }
 
+EPISTEMIC_LABELS = {
+    "user_provided_assumption": "User assumption",
+    "user_assumption": "User assumption",
+    "synthetic_demo_data": "Synthetic demo",
+    "synthetic_demo": "Synthetic demo",
+    "literature_evidence": "Literature evidence",
+    "measured_lab_data": "Measured laboratory data",
+    "measured_laboratory_data": "Measured laboratory data",
+    "simulated_model_estimate": "Simulated model estimate",
+    "ml_prediction": "ML prediction",
+    "advisory_interpretation": "Advisory interpretation",
+    "inferred_quantity": "Inferred quantity",
+    "validated_result": "Validated result",
+}
+
 
 def _style_for(status: str | None) -> tuple[str, str]:
     """Return ``(colour, tint)`` for a status keyword (falls back to neutral)."""
@@ -294,6 +309,79 @@ hr { border-color: var(--rd-border); opacity: .8; }
 </style>
 """
 
+# Phase 2 technical-shell overrides.  These intentionally come after the legacy
+# rules so older workflow modules inherit the same square, blueprint-like visual
+# grammar without each module growing its own stylesheet.
+_PHASE2_CSS = """
+<style id="vl-phase2-theme">
+:root {
+  --rd-bg: #0b1118; --rd-main: #0b1118; --rd-sidebar: #071018;
+  --rd-card: #111b25; --rd-card2: #162330; --rd-text: #e9f1f7;
+  --rd-text2: #bdcbd7; --rd-muted: #8ea0af; --rd-border: #33495c;
+  --rd-accent: #78a9cf; --rd-radius: 2px; --rd-radius-sm: 2px;
+  --rd-shadow: none;
+}
+.block-container { max-width: 1380px; padding-top: .8rem; }
+h1,h2,h3,h4,.rd-hero-title,.rd-page-title,.rd-section-title {
+  font-family: "Arial Narrow", "Roboto Condensed", ui-sans-serif, system-ui, sans-serif;
+  text-transform: none; letter-spacing: .01em;
+}
+.rd-hero,.rd-card,.rd-engine,.rd-panel,[data-testid="stMetric"],
+[data-testid="stExpander"],[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stChatMessage"] { border-radius: 2px !important; box-shadow: none !important; }
+.rd-hero { padding: 13px 18px; margin-bottom: 10px; background: #0f1923;
+  border-color: #3a5266; }
+.rd-hero-title { font-size: 1.58rem; }
+.rd-hero-eyebrow { margin-bottom: 5px; }
+.rd-hero-sub { margin-top: 6px; font-size: .93rem; line-height: 1.38; }
+.rd-hero-chips { margin-top: 10px; }
+.rd-page-header { margin:.15rem 0 .55rem; }
+.rd-page-title { font-size:1.48rem; }
+.rd-page-sub { margin-top:.25rem; font-size:.9rem; line-height:1.35; max-width:72ch; }
+.rd-hero-eyebrow,.rd-page-eyebrow,.rd-card-label,.vl-kicker {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .12em; text-transform: uppercase;
+}
+.rd-badge,.rd-step,.rd-step .rd-step-n,.stButton>button,.stDownloadButton>button,
+[data-baseweb="select"]>div,.stTextInput input,.stTextArea textarea,.stNumberInput input,
+.stTabs [data-baseweb="tab"] { border-radius: 2px !important; }
+.stButton>button,.stDownloadButton>button { min-height: 2.35rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label { border-radius: 2px; padding: 8px 10px; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  border-left: 3px solid var(--rd-accent); background: #13212d;
+}
+.vl-product-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem;
+  border-bottom:1px solid var(--rd-border); padding:.35rem 0 .55rem; margin:0 0 .65rem; }
+.vl-product-name { color:var(--rd-text); font-weight:700; font-size:.94rem; white-space:nowrap; }
+.vl-product-context { display:flex; justify-content:flex-end; align-items:center; gap:.35rem;
+  flex-wrap:wrap; min-width:0; }
+.vl-machine-card { border:1px solid var(--rd-border); border-top:2px solid #557d9d;
+  padding:.85rem; height:14.5rem; min-height:14.5rem; background:#0f1923; margin-bottom:.45rem;
+  display:flex; flex-direction:column; }
+.vl-machine-title { color:var(--rd-text); font-weight:700; margin:0 0 .35rem; line-height:1.25; }
+.vl-machine-purpose { color:var(--rd-text2); font-size:.82rem; line-height:1.38; min-height:2.3rem; }
+.vl-machine-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin:.55rem 0; }
+.vl-machine-readiness { color:var(--rd-text2); font-size:.78rem; line-height:1.35; }
+.vl-empty { border:1px dashed #486176; padding:.85rem 1rem; color:var(--rd-text2); background:#0c151e; }
+.vl-result { border:1px solid var(--rd-border); border-left:3px solid var(--rd-accent);
+  padding:.8rem 1rem; background:#0f1923; margin:.4rem 0; }
+.vl-mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.vl-control-gap { height:.35rem; }
+@media (max-width:900px) {
+  .block-container { padding-left:1rem; padding-right:1rem; }
+  .vl-product-header { align-items:flex-start; flex-direction:column; }
+  .vl-product-context { justify-content:flex-start; }
+  [data-testid="stHorizontalBlock"]:has(.vl-machine-card) { flex-direction:column; gap:.5rem; }
+  [data-testid="stHorizontalBlock"]:has(.vl-machine-card) > [data-testid="stColumn"] {
+    width:100% !important; flex:1 1 100% !important;
+  }
+  .vl-machine-card { height:auto; min-height:auto; }
+  .vl-machine-card .rd-badge { white-space:normal; max-width:100%; overflow-wrap:anywhere; }
+  .rd-page-sub { max-width:100%; }
+}
+</style>
+"""
+
 
 def inject_global_css() -> None:
     """Inject the global stylesheet.
@@ -308,9 +396,9 @@ def inject_global_css() -> None:
     """
     html_fn = getattr(st, "html", None)
     if callable(html_fn):
-        html_fn(_GLOBAL_CSS)
+        html_fn(_GLOBAL_CSS + _PHASE2_CSS)
     else:  # pragma: no cover - older Streamlit
-        st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
+        st.markdown(_GLOBAL_CSS + _PHASE2_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +462,26 @@ def status_badge(label: str, status: str | None = None) -> str:
 def render_status_badge(label: str, status: str | None = None) -> None:
     """Render a standalone status badge (thin wrapper over :func:`status_badge`)."""
     st.markdown(status_badge(label, status), unsafe_allow_html=True)
+
+
+def epistemic_badge(epistemic_type: str | None) -> str:
+    """HTML badge from explicit result metadata; missing/unknown stays visibly unspecified."""
+    key = str(epistemic_type or "").strip().lower().replace(" ", "_")
+    label = EPISTEMIC_LABELS.get(key, "Epistemic type unspecified")
+    if key == "validated_result":
+        status = "success"
+    elif key in {"measured_lab_data", "measured_laboratory_data"}:
+        status = "info"
+    elif key in {"synthetic_demo_data", "synthetic_demo", "user_assumption",
+                 "user_provided_assumption", "advisory_interpretation"}:
+        status = "warning"
+    else:
+        status = "neutral"
+    return status_badge(label, status)
+
+
+def render_epistemic_badge(epistemic_type: str | None) -> None:
+    st.markdown(epistemic_badge(epistemic_type), unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- #

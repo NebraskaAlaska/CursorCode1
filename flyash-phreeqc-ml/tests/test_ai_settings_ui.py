@@ -45,7 +45,9 @@ def _ai_env(monkeypatch):
 
 
 def _nav(at, section):
-    [r for r in at.radio if getattr(r, "key", None) == "nav_section"][0].set_value(section).run()
+    page = {"Settings": "Settings & Diagnostics", "Assistant": "Material Workspace"}.get(
+        section, section)
+    [r for r in at.radio if getattr(r, "key", None) == "nav_page"][0].set_value(page).run()
     return at
 
 

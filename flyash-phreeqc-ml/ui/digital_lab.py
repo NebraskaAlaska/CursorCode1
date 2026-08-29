@@ -16,10 +16,9 @@ import streamlit as st
 
 import app_ui
 from flyash_phreeqc_ml import units
-from flyash_phreeqc_ml.instruments import (icp_processor as icp, instrument_registry as reg,
-                                           lab_modes, virtual_lab_machines as machines,
+from flyash_phreeqc_ml.instruments import (icp_processor as icp, lab_modes,
+                                           virtual_lab_machines as machines,
                                            xrd_advisory as xrd)
-from flyash_phreeqc_ml.simulation import phreeqc_executor
 
 from .common import _render_next_step
 from .state import get_agent_state
@@ -53,17 +52,29 @@ _CORRECTED_COLS = [
     "qc_display", "qc_status", "qc_codes", "qc_reasons", "validation_eligible", "resolutions",
 ]
 
+_ICP_DISPLAY_TEXT_COLS = [
+    "row_id", "sample_id", "element", "role", "supplied_concentration", "supplied_unit",
+    "supplied_dilution_factor", "supplied_blank_value", "supplied_detection_limit",
+    "conversion_id", "conversion_authority", "qc_display", "qc_status", "qc_codes",
+    "qc_reasons", "resolutions",
+]
+
 
 # --------------------------------------------------------------------------- #
 # Section
 # --------------------------------------------------------------------------- #
 def _render_digital_lab(selected_run: str | None, dev_mode: bool = False) -> None:
+    """Compatibility entry point for the two specialized Phase 1 workflows.
+
+    The Phase 2 application does not dispatch this as a page.  It intentionally
+    renders no catalogue; the sole gallery lives in ``ui.product_shell`` and reads
+    the canonical contract directly.
+    """
     app_ui.render_page_header(
-        "Digital Lab / Virtual Instruments",
-        "Scientifically-safe modules for simulation, data processing, interpretation, and "
-        "measurement planning. A virtual instrument is a real simulation engine, a data-reduction "
-        "workflow, a signal/pattern advisory, or a planning helper — never a faked lab readout.",
-        eyebrow="Registry · ICP data processor · XRD advisory · lab modes")
+        "Specialized ICP / XRD workflows",
+        "Compatibility surface for the existing processors. The canonical gallery and shared "
+        "workspace are rendered only by the Phase 2 Machines page.",
+        eyebrow="ICP data processor · XRD advisory · no catalogue")
     _render_next_step(selected_run)
     st.info("These modules process the data **you** provide and plan measurements. They do not "
             "simulate instrument physics, fabricate measured data, or run PHREEQC — the simulation "
@@ -71,11 +82,23 @@ def _render_digital_lab(selected_run: str | None, dev_mode: bool = False) -> Non
 
     state = get_agent_state(selected_run)
     _render_mode_toggles(state)
-    _render_registry()
-    st.divider()
     _render_icp_module()
     st.divider()
     _render_xrd_module()
+
+
+def render_machine_workflow(selected_run: str | None, machine_id: str) -> None:
+    """Render only the existing specialized workflow for one canonical machine.
+
+    Phase 2 uses this adapter inside the shared machine workspace.  It deliberately
+    omits the former registry so the product has one gallery and one navigation.
+    """
+    state = get_agent_state(selected_run)
+    _render_mode_toggles(state)
+    if machine_id == machines.ICP_PROCESSOR:
+        _render_icp_module()
+    elif machine_id == machines.XRD_ADVISORY:
+        _render_xrd_module()
 
 
 # --------------------------------------------------------------------------- #
@@ -112,57 +135,6 @@ def _render_mode_toggles(state) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Instrument registry
-# --------------------------------------------------------------------------- #
-def _render_registry() -> None:
-    app_ui.section_header("Instrument registry",
-                          "12 canonical machines · one metadata authority · current layout")
-    instruments = reg.all_instruments()
-    cols = st.columns(2)
-    for i, spec in enumerate(instruments):
-        with cols[i % 2]:
-            with st.container(border=True):
-                st.markdown(f"**{spec.display_name}**")
-                app_ui.render_status_badge(spec.readiness_label(), spec.readiness_badge())
-                runtime = _runtime_availability(spec)
-                if runtime is not None and not runtime.available:
-                    app_ui.render_status_badge("Runtime configuration unavailable", "warning")
-                st.caption(spec.short_description)
-                st.markdown("**Needs:** " + ", ".join(spec.required_inputs))
-                if spec.output_types:
-                    st.caption("Outputs: " + ", ".join(spec.output_types))
-                st.caption("Epistemic type(s): " + ", ".join(spec.output_data_type))
-                with st.expander("Limitations & safety"):
-                    for lim in spec.limitations:
-                        st.markdown(f"- {lim}")
-                    for note in spec.safety_notes:
-                        st.caption("🛡️ " + note)
-                    st.caption(f"Machine ID: `{spec.instrument_id}`")
-                    st.caption(f"Maturity: `{spec.maturity}` · Mode: `{spec.mode}` · "
-                               f"Execution: `{spec.execution_mode}`")
-                    st.caption(f"Backend: `{spec.backend_binding}`")
-                    st.caption("Runtime requirements: " + "; ".join(spec.runtime_requirements))
-                    if runtime is not None:
-                        for blocker in runtime.blockers:
-                            st.caption("⚠️ " + blocker)
-
-
-def _runtime_availability(spec) -> machines.MachineRuntimeAvailability | None:
-    """Current-computer checks stay outside immutable catalogue metadata."""
-    if spec.instrument_id != machines.PHREEQC_LEACHING:
-        return None
-    availability = phreeqc_executor.check_availability(run_smoke=False)
-    available = bool(availability.can_run and availability.environment_identity is not None)
-    return machines.MachineRuntimeAvailability(
-        machine_id=machines.PHREEQC_LEACHING,
-        available=available,
-        status="available" if available else "runtime_configuration_unavailable",
-        blockers=() if available else (availability.message,),
-        checked_by="simulation.phreeqc_executor.check_availability(run_smoke=False)",
-    )
-
-
-# --------------------------------------------------------------------------- #
 # ICP Data Processor
 # --------------------------------------------------------------------------- #
 def _render_icp_module() -> None:
@@ -170,16 +142,22 @@ def _render_icp_module() -> None:
     st.caption("ℹ️ " + icp.PLASMA_EXPLANATION)
 
     st.markdown("**Quick convert** — one value to mM (dilution-corrected)")
-    q1, q2, q3, q4 = st.columns([1.2, 1, 1, 1])
+    q1, q2, q3, q4, q5 = st.columns([1.2, 1, 1, 1, 1.15])
     element = q1.selectbox("Element", icp.SUPPORTED_ELEMENTS, key="lab_icp_el")
     value = q2.number_input("Value", min_value=0.0, value=84.0, step=1.0, key="lab_icp_val")
     unit = q3.selectbox("Unit", [units.UNIT_MGL, units.UNIT_PPM, units.UNIT_PPB, units.UNIT_MM],
                         key="lab_icp_unit")
     dil = q4.number_input("Dilution ×", min_value=0.0, value=1.0, step=1.0, key="lab_icp_dil")
+    role = q5.selectbox("Declared role", ["unspecified", "measured", "predicted"],
+                        key="lab_icp_role",
+                        help="Do not call a supplied value measured unless it came from a lab instrument.")
     quick = icp.process([{"sample_id": "quick", "element": element, "concentration": value,
                           "unit": unit, "dilution_factor": dil,
-                          "measured_or_predicted": "measured"}])
+                          "measured_or_predicted": role}])
     qrow = quick.corrected[0]
+    app_ui.render_epistemic_badge(
+        "measured_lab_data" if role == "measured" else
+        "simulated_model_estimate" if role == "predicted" else "user_provided_assumption")
     if qrow.value_mM is not None:
         st.success(f"{value:g} {unit} {element} (×{dil:g}) = **{qrow.value_mM:.4g} mM** "
                    f"· conversion `{qrow.conversion_id}`")
@@ -188,6 +166,12 @@ def _render_icp_module() -> None:
 
     st.markdown("**QC work table** — editable synthetic examples. Invalid and censored rows stay "
                 "visible but cannot enter a residual:")
+    source_type = st.selectbox(
+        "Table provenance", ["synthetic_demo_data", "measured_lab_data",
+                             "simulated_model_estimate", "user_provided_assumption"],
+        key="lab_icp_table_epistemic",
+        help="Explicitly label the supplied table; row roles and QC remain authoritative.")
+    app_ui.render_epistemic_badge(source_type)
     base_rows = st.session_state.get("lab_icp_resolved_rows", _ICP_DEMO_ROWS)
     edited = st.data_editor(
         pd.DataFrame(base_rows), num_rows="dynamic", use_container_width=True,
@@ -230,8 +214,13 @@ def _render_icp_module() -> None:
     _render_icp_result(result)
 
 
-def _render_icp_result(result) -> None:
-    st.markdown("**Processed concentrations and QC eligibility**")
+def _icp_display_frame(result) -> pd.DataFrame:
+    """Build an Arrow-safe display copy without changing stored scientific values.
+
+    The ``supplied_*`` fields are provenance and may legitimately mix numeric values
+    with invalid raw strings.  Display them as explicit strings while keeping corrected
+    quantities numeric; this prevents Streamlit's Arrow fallback from emitting a traceback.
+    """
     rows = []
     for corrected in result.corrected:
         record = corrected.to_dict()
@@ -239,8 +228,15 @@ def _render_icp_result(result) -> None:
         record["qc_codes"] = " | ".join(corrected.qc_codes)
         record["qc_reasons"] = " | ".join(corrected.qc_reasons)
         rows.append({c: record.get(c) for c in _CORRECTED_COLS})
-    st.dataframe(pd.DataFrame(rows, columns=_CORRECTED_COLS), use_container_width=True,
-                 hide_index=True)
+    frame = pd.DataFrame(rows, columns=_CORRECTED_COLS)
+    for column in _ICP_DISPLAY_TEXT_COLS:
+        frame[column] = frame[column].astype("string").fillna("")
+    return frame
+
+
+def _render_icp_result(result) -> None:
+    st.markdown("**Processed concentrations and QC eligibility**")
+    st.dataframe(_icp_display_frame(result), use_container_width=True, hide_index=True)
     st.download_button(
         "Download processed ICP QC table (CSV)",
         data=pd.DataFrame(result.corrected_export_table()).to_csv(index=False).encode("utf-8"),
@@ -275,6 +271,7 @@ def _render_xrd_module() -> None:
     app_ui.section_header("XRD Advisory / Pattern Planning",
                           "advisory & pattern-planning — never a measured identification")
     st.caption("ℹ️ " + xrd.EXPLANATION)
+    app_ui.render_epistemic_badge("advisory_interpretation")
     # A flat radio (no nested expanders — the app previously had nested-expander issues).
     label = st.radio("XRD mode", list(_XRD_MODES), horizontal=True, key="lab_xrd_mode")
     mode = _XRD_MODES[label]

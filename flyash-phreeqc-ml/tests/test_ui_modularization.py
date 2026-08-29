@@ -34,7 +34,7 @@ _SCI = Path(pkg.__file__).resolve().parent          # flyash_phreeqc_ml/
 TAB_MODULES = ["assistant_tab", "simulate_tab", "import_tab", "validate_tab",
                "match_tab", "compare_tab", "export_tab", "results", "engine_library", "settings",
                "evidence_library", "prediction_models", "digital_lab"]
-BASE_MODULES = ["state", "common", "formatters"]
+BASE_MODULES = ["state", "common", "formatters", "product_shell"]
 
 
 def _import_targets(path: Path) -> list[str]:
@@ -106,13 +106,17 @@ def test_app_py_is_thin():
     code_lines = [ln for ln in src.splitlines()
                   if ln.strip() and not ln.lstrip().startswith("#")]
     assert len(code_lines) < 400, f"app.py has {len(code_lines)} code lines — keep it thin"
-    # The only top-level function app.py keeps is the run-management sidebar; the AI settings
-    # moved into the Engine Settings section, and section dispatch is inline.
+    # The product shell owns sidebar/context rendering; app.py keeps no helper implementation.
     top_funcs = {n.name for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)}
-    assert top_funcs == {"_render_run_sidebar"}, top_funcs
+    assert top_funcs == set(), top_funcs
 
 
 def test_app_dispatches_to_ui_render():
     src = (_REPO / "app.py").read_text(encoding="utf-8")
     for tab in TAB_MODULES:
-        assert f"{tab}.render(" in src, f"app.py does not dispatch to ui.{tab}.render"
+        if tab == "digital_lab":
+            assert "digital_lab.render_machine_workflow(" in src
+        else:
+            assert f"{tab}.render(" in src, f"app.py does not dispatch to ui.{tab}.render"
+    assert "product_shell.render_sidebar(" in src
+    assert "product_shell.render_machine_gallery(" in src
