@@ -1,4 +1,4 @@
-"""Digital Lab / Virtual Instruments (Phase 1).
+"""Digital Lab / Virtual LAB instruments and canonical machine contract.
 
 A "virtual instrument" here is one of four honest things — never a fake lab device:
 
@@ -7,11 +7,9 @@ A "virtual instrument" here is one of four honest things — never a fake lab de
 * a **signal/pattern advisory** that plans a measurement from known references (XRD), or
 * an **advisory / planning** (or trained-model) helper.
 
-This package owns the instrument **registry** + metadata **schema**, the deterministic
-prompt→instrument **router**, the **ICP** data processor and **XRD** advisory module (the two
-instruments with new Phase-1 behavior beyond PHREEQC), and the cross-cutting **lab modes**
-(validation / uncertainty / evidence). It imports **no AI** and runs **nothing** — execution stays
-on the existing confirmation-gated PHREEQC path.
+``virtual_lab_machines`` owns the authoritative twelve-machine metadata/vocabulary. The historical
+instrument schema/registry are compatibility adapters only. Specialized ICP/XRD/scientific modules
+remain calculation authorities, and PHREEQC execution stays on its confirmation-gated path.
 """
 from __future__ import annotations
 
@@ -21,6 +19,8 @@ from . import (
     instrument_router,
     instrument_schema,
     lab_modes,
+    virtual_lab_machine_runner,
+    virtual_lab_machines,
     xrd_advisory,
 )
 
@@ -30,5 +30,7 @@ __all__ = [
     "instrument_router",
     "instrument_schema",
     "lab_modes",
+    "virtual_lab_machine_runner",
+    "virtual_lab_machines",
     "xrd_advisory",
 ]

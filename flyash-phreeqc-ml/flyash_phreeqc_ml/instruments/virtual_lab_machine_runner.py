@@ -1,6 +1,6 @@
 """Virtual LAB — the **executable machine runner** (safe, limited backend workflows; no UI, no exec).
 
-This is the first *executable* layer on top of the machine blueprint
+This is a limited coordination layer on top of the authoritative machine contract
 (:mod:`flyash_phreeqc_ml.instruments.virtual_lab_machines`). It runs small, honest workflows over
 **user-provided** inputs and returns a standard, self-describing result. It does **not** import
 Streamlit, does **not** execute PHREEQC, does **not** call external APIs, and is **not** wired into
@@ -15,7 +15,8 @@ Hard safety properties (mirroring the blueprint, never weakening it):
 
 * It never fabricates measured data — ICP/SEM-EDS/TGA/DSC/Mechanical process only the rows you supply;
   XRD never invents peaks; FTIR matches user peaks to *broad advisory* group regions only.
-* PHREEQC is preview/gate only here — it is never executed by this runner.
+* PHREEQC is capability/routing only here — input authoring, review, confirmation, and execution
+  remain exclusively in the Phase 1A-reviewed PHREEQC modules.
 * A ``validated_result`` is possible **only** from the Validation machine **with** measured data
   **and** explicit criteria that are met; everything else is advisory / estimate / processed data.
 """
@@ -73,7 +74,7 @@ class VirtualLabMachineResult:
     """A standard, self-describing machine result. ``output_data_type`` is the honest epistemic label;
     ``can_be_used_for_validation_claim`` is only ever True for a measured-backed validated result."""
 
-    machine_id: str
+    machine_id: str | None
     status: str
     output_data_type: str
     result_summary: str
@@ -102,9 +103,16 @@ class VirtualLabMachineResult:
 
 
 def _result(machine_id, status, output_data_type, result_summary, **kw) -> VirtualLabMachineResult:
-    return VirtualLabMachineResult(machine_id=machine_id, status=status,
+    """Build a canonical result and attach the stable backend binding when known."""
+    canonical = vlm.canonical_machine_id(machine_id)
+    provenance = dict(kw.pop("provenance", {}) or {})
+    if canonical is not None:
+        spec = vlm.get_virtual_lab_machine(canonical)
+        provenance.setdefault("canonical_machine_id", canonical)
+        provenance.setdefault("backend_binding", spec.backend_binding if spec else "")
+    return VirtualLabMachineResult(machine_id=canonical, status=status,
                                    output_data_type=output_data_type, result_summary=result_summary,
-                                   **kw)
+                                   provenance=provenance, **kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +128,7 @@ _INPUT_SPEC = {
     vlm.LITERATURE_ENGINE: ("rows",),
     vlm.SUSTAINABILITY: ("assumptions",),
     vlm.EXPERIMENTAL_DESIGN: ("goal",),
-    vlm.ML_SURROGATE: ("model",),
+    vlm.ML_SURROGATE: ("model", "features"),
 }
 _INPUT_DESCRIPTIONS = {
     "composition": "material composition (oxide or elemental)",
@@ -162,9 +170,10 @@ def _missing_inputs(machine_id, payload) -> list:
 
 def validate_machine_inputs(machine_id, payload) -> list:
     """Public: the missing required inputs for a machine (``['unknown machine_id']`` if unknown)."""
-    if machine_id not in _RUNNERS:
+    canonical = vlm.canonical_machine_id(machine_id)
+    if canonical not in _RUNNERS:
         return ["unknown machine_id"]
-    return _missing_inputs(machine_id, payload)
+    return _missing_inputs(canonical, payload)
 
 
 def explain_missing_inputs(machine_id, payload) -> list:
@@ -198,54 +207,60 @@ def _floats(seq):
 
 
 # --------------------------------------------------------------------------- #
-# 1. PHREEQC Leaching Simulator — preview / gate only (never executes here).
+# 1. PHREEQC Leaching Simulator — capability/routing only (never authors or executes here).
 # --------------------------------------------------------------------------- #
 def run_phreeqc_leaching(payload, confirm: bool = False) -> VirtualLabMachineResult:
+    from ..simulation import phreeqc_executor
+
     p = payload or {}
     missing = _missing_inputs(vlm.PHREEQC_LEACHING, p)
     base_warn = ["A simulation is an estimate under your assumptions, never a measurement.",
                  "PHREEQC results require a MEASURED pH / ICP leachate comparison for validation."]
+    availability = phreeqc_executor.check_availability(run_smoke=False)
+    runtime = vlm.MachineRuntimeAvailability(
+        machine_id=vlm.PHREEQC_LEACHING,
+        available=bool(availability.can_run and availability.environment_identity is not None),
+        status="available" if availability.can_run else "runtime_configuration_unavailable",
+        blockers=() if availability.can_run else (availability.message,),
+        checked_by="simulation.phreeqc_executor.check_availability(run_smoke=False)",
+    )
     if missing:
         return _result(vlm.PHREEQC_LEACHING, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
-                       "Cannot build a PHREEQC preview yet — required inputs are missing.",
+                       "Required top-level PHREEQC inputs are missing. Build the authoritative preview "
+                       "in the Assistant/Workspace after completing them.",
                        missing_inputs=missing, warnings=base_warn,
-                       provenance={"inputs": "user_provided"}, validation_status=VAL_NO_MEASURED_DATA)
+                       results={"executed": False, "auto_run": False,
+                                "runtime_availability": runtime.to_dict(),
+                                "dispatch_target": "Assistant/Workspace PHREEQC workflow"},
+                       provenance={"inputs": "user_provided",
+                                   "input_builder": "simulation.phreeqc_input_builder",
+                                   "run_contract": "simulation.phreeqc_run_contract",
+                                   "executor": "simulation.phreeqc_executor (not invoked)"},
+                       validation_status=VAL_NO_MEASURED_DATA)
 
-    preview = _phreeqc_preview_text(p)
     assumptions = [f"release / source term: {p.get('source_term')}",
                    f"temperature: {p.get('temperature')} °C",
                    f"liquid/solid ratio: {p.get('liquid_solid_ratio')}"]
-    if not confirm:
-        return _result(vlm.PHREEQC_LEACHING, STATUS_PREVIEW_REQUIRED, OUT_ADVISORY_INTERPRETATION,
-                       "PHREEQC input preview built for review. Nothing was executed — confirm to "
-                       "proceed (execution stays behind the existing confirmation gate).",
-                       results={"preview": preview, "executed": False, "auto_run": False},
-                       warnings=base_warn, assumptions=assumptions,
-                       provenance={"inputs": "user_provided", "builder": "runner_preview"},
-                       validation_status=VAL_NO_MEASURED_DATA)
-    return _result(vlm.PHREEQC_LEACHING, STATUS_CONFIRMED_NOT_EXECUTED, OUT_ADVISORY_INTERPRETATION,
-                   "Confirmation gate satisfied. Execution is delegated to the existing "
-                   "confirmation-gated PHREEQC engine and is NOT performed by this runner.",
-                   results={"preview": preview, "executed": False, "auto_run": False,
-                            "dispatch_target": "existing PHREEQC executor (not invoked here)"},
-                   warnings=base_warn + ["No simulation was run; no results were produced."],
-                   assumptions=assumptions,
-                   provenance={"inputs": "user_provided", "builder": "runner_preview"},
-                   validation_status=VAL_NO_MEASURED_DATA)
-
-
-def _phreeqc_preview_text(p) -> str:
-    comp = p.get("composition")
-    lines = ["# PHREEQC INPUT PREVIEW — review only; not executed; not validated.",
-             f"DATABASE {p.get('database')}",
-             f"# composition (as provided): {comp}",
-             f"# source term / release (as provided): {p.get('source_term')}",
-             "SOLUTION 1  Leachant",
-             f"    # leachant (as provided): {p.get('leachant')}",
-             f"    temp      {p.get('temperature')}",
-             f"    # liquid/solid ratio (as provided): {p.get('liquid_solid_ratio')}",
-             "END  # element lines + REACTION/EQUILIBRIUM_PHASES are assembled at run time on confirm"]
-    return "\n".join(lines)
+    if confirm:
+        base_warn.append("The generic runner's confirm boolean is not Phase 1A review/confirmation "
+                         "evidence and was ignored; no gate was satisfied.")
+    if not runtime.available:
+        base_warn.append("PHREEQC runtime is unavailable on this computer; no execution was attempted.")
+    return _result(
+        vlm.PHREEQC_LEACHING, STATUS_PREVIEW_REQUIRED, OUT_ADVISORY_INTERPRETATION,
+        "Use the existing Assistant/Workspace PHREEQC workflow to build the authoritative preview, "
+        "review it, capture the exact execution environment, and confirm it. This runner authors no "
+        "PHREEQC input and executes nothing.",
+        results={"executed": False, "auto_run": False, "preview": None,
+                 "runtime_availability": runtime.to_dict(),
+                 "dispatch_target": "Assistant/Workspace PHREEQC workflow"},
+        warnings=base_warn + ["No simulation was run; no results were produced."],
+        assumptions=assumptions,
+        provenance={"inputs": "user_provided",
+                    "input_builder": "simulation.phreeqc_input_builder",
+                    "run_contract": "simulation.phreeqc_run_contract",
+                    "executor": "simulation.phreeqc_executor (not invoked)"},
+        validation_status=VAL_NO_MEASURED_DATA)
 
 
 # --------------------------------------------------------------------------- #
@@ -289,6 +304,71 @@ def run_xrd_advisory(payload, confirm: bool = False) -> VirtualLabMachineResult:
 # --------------------------------------------------------------------------- #
 # 3. ICP Data Processor — delegate to the audited ICP processor; no fabrication.
 # --------------------------------------------------------------------------- #
+def _classify_icp_result(processed, declared_source, icp):
+    """Derive the table-level epistemic type from processed row roles, never caller text.
+
+    The Phase 1B processor owns role normalization and QC.  This runner only summarizes that
+    authoritative output.  A mixed or role-unresolved table is an advisory interpretation; a table
+    with no canonical row role is a user-provided assumption.  The optional top-level source remains
+    provenance and can only weaken a contradictory result.
+    """
+    rows = list(processed.corrected)
+    measured_count = sum(row.role == icp.MEASURED for row in rows)
+    predicted_count = sum(row.role == icp.PREDICTED for row in rows)
+    unresolved = [row for row in rows if row.role not in (icp.MEASURED, icp.PREDICTED)]
+    qc_counts = processed.qc_summary()
+
+    if unresolved:
+        out_type = (OUT_ADVISORY_INTERPRETATION
+                    if measured_count or predicted_count else OUT_USER_PROVIDED_ASSUMPTION)
+    elif measured_count and predicted_count:
+        out_type = OUT_ADVISORY_INTERPRETATION
+    elif measured_count:
+        out_type = OUT_MEASURED_LAB_DATA
+    elif predicted_count:
+        out_type = OUT_SIMULATED_MODEL_ESTIMATE
+    else:
+        out_type = OUT_USER_PROVIDED_ASSUMPTION
+
+    declared_role = icp.canonical_role(declared_source)
+    row_roles = {
+        role for role, count in ((icp.MEASURED, measured_count), (icp.PREDICTED, predicted_count))
+        if count
+    }
+    warnings = []
+    contradiction = bool(declared_role and row_roles and row_roles != {declared_role})
+    if contradiction:
+        warnings.append(
+            f"Top-level source {declared_source!r} contradicts the processed row roles "
+            f"({', '.join(sorted(row_roles))}). Correct measured_or_predicted on the supplied "
+            "rows or correct source provenance; source text cannot relabel row evidence."
+        )
+        out_type = OUT_ADVISORY_INTERPRETATION
+    elif declared_source and not declared_role:
+        warnings.append(
+            f"Top-level source {declared_source!r} is not a recognized measured/predicted role. "
+            "It was retained as provenance only; processed row roles determine the result type."
+        )
+
+    if unresolved:
+        warnings.append(
+            f"{len(unresolved)} processed row(s) have a missing or unknown role. Resolve each "
+            "measured_or_predicted value through the Phase 1B QC workflow before relying on the "
+            "table's epistemic type."
+        )
+
+    return out_type, {
+        "measured_rows": measured_count,
+        "predicted_rows": predicted_count,
+        "unresolved_role_rows": len(unresolved),
+        "canonical_roles_present": sorted(row_roles),
+        "qc_status_counts": qc_counts,
+        "declared_source_role": declared_role or None,
+        "source_contradiction": contradiction,
+        "authority": "processed_row_roles_and_qc",
+    }, warnings
+
+
 def run_icp_processor(payload, confirm: bool = False) -> VirtualLabMachineResult:
     from . import icp_processor as icp  # lazy import
 
@@ -302,25 +382,32 @@ def run_icp_processor(payload, confirm: bool = False) -> VirtualLabMachineResult
 
     res = icp.process(
         list(p["rows"]), duplicate_resolutions=p.get("duplicate_resolutions") or [])
-    source = str(p.get("source") or "").strip().lower()
-    if source == "measured":
-        out_type = OUT_MEASURED_LAB_DATA
-    elif source in ("predicted", "model", "simulated"):
-        out_type = OUT_SIMULATED_MODEL_ESTIMATE
-    else:
-        out_type = OUT_USER_PROVIDED_ASSUMPTION
+    supplied_source = p.get("source")
+    source = str(supplied_source or "").strip().lower()
+    out_type, role_summary, role_warnings = _classify_icp_result(res, source, icp)
+    corrected = res.corrected_table()
+    row_type = {
+        icp.MEASURED: OUT_MEASURED_LAB_DATA,
+        icp.PREDICTED: OUT_SIMULATED_MODEL_ESTIMATE,
+    }
+    for row in corrected:
+        row["row_output_data_type"] = row_type.get(
+            row.get("role"), OUT_USER_PROVIDED_ASSUMPTION)
 
     has_residuals = bool(res.residuals)
     return _result(vlm.ICP_PROCESSOR, STATUS_PROCESSED, out_type,
                    "Processed your concentration rows (unit conversion, blank/dilution correction, "
                    "QC flags). It reduces data only — it does not simulate the plasma.",
-                   results={"corrected": res.corrected_table(), "residuals": res.residual_table(),
+                   results={"corrected": corrected, "residuals": res.residual_table(),
                             "qc_summary": res.qc_summary(),
+                            "row_role_summary": role_summary,
                             "resolution_provenance": res.resolution_provenance},
-                   warnings=[icp.PLASMA_EXPLANATION, *res.warnings],
-                   assumptions=[] if source == "measured" else
-                   ["data source not declared 'measured' — labelled as user-provided/assumption"],
-                   provenance={"inputs": "user_provided", "declared_source": source or "unspecified",
+                   warnings=[icp.PLASMA_EXPLANATION, *res.warnings, *role_warnings],
+                   assumptions=[],
+                   provenance={"inputs": "user_provided",
+                               "declared_source": supplied_source if supplied_source is not None
+                               else "unspecified",
+                               "epistemic_authority": "processed_row_roles_and_qc",
                                "processor": "icp_processor"},
                    validation_status=VAL_COMPARISON_AVAILABLE if has_residuals else VAL_NOT_APPLICABLE)
 
@@ -474,7 +561,7 @@ def run_mechanical_testing(payload, confirm: bool = False) -> VirtualLabMachineR
     p = payload or {}
     missing = _missing_inputs(vlm.MECHANICAL, p)
     if missing:
-        return _result(vlm.MECHANICAL, STATUS_MISSING_INPUTS, OUT_MEASURED_LAB_DATA,
+        return _result(vlm.MECHANICAL, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
                        "Provide measured strength rows (sample_id, strength, curing_age_days).",
                        missing_inputs=missing, provenance={"inputs": "user_provided"})
 
@@ -497,7 +584,14 @@ def run_mechanical_testing(payload, confirm: bool = False) -> VirtualLabMachineR
             row["warning"] = "fewer than 3 replicates — spread is not reliable"
         summary.append(row)
     if not summary:
-        warnings.append("No numeric strength values found in the supplied rows.")
+        warnings.append("No numeric strength values found in the supplied rows; no strength result "
+                        "was produced.")
+        return _result(
+            vlm.MECHANICAL, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
+            "Provide at least one measured row with a numeric strength value.",
+            results={"by_sample_age": []}, warnings=warnings,
+            missing_inputs=["rows with numeric strength"],
+            provenance={"inputs": "user_provided"})
     if any(s["n"] < 3 for s in summary):
         warnings.append("Some groups have fewer than 3 replicates — add replicates for a meaningful spread.")
     warnings.append("Reports measured statistics only — it never claims code/standard compliance.")
@@ -509,21 +603,118 @@ def run_mechanical_testing(payload, confirm: bool = False) -> VirtualLabMachineR
 
 
 # --------------------------------------------------------------------------- #
-# 8. ML Surrogate Predictor — no model wired this phase → trained_model_required.
+# 8. ML Surrogate Predictor — delegate only an approved trained model to ml_models.predict.
 # --------------------------------------------------------------------------- #
+def _ml_prediction_outputs_are_finite(prediction) -> bool:
+    """Defense in depth: require a finite mean and finite optional uncertainty outputs."""
+    value = getattr(prediction, "value", None)
+    optional = (getattr(prediction, name, None) for name in ("lower", "upper", "sigma"))
+    return _num(value) is not None and all(item is None or _num(item) is not None
+                                            for item in optional)
+
+
+def _invalid_ml_artifact_result(prediction_provenance, *, refusal_reason=None):
+    """Return the common advisory envelope for an unusable approved-status artifact."""
+    results = {}
+    if refusal_reason:
+        results = {"refusal_code": "invalid_model_output", "refusal_reason": refusal_reason}
+    return _result(
+        vlm.ML_SURROGATE, STATUS_TRAINED_MODEL_REQUIRED, OUT_ADVISORY_INTERPRETATION,
+        "The model status appeared approved, but its persisted artifact was unusable or "
+        "incompatible. No ML prediction was produced.",
+        results=results,
+        missing_inputs=["a usable fitted model artifact compatible with its feature schema"],
+        warnings=["Prediction delegation failed closed. Re-train or re-select the model and "
+                  "verify its model card and feature schema.",
+                  "No exception detail or stack trace is included in this result."],
+        provenance={**prediction_provenance, "model_artifact_usable": False,
+                    "prediction_delegated": True},
+        validation_status=VAL_NO_MEASURED_DATA)
+
+
 def run_ml_surrogate(payload, confirm: bool = False) -> VirtualLabMachineResult:
+    from ..ml_models import model_schema
+    from ..ml_models import predict as prediction_backend
+
     p = payload or {}
-    warnings = ["No approved trained model + feature schema + provenance is wired in this phase — no "
-                "prediction is produced.",
-                "A surrogate prediction is an experimental estimate, never accuracy or validation."]
-    missing = ["an approved trained model + feature schema + provenance"]
-    if not p.get("model"):
-        missing = _missing_inputs(vlm.ML_SURROGATE, p) or missing
-    return _result(vlm.ML_SURROGATE, STATUS_TRAINED_MODEL_REQUIRED, OUT_ADVISORY_INTERPRETATION,
-                   "A trained, approved model is required before any ML prediction — none is produced.",
-                   missing_inputs=missing, warnings=warnings,
-                   provenance={"inputs": "user_provided", "model_loaded": False},
-                   validation_status=VAL_NO_MEASURED_DATA)
+    model = p.get("model")
+    features = p.get("features")
+    approved = bool(
+        isinstance(model, model_schema.TrainedModel)
+        and model.training_status == model_schema.TRAINING_DATA_APPROVED
+        and model.validation_status != model_schema.VALIDATION_DEMO
+        and not model.is_demo
+    )
+    if not approved:
+        return _result(
+            vlm.ML_SURROGATE, STATUS_TRAINED_MODEL_REQUIRED, OUT_ADVISORY_INTERPRETATION,
+            "An approved trained model with recorded training provenance is required before any ML "
+            "prediction — none was produced.",
+            missing_inputs=["an approved trained model + feature schema + provenance"],
+            warnings=["Demo, exploratory, legacy/unknown, missing, or malformed model artifacts cannot "
+                      "produce an ordinary machine prediction.",
+                      "A surrogate prediction is an experimental estimate, never accuracy or validation."],
+            provenance={"inputs": "user_provided", "model_loaded": model is not None,
+                        "model_approved": False, "model_status_appeared_approved": False,
+                        "model_artifact_usable": None,
+                        "prediction_delegated": False}, validation_status=VAL_NO_MEASURED_DATA)
+    if not isinstance(features, dict) or not features:
+        return _result(
+            vlm.ML_SURROGATE, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
+            "Provide model-compatible input features before prediction.",
+            missing_inputs=["features"],
+            warnings=["No prediction was produced."],
+            provenance={"inputs": "user_provided", "model_loaded": True,
+                        "model_approved": True, "model_status_appeared_approved": True,
+                        "model_artifact_usable": None, "prediction_delegated": False,
+                        "model_name": model.name, "model_version": model.version,
+                        "training_data_status": model.training_status,
+                        "source_of_model": model.source_type,
+                        "n_training_rows": model.n_train}, validation_status=VAL_NO_MEASURED_DATA)
+
+    prediction_provenance = {
+        "inputs": "user_provided", "model_loaded": True, "model_approved": True,
+        "model_status_appeared_approved": True, "model_artifact_usable": None,
+        "model_name": model.name, "model_version": model.version,
+        "training_data_status": model.training_status,
+        "source_of_model": model.source_type, "n_training_rows": model.n_train,
+    }
+    try:
+        prediction = prediction_backend.predict(model, features)
+    except Exception:  # noqa: BLE001 - fail closed at the specialized artifact boundary
+        return _invalid_ml_artifact_result(prediction_provenance)
+    if (not prediction.refused and not _ml_prediction_outputs_are_finite(prediction)):
+        return _invalid_ml_artifact_result(
+            prediction_provenance,
+            refusal_reason="The fitted model produced invalid non-finite prediction output.")
+    if prediction.refused:
+        if getattr(prediction, "refusal_code", None) == "invalid_model_output":
+            return _invalid_ml_artifact_result(
+                prediction_provenance, refusal_reason=prediction.refusal_reason)
+        return _result(
+            vlm.ML_SURROGATE, STATUS_MISSING_INPUTS, OUT_ADVISORY_INTERPRETATION,
+            "The approved model refused this incomplete or unsupported prediction request.",
+            results={"refusal_code": getattr(prediction, "refusal_code", None),
+                     "refusal_reason": prediction.refusal_reason},
+            missing_inputs=list(prediction.missing_features), warnings=list(prediction.warnings),
+            provenance={**prediction_provenance, "prediction_delegated": True},
+            validation_status=VAL_NO_MEASURED_DATA)
+
+    return _result(
+        vlm.ML_SURROGATE, STATUS_PROCESSED, OUT_ML_PREDICTION,
+        "Approved trained-model prediction produced with uncertainty and applicability warnings; "
+        "it is an experimental estimate, not a measurement or validated result.",
+        results={"target": prediction.target, "value": prediction.value,
+                 "lower": prediction.lower, "upper": prediction.upper,
+                 "sigma": prediction.sigma, "interval_method": prediction.interval_method,
+                 "used_features": prediction.used_features,
+                 "missing_features": prediction.missing_features,
+                 "out_of_domain": prediction.out_of_domain,
+                 "unseen_categories": prediction.unseen_categories},
+        warnings=list(prediction.warnings),
+        provenance={**prediction_provenance, "model_artifact_usable": True,
+                    "prediction_delegated": True},
+        validation_status=VAL_NO_MEASURED_DATA)
 
 
 # --------------------------------------------------------------------------- #
@@ -833,17 +1024,32 @@ _RUNNERS = {
 }
 
 
+def runner_machine_ids() -> tuple[str, ...]:
+    """Canonical dispatch IDs in authoritative catalogue order."""
+    return tuple(machine_id for machine_id in vlm.machine_ids() if machine_id in _RUNNERS)
+
+
 def run_virtual_lab_machine(machine_id, payload=None, confirm: bool = False) -> VirtualLabMachineResult:
     """Run one Virtual LAB machine over ``payload``. Unknown ids are rejected (status unknown_machine).
 
-    PHREEQC is preview/gate only (never executed here); ``confirm`` only advances its gate. Every
-    result is a :class:`VirtualLabMachineResult` with the full standard field set.
+    PHREEQC is capability/routing only here (never authored or executed); its actual review and
+    confirmation evidence must go through the Phase 1A contract. Every result is a
+    :class:`VirtualLabMachineResult` with the full standard field set.
     """
-    handler = _RUNNERS.get(machine_id)
+    input_machine_id = str(machine_id).strip() if machine_id is not None else ""
+    canonical = vlm.canonical_machine_id(input_machine_id)
+    handler = _RUNNERS.get(canonical)
     if handler is None:
-        return _result(machine_id or "(none)", STATUS_UNKNOWN_MACHINE, OUT_ADVISORY_INTERPRETATION,
+        return _result(None, STATUS_UNKNOWN_MACHINE, OUT_ADVISORY_INTERPRETATION,
                        f"Unknown machine_id {machine_id!r}; nothing was run.",
                        warnings=[f"unknown machine_id {machine_id!r}",
                                  "known ids: " + ", ".join(sorted(_RUNNERS))],
-                       provenance={"inputs": "user_provided"})
-    return handler(payload or {}, confirm)
+                       provenance={"inputs": "user_provided",
+                                   "input_machine_id": input_machine_id or None,
+                                   "canonical_machine_id": None})
+    result = handler(payload or {}, confirm)
+    result.machine_id = canonical
+    result.provenance["canonical_machine_id"] = canonical
+    if input_machine_id != canonical:
+        result.provenance["input_machine_id"] = input_machine_id
+    return result

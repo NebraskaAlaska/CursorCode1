@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from ..agent import domains
 from . import instrument_registry as reg
 from . import lab_modes
+from . import virtual_lab_machines as machine_contract
 from . import xrd_advisory
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +59,14 @@ _SUSTAIN_RE = re.compile(r"\b(sustainab\w*|life[-\s]?cycle|lca\b|carbon\s+footpr
                          r"circular\w*|embodied\s+(?:carbon|energy))\b", re.I)
 _LIT_RE = re.compile(r"\b(literature|paper\w*|reference\w*|citation\w*|evidence|benchmark\w*|"
                      r"prior\s+work|published)\b", re.I)
+_EXPERIMENT_DESIGN_RE = re.compile(
+    r"\b(?:design|plan|create|build|suggest)\b.{0,40}\b(?:experiment|study|test)\w*\b|"
+    r"\b(?:experiment|study|test)\w*\b.{0,40}\b(?:matrix|controls?|replicates?|doe)\b|"
+    r"\bdesign\s+of\s+experiments?\b|\bdoe\b", re.I)
+_VALIDATION_UNCERTAINTY_RE = re.compile(
+    r"\bvalidat(?:e|ion)\b|\b(?:residual|error|uncertainty|sensitivity)\s+(?:analysis|assessment)\b|"
+    r"\bacceptance\s+criteria\b|\bmeasured\s+(?:vs\.?|versus|against)\s+"
+    r"(?:predicted|simulated|model(?:led|ed)?)\b", re.I)
 
 
 @dataclass
@@ -78,6 +87,26 @@ class RoutingResult:
     xrd_mode: str = ""                       # which XRD Advisory v2 mode the prompt wants (if XRD)
     xrd_request: dict = field(default_factory=dict)  # detected XRD inputs (measured 2θ, phases)
     auto_run: bool = field(default=False)    # INVARIANT: routing never triggers a run
+
+    def __post_init__(self) -> None:
+        """Normalize every emitted ID through the one canonical alias authority."""
+        self.auto_run = False
+        if self.primary is not None:
+            canonical_primary = machine_contract.canonical_machine_id(self.primary)
+            if canonical_primary is None:
+                raise ValueError(f"router produced unknown machine id {self.primary!r}")
+            self.primary = canonical_primary
+
+        canonical_ids: list[str] = []
+        for supplied in self.instruments:
+            canonical = machine_contract.canonical_machine_id(supplied)
+            if canonical is None:
+                raise ValueError(f"router produced unknown machine id {supplied!r}")
+            if canonical not in canonical_ids:
+                canonical_ids.append(canonical)
+        if self.primary is not None and self.primary not in canonical_ids:
+            canonical_ids.insert(0, self.primary)
+        self.instruments = tuple(canonical_ids)
 
     def instrument_specs(self) -> list:
         """The :class:`InstrumentSpec` objects for the routed ids (skips any unknown id)."""
@@ -147,10 +176,13 @@ def route(prompt, *, state=None, ml_model_available: bool = False,
 
     def _result(objective, primary, instruments, *, next_action, rationale,
                 warnings=(), validation=False, missing=None, xrd_mode="", xrd_request=None):
+        instruments = list(instruments)
         validation_opts = ()
         if validation or validation_mode:
             validation_opts = ("provide measured ICP / pH data to compare",
                                "enable validation mode (never labels a simulation 'validated')")
+            if reg.VALIDATION_UNCERTAINTY_ASSISTANT not in instruments:
+                instruments.append(reg.VALIDATION_UNCERTAINTY_ASSISTANT)
         return RoutingResult(
             objective=objective, primary=primary, instruments=tuple(instruments),
             missing_inputs=tuple(missing) if missing is not None else _missing_for(primary, state),
@@ -245,22 +277,50 @@ def route(prompt, *, state=None, ml_model_available: bool = False,
     if _FTIR_RE.search(low):
         return _result("FTIR / Raman planning", reg.FTIR_RAMAN_INTERPRETER,
                        [reg.FTIR_RAMAN_INTERPRETER],
-                       next_action="Open Digital Lab → FTIR / Raman Interpreter (advisory bands).",
-                       rationale="Prompt mentions vibrational spectroscopy (advisory only).")
+                       next_action=("Provide measured peaks and sourced reference data to the limited "
+                                    "FTIR/Raman workflow; the Digital Lab currently shows its contract "
+                                    "card, not a dedicated hands-on module."),
+                       rationale="Prompt mentions vibrational spectroscopy; reference-backed advice only.")
     if _SEM_RE.search(low):
         return _result("SEM / EDS planning", reg.SEM_EDS_PROCESSOR, [reg.SEM_EDS_PROCESSOR],
-                       next_action="Open Digital Lab → SEM / EDS Processor (advisory).",
-                       rationale="Prompt mentions electron microscopy / EDS (advisory only).")
+                       next_action=("Provide measured SEM/EDS rows to the limited processor; the Digital "
+                                    "Lab currently shows its contract card, not a dedicated hands-on UI."),
+                       rationale="Prompt mentions electron microscopy / EDS measured-data processing.")
     if _TGA_RE.search(low):
         return _result("Thermal analysis (TGA/DSC) planning", reg.TGA_DSC_PROCESSOR,
                        [reg.TGA_DSC_PROCESSOR],
-                       next_action="Open Digital Lab → TGA / DSC Processor (advisory).",
-                       rationale="Prompt mentions thermal analysis (advisory only).")
+                       next_action=("Provide measured TGA/DSC arrays to the limited processor; the Digital "
+                                    "Lab currently shows its contract card, not a dedicated hands-on UI."),
+                       rationale="Prompt mentions thermal analysis requiring measured curves.")
     if _SUSTAIN_RE.search(low):
         return _result("Sustainability screening", reg.SUSTAINABILITY_SCREENING,
                        [reg.SUSTAINABILITY_SCREENING],
                        next_action="Open Digital Lab → Sustainability Screening (qualitative).",
                        rationale="Prompt mentions sustainability / LCA (qualitative screening only).")
+
+    # Explicit planning and validation capabilities absent from the legacy ten-item router. ------- #
+    if _EXPERIMENT_DESIGN_RE.search(text):
+        instruments = [reg.EXPERIMENTAL_DESIGN_ASSISTANT]
+        if _VALIDATION_UNCERTAINTY_RE.search(text):
+            instruments.append(reg.VALIDATION_UNCERTAINTY_ASSISTANT)
+        return _result(
+            "Experimental design planning", reg.EXPERIMENTAL_DESIGN_ASSISTANT, instruments,
+            next_action=("Use the Experimental Design Assistant to define factors, controls, and "
+                         "replicates; physical experiments are still required for results."),
+            rationale=("The prompt explicitly asks for an experiment/study design, matrix, controls, "
+                       "replicates, or DOE — deterministic planning advice only."),
+            missing=("a research goal and candidate materials / factors",))
+
+    if _VALIDATION_UNCERTAINTY_RE.search(text):
+        return _result(
+            "Validation and uncertainty assessment", reg.VALIDATION_UNCERTAINTY_ASSISTANT,
+            [reg.VALIDATION_UNCERTAINTY_ASSISTANT],
+            next_action=("Provide QC-eligible measured and predicted values plus explicit acceptance "
+                         "criteria; without all three, the result remains advisory."),
+            rationale=("The prompt explicitly asks to validate/compare a model, assess residuals, "
+                       "or analyze uncertainty against measured data."),
+            validation=True, missing=("QC-eligible measured values", "compatible predicted values",
+                                      "explicit acceptance criteria"))
 
     # 4) Domain fallback. ------------------------------------------------------------------ #
     if domain == domains.LEACHING_GEOCHEMISTRY:
@@ -284,8 +344,9 @@ def route(prompt, *, state=None, ml_model_available: bool = False,
 
     if domain == domains.THERMAL_TREATMENT:
         return _result("Thermal treatment planning", reg.TGA_DSC_PROCESSOR, [reg.TGA_DSC_PROCESSOR],
-                       next_action="Plan TGA/DSC and (optionally) XRD; no thermal engine yet.",
-                       rationale="Thermal framing → advisory thermal analysis (no engine yet).")
+                       next_action=("Plan TGA/DSC and optionally XRD; a limited measured-curve processor "
+                                    "exists, but there is no predictive thermal engine."),
+                       rationale="Thermal framing → measured-data processing plus advisory planning.")
 
     if evidence:
         return _result("Literature / evidence support", reg.LITERATURE_EVIDENCE_ENGINE,

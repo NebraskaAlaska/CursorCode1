@@ -26,11 +26,30 @@ _FULL_PHREEQC = {"composition": {"SiO2": 34, "CaO": 24}, "leachant": "0.5 M NaOH
                  "source_term": "1% release of Ca, Si", "database": "phreeqc.dat",
                  "temperature": 25, "liquid_solid_ratio": 10}
 
+_EVIDENCE_BEARING_OUTPUT_TYPES = {
+    vlm.OUT_MEASURED_LAB_DATA,
+    vlm.OUT_ML_PREDICTION,
+    vlm.OUT_SIMULATED_MODEL_ESTIMATE,
+    vlm.OUT_VALIDATED_RESULT,
+}
+
+_BLOCKED_OR_PREREQUISITE_STATUSES = {
+    run.STATUS_MISSING_INPUTS,
+    run.STATUS_TRAINED_MODEL_REQUIRED,
+    run.STATUS_REFERENCE_DATA_NEEDED,
+    run.STATUS_PREVIEW_REQUIRED,
+    run.STATUS_AWAITING_CONFIRMATION,
+    run.STATUS_CONFIRMED_NOT_EXECUTED,
+}
+
 
 # 1.
 def test_unknown_machine_id_is_rejected():
     r = run.run_virtual_lab_machine("does_not_exist", {})
     assert r.status == run.STATUS_UNKNOWN_MACHINE
+    assert r.machine_id is None
+    assert r.provenance["input_machine_id"] == "does_not_exist"
+    assert r.provenance["canonical_machine_id"] is None
     assert r.can_be_used_for_validation_claim is False
 
 
@@ -42,6 +61,13 @@ def test_every_machine_returns_the_standard_fields():
         assert set(d) == STANDARD_FIELDS, f"{mid}: fields {set(d) ^ STANDARD_FIELDS}"
         assert d["machine_id"] == mid
         assert d["output_data_type"] in vlm.OUTPUT_DATA_TYPES
+
+
+@pytest.mark.parametrize("machine_id", vlm.machine_ids())
+def test_blocked_or_prerequisite_states_never_emit_scientific_evidence(machine_id):
+    result = run.run_virtual_lab_machine(machine_id, {})
+    assert result.status in _BLOCKED_OR_PREREQUISITE_STATUSES
+    assert result.output_data_type not in _EVIDENCE_BEARING_OUTPUT_TYPES
 
 
 # 3. & 4.
@@ -57,8 +83,13 @@ def test_phreeqc_never_executes_and_reports_missing_inputs():
     assert prev.output_data_type != vlm.OUT_SIMULATED_MODEL_ESTIMATE  # nothing executed → not an estimate
 
     conf = run.run_virtual_lab_machine(vlm.PHREEQC_LEACHING, _FULL_PHREEQC, confirm=True)
-    assert conf.status == run.STATUS_CONFIRMED_NOT_EXECUTED
+    assert conf.status == run.STATUS_PREVIEW_REQUIRED
     assert conf.results["executed"] is False
+    assert conf.results["preview"] is None
+    assert conf.results["auto_run"] is False
+    assert conf.provenance["input_builder"] == "simulation.phreeqc_input_builder"
+    assert conf.provenance["run_contract"] == "simulation.phreeqc_run_contract"
+    assert any("ignored" in w.lower() for w in conf.warnings)
     assert any("measured" in w.lower() for w in conf.warnings)  # needs measured comparison to validate
 
 
@@ -84,6 +115,23 @@ def test_icp_processes_user_rows_and_refuses_fabrication():
     assert len(r.results["corrected"]) == len(rows)                    # exactly the rows provided
     assert r.output_data_type == vlm.OUT_MEASURED_LAB_DATA
     assert any("does not" in w.lower() and "plasma" in w.lower() for w in r.warnings)
+
+
+def test_icp_runner_epistemic_outputs_are_all_permitted_by_the_canonical_contract():
+    rows = [{"sample_id": "S1", "element": "Ca", "concentration": 40.078, "unit": "mg/L",
+             "measured_or_predicted": "measured"}]
+    results = {
+        source: run.run_virtual_lab_machine(vlm.ICP_PROCESSOR, {"rows": rows, "source": source})
+        for source in ("measured", "predicted", "")
+    }
+    assert results["measured"].output_data_type == vlm.OUT_MEASURED_LAB_DATA
+    assert results["predicted"].output_data_type == vlm.OUT_ADVISORY_INTERPRETATION
+    assert results[""].output_data_type == vlm.OUT_MEASURED_LAB_DATA
+    assert any("contradict" in warning.lower() for warning in results["predicted"].warnings)
+    assert all(row["role"] == "measured" for row in results["predicted"].results["corrected"])
+
+    allowed = set(vlm.get_virtual_lab_machine(vlm.ICP_PROCESSOR).output_data_type)
+    assert {result.output_data_type for result in results.values()} <= allowed
 
 
 # 7.
@@ -124,7 +172,16 @@ def test_mechanical_computes_stats_only_from_supplied_strengths():
     assert grp["n"] == 3 and grp["mean_strength"] == 31.0 and grp["std_dev"] == 1.0
     assert r.output_data_type == vlm.OUT_MEASURED_LAB_DATA
     assert any("compliance" in w.lower() for w in r.warnings)         # never claims code compliance
-    assert run.run_virtual_lab_machine(vlm.MECHANICAL, {}).status == run.STATUS_MISSING_INPUTS
+    missing = run.run_virtual_lab_machine(vlm.MECHANICAL, {})
+    assert missing.status == run.STATUS_MISSING_INPUTS
+    assert missing.output_data_type == vlm.OUT_ADVISORY_INTERPRETATION
+    assert missing.results == {}                                    # no fabricated strength value
+
+    non_numeric = run.run_virtual_lab_machine(
+        vlm.MECHANICAL, {"rows": [{"sample_id": "A", "strength": "not measured"}]})
+    assert non_numeric.status == run.STATUS_MISSING_INPUTS
+    assert non_numeric.output_data_type == vlm.OUT_ADVISORY_INTERPRETATION
+    assert non_numeric.results["by_sample_age"] == []
 
 
 # 11.
@@ -133,6 +190,18 @@ def test_ml_surrogate_requires_trained_model():
     assert r.status == run.STATUS_TRAINED_MODEL_REQUIRED
     assert r.output_data_type != vlm.OUT_ML_PREDICTION
     assert any("accuracy" in w.lower() or "validation" in w.lower() for w in r.warnings)
+
+
+def test_ml_surrogate_rejects_a_demo_model_even_when_it_can_predict():
+    from flyash_phreeqc_ml.ml_models import train
+
+    demo = train.train_demo_model(n=12)
+    r = run.run_virtual_lab_machine(vlm.ML_SURROGATE,
+                                    {"model": demo, "features": {"curing_age_days": 28}})
+    assert r.status == run.STATUS_TRAINED_MODEL_REQUIRED
+    assert r.output_data_type != vlm.OUT_ML_PREDICTION
+    assert not r.results
+    assert r.provenance["model_approved"] is False
 
 
 # 12.
@@ -205,6 +274,49 @@ def test_validation_cannot_validate_without_measured_data_and_criteria():
     assert passed.can_be_used_for_validation_claim is True
 
 
+def test_required_result_envelopes_preserve_the_epistemic_contract():
+    from flyash_phreeqc_ml.ml_models import train
+
+    rows = [{"sample_id": "S1", "element": "Ca", "concentration": 40.078, "unit": "mg/L"}]
+    unapproved_demo_model = train.train_demo_model(n=12)
+    scientific_results = [
+        run.run_virtual_lab_machine(vlm.ICP_PROCESSOR, {"rows": rows, "source": "measured"}),
+        run.run_virtual_lab_machine(vlm.ICP_PROCESSOR, {"rows": rows, "source": "predicted"}),
+        run.run_virtual_lab_machine(vlm.ICP_PROCESSOR, {"rows": rows}),
+        run.run_virtual_lab_machine(
+            vlm.MECHANICAL,
+            {"rows": [{"sample_id": "A", "strength": 31, "curing_age_days": 28}]}),
+        run.run_virtual_lab_machine(
+            vlm.VALIDATION_UNCERTAINTY,
+            {"measured": {"Ca": 2.0}, "predicted": {"Ca": 2.05},
+             "criteria": {"max_percent_error": 5}}),
+    ]
+    for result in scientific_results:
+        allowed = vlm.get_virtual_lab_machine(result.machine_id).output_data_type
+        assert result.output_data_type in allowed
+
+    guarded_results = [
+        run.run_virtual_lab_machine(vlm.MECHANICAL, {}),
+        run.run_virtual_lab_machine(vlm.ML_SURROGATE, {}),
+        run.run_virtual_lab_machine(
+            vlm.ML_SURROGATE,
+            {"model": unapproved_demo_model, "features": {"curing_age_days": 28}}),
+        run.run_virtual_lab_machine(vlm.PHREEQC_LEACHING, _FULL_PHREEQC),
+        run.run_virtual_lab_machine(
+            vlm.VALIDATION_UNCERTAINTY, {"predicted": {"Ca": 2.05}}),
+        run.run_virtual_lab_machine(
+            vlm.VALIDATION_UNCERTAINTY,
+            {"measured": {"Ca": 2.0}, "predicted": {"Ca": 2.05}}),
+    ]
+    for result in guarded_results:
+        assert result.output_data_type not in _EVIDENCE_BEARING_OUTPUT_TYPES
+        assert result.can_be_used_for_validation_claim is False
+
+    validated = scientific_results[-1]
+    assert validated.output_data_type == vlm.OUT_VALIDATED_RESULT
+    assert validated.can_be_used_for_validation_claim is True
+
+
 # 17.
 def test_importing_runner_does_not_import_streamlit():
     code = ("import sys; import flyash_phreeqc_ml.instruments.virtual_lab_machine_runner as m; "
@@ -232,11 +344,16 @@ def test_app_py_unchanged():
     assert _porcelain("app.py") == ""
 
 
-def test_application_shell_and_machine_registries_unchanged():
-    assert _porcelain(
-        "app.py",
-        "flyash_phreeqc_ml/instruments/instrument_registry.py",
-        "flyash_phreeqc_ml/instruments/virtual_lab_machines.py") == ""
+def test_dispatch_table_has_exactly_the_canonical_twelve_ids():
+    assert run.runner_machine_ids() == vlm.machine_ids()
+
+
+def test_legacy_request_returns_canonical_id_and_preserves_supplied_alias():
+    result = run.run_virtual_lab_machine("xrd_advisory_module", {"phases": ["calcite"]})
+    assert result.machine_id == vlm.XRD_ADVISORY
+    assert result.provenance["canonical_machine_id"] == vlm.XRD_ADVISORY
+    assert result.provenance["input_machine_id"] == "xrd_advisory_module"
+    assert result.provenance["backend_binding"] == "instruments.xrd_advisory"
 
 
 def test_no_sandbox_or_pipeline_files_changed():

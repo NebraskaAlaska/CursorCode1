@@ -1,4 +1,4 @@
-"""Virtual LAB — the **machine capability catalogue** (backend-only metadata; no execution, no UI).
+"""Virtual LAB — the authoritative twelve-machine capability contract.
 
 Virtual LAB gives researchers a mini virtual lab of scientific *machines* (PHREEQC, XRD, ICP,
 FTIR/Raman, SEM-EDS, TGA/DSC, Mechanical Testing, ML Prediction, Literature Evidence, Sustainability,
@@ -6,11 +6,15 @@ Experimental Design, Validation/Uncertainty). Its purpose is **estimates, simula
 processing, and experiment prioritisation** — to help decide which few *physical* experiments are worth
 doing. It must **never** claim to replace real experimental validation.
 
-This module is pure, import-safe metadata. It does **not** import Streamlit, does **not** run PHREEQC,
-does **not** call external APIs, and is **not** wired into the live website (every machine's
-``ui_activation_status`` is :data:`UI_NOT_ACTIVATED`). It only declares — for each machine — what it
-can honestly do, what inputs it needs, how its output must be labelled, what it must never claim, and
-how a result would be verified in the real world.
+This module is pure, import-safe metadata. It does **not** import Streamlit, run PHREEQC, call an
+external API, inspect the current computer, load measured data, or load a trained model. It is the
+one scientific metadata authority used by the compatibility registry, router, generic runner, and
+current Digital Lab metadata cards. Specialized modules remain the authorities for calculations.
+
+Static implementation maturity is deliberately separate from runtime availability. For example,
+PHREEQC has an implemented delegated backend while the current computer may lack an executable or
+database; the ML backend exists while no approved trained model may be selected. Dynamic checks use
+:class:`MachineRuntimeAvailability` outside the immutable catalogue.
 
 The one non-negotiable it encodes: every output carries an honest :data:`OUTPUT_DATA_TYPES` label
 (user-provided assumption / synthetic demo / literature evidence / measured lab data / simulated model
@@ -20,7 +24,8 @@ only ever possible with measured data** — see :func:`machine_can_produce_valid
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from types import MappingProxyType
 
 # --------------------------------------------------------------------------- #
 # mode — what KIND of machine this is.
@@ -31,6 +36,11 @@ MODE_ADVISORY_PLANNING = "advisory_planning"
 MODE_TRAINED_MODEL_PREDICTION = "trained_model_prediction"
 MODE_EVIDENCE_ENGINE = "evidence_engine"
 MODE_CROSS_CUTTING_VALIDATION = "cross_cutting_validation"
+
+# Deprecated pre-consolidation mode values.  They remain distinct query inputs; in particular,
+# ``signal_simulation`` must not collapse into every canonical advisory-planning machine.
+MODE_SIGNAL_SIMULATION = "signal_simulation"
+MODE_TRAINED_MODEL = "trained_model"
 
 MODES = frozenset({
     MODE_PHYSICAL_SIMULATION, MODE_DATA_PROCESSING, MODE_ADVISORY_PLANNING,
@@ -53,18 +63,46 @@ EXECUTION_MODES = frozenset({
 })
 
 # --------------------------------------------------------------------------- #
-# status — implementation maturity (honest about what exists vs. blueprint).
+# maturity — static implementation state, never current-computer availability.
 # --------------------------------------------------------------------------- #
+MATURITY_IMPLEMENTED = "implemented_backend"
+MATURITY_LIMITED = "limited_workflow"
+MATURITY_ADVISORY = "advisory_backend"
+MATURITY_BLUEPRINT = "blueprint_only"
+
+MATURITIES = frozenset({
+    MATURITY_IMPLEMENTED, MATURITY_LIMITED, MATURITY_ADVISORY, MATURITY_BLUEPRINT,
+})
+
+# Deprecated Phase 1 status values remain import-compatible and distinct from canonical maturity.
+# They are interpreted by ``list_machines_by_status`` through canonical requirement fields below;
+# no machine stores one of these compatibility values as metadata.
 STATUS_ACTIVE_EXISTING = "active_existing"
 STATUS_PHASE_1_ADVISORY = "phase_1_advisory"
 STATUS_BLUEPRINT_ONLY = "blueprint_only"
 STATUS_REQUIRES_REFERENCE_DATA = "requires_reference_data"
 STATUS_REQUIRES_TRAINED_MODEL = "requires_trained_model"
 STATUS_REQUIRES_MEASURED_DATA = "requires_measured_data"
-
 STATUSES = frozenset({
     STATUS_ACTIVE_EXISTING, STATUS_PHASE_1_ADVISORY, STATUS_BLUEPRINT_ONLY,
-    STATUS_REQUIRES_REFERENCE_DATA, STATUS_REQUIRES_TRAINED_MODEL, STATUS_REQUIRES_MEASURED_DATA,
+    STATUS_REQUIRES_REFERENCE_DATA, STATUS_REQUIRES_TRAINED_MODEL,
+    STATUS_REQUIRES_MEASURED_DATA,
+})
+
+# --------------------------------------------------------------------------- #
+# backend_capabilities — stable implementation/binding classifications.
+# --------------------------------------------------------------------------- #
+BACKEND_DELEGATED_EXISTING = "delegated_existing_backend"
+BACKEND_RUNNER_NATIVE_LIMITED = "runner_native_limited_workflow"
+BACKEND_ADVISORY_METADATA_ONLY = "advisory_metadata_only"
+BACKEND_REQUIRES_EXTERNAL_DATA = "requires_external_data"
+BACKEND_REQUIRES_APPROVED_MODEL = "requires_approved_trained_model"
+BACKEND_REQUIRES_MEASURED_DATA = "requires_measured_data"
+
+BACKEND_CAPABILITIES = frozenset({
+    BACKEND_DELEGATED_EXISTING, BACKEND_RUNNER_NATIVE_LIMITED,
+    BACKEND_ADVISORY_METADATA_ONLY, BACKEND_REQUIRES_EXTERNAL_DATA,
+    BACKEND_REQUIRES_APPROVED_MODEL, BACKEND_REQUIRES_MEASURED_DATA,
 })
 
 # --------------------------------------------------------------------------- #
@@ -85,9 +123,6 @@ OUTPUT_DATA_TYPES = frozenset({
     OUT_ADVISORY_INTERPRETATION, OUT_VALIDATED_RESULT,
 })
 
-# Backend-only: no machine here is wired into the live website UI.
-UI_NOT_ACTIVATED = "not_activated_backend_only"
-
 # Stable machine ids.
 PHREEQC_LEACHING = "phreeqc_leaching_simulator"
 XRD_ADVISORY = "xrd_advisory"
@@ -101,6 +136,33 @@ LITERATURE_ENGINE = "literature_evidence_engine"
 SUSTAINABILITY = "sustainability_cost_screening"
 EXPERIMENTAL_DESIGN = "experimental_design_assistant"
 VALIDATION_UNCERTAINTY = "validation_uncertainty_assistant"
+
+# Read-time compatibility only. New outputs always use canonical ids and no file is rewritten.
+LEGACY_MACHINE_ID_ALIASES = MappingProxyType({
+    "xrd_advisory_module": XRD_ADVISORY,
+    "mechanical_test_processor": MECHANICAL,
+    "sustainability_screening": SUSTAINABILITY,
+})
+
+
+@dataclass(frozen=True)
+class MachineRuntimeAvailability:
+    """A dynamic availability observation, kept outside immutable machine definitions."""
+
+    machine_id: str
+    available: bool
+    status: str
+    blockers: tuple = ()
+    checked_by: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "machine_id": self.machine_id,
+            "available": self.available,
+            "status": self.status,
+            "blockers": list(self.blockers),
+            "checked_by": self.checked_by,
+        }
 
 
 @dataclass(frozen=True)
@@ -118,7 +180,7 @@ class VirtualLabMachine:
     category: str
     mode: str
     execution_mode: str
-    status: str
+    maturity: str
     what_it_can_do: str
     required_inputs: tuple = ()
     optional_inputs: tuple = ()
@@ -130,13 +192,27 @@ class VirtualLabMachine:
     needs_measured_data: bool = False
     needs_trained_model: bool = False
     needs_reference_database: bool = False
-    can_run_live: bool = False
     should_use_cached_or_precomputed_data: bool = False
+    backend_capabilities: tuple = ()
+    backend_binding: str = ""
+    provenance_requirements: tuple = ()
+    validation_requirements: tuple = ()
+    runtime_requirements: tuple = ()
     uncertainty_controls: tuple = ()
     safety_notes: tuple = ()
     example_user_prompts: tuple = ()
     future_backend_dependencies: tuple = ()
-    ui_activation_status: str = UI_NOT_ACTIVATED
+
+    @property
+    def status(self) -> str:
+        """Deprecated compatibility alias; maturity is the authoritative field."""
+        return self.maturity
+
+    @property
+    def has_static_implementation(self) -> bool:
+        """Whether tested delegated/limited code exists, independent of runtime inputs."""
+        return bool({BACKEND_DELEGATED_EXISTING, BACKEND_RUNNER_NATIVE_LIMITED}
+                    & set(self.backend_capabilities))
 
     def to_dict(self) -> dict:
         """A JSON-safe view (lists, not tuples). Pure metadata; never any secret or measured value."""
@@ -147,7 +223,8 @@ class VirtualLabMachine:
             "category": self.category,
             "mode": self.mode,
             "execution_mode": self.execution_mode,
-            "status": self.status,
+            "maturity": self.maturity,
+            "status": self.maturity,
             "what_it_can_do": self.what_it_can_do,
             "required_inputs": list(self.required_inputs),
             "optional_inputs": list(self.optional_inputs),
@@ -159,22 +236,27 @@ class VirtualLabMachine:
             "needs_measured_data": self.needs_measured_data,
             "needs_trained_model": self.needs_trained_model,
             "needs_reference_database": self.needs_reference_database,
-            "can_run_live": self.can_run_live,
             "should_use_cached_or_precomputed_data": self.should_use_cached_or_precomputed_data,
+            "backend_capabilities": list(self.backend_capabilities),
+            "backend_binding": self.backend_binding,
+            "provenance_requirements": list(self.provenance_requirements),
+            "validation_requirements": list(self.validation_requirements),
+            "runtime_requirements": list(self.runtime_requirements),
             "uncertainty_controls": list(self.uncertainty_controls),
             "safety_notes": list(self.safety_notes),
             "example_user_prompts": list(self.example_user_prompts),
             "future_backend_dependencies": list(self.future_backend_dependencies),
-            "ui_activation_status": self.ui_activation_status,
         }
 
 
 # Fields that must be a non-empty string / non-empty tuple for every machine (audit completeness).
 REQUIRED_TEXT_FIELDS = ("machine_id", "display_name", "short_description", "category", "mode",
-                        "execution_mode", "status", "what_it_can_do",
-                        "real_world_verification_method", "ui_activation_status")
+                        "execution_mode", "maturity", "what_it_can_do",
+                        "real_world_verification_method", "backend_binding")
 REQUIRED_TUPLE_FIELDS = ("required_inputs", "honest_outputs", "output_data_type",
-                         "verification_required", "must_not_claim", "safety_notes")
+                         "verification_required", "must_not_claim", "safety_notes",
+                         "backend_capabilities", "provenance_requirements",
+                         "validation_requirements", "runtime_requirements")
 
 
 # --------------------------------------------------------------------------- #
@@ -189,7 +271,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Aqueous geochemistry",
         mode=MODE_PHYSICAL_SIMULATION,
         execution_mode=EXEC_PREVIEW_THEN_CONFIRM,
-        status=STATUS_ACTIVE_EXISTING,
+        maturity=MATURITY_IMPLEMENTED,
         what_it_can_do=("Estimate pH, element release (mM), speciation, and saturation indices for a "
                         "confirmed composition + leachant + source term/release assumption + database "
                         "+ temperature + liquid/solid ratio. Builds a reviewable input preview first."),
@@ -211,8 +293,18 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=True,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=True,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_EXTERNAL_DATA),
+        backend_binding=("simulation.phreeqc_input_builder+simulation.phreeqc_run_contract+"
+                         "simulation.phreeqc_executor"),
+        provenance_requirements=("exact reviewed input snapshot and hash",
+                                 "confirmed material/source-term provenance",
+                                 "resolved executable/database identity and hashes"),
+        validation_requirements=("mapped measured pH and/or ICP leachate data",
+                                 "explicit acceptance criteria and QC-eligible comparison"),
+        runtime_requirements=("configured PHREEQC executable",
+                              "compatible thermodynamic database",
+                              "Phase 1A exact review and confirmation evidence"),
         uncertainty_controls=("release fraction", "liquid/solid ratio", "leachant concentration",
                               "composition uncertainty"),
         safety_notes=("Runs only after an explicit preview → confirmation; it never auto-runs.",
@@ -230,7 +322,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Crystalline phase analysis (advisory)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
-        status=STATUS_PHASE_1_ADVISORY,
+        maturity=MATURITY_ADVISORY,
         what_it_can_do=("Suggest approximate Cu Kα reference peaks for known phase NAMES, tentatively "
                         "match a user-provided measured peak list, and turn PHREEQC-predicted phases "
                         "into a 'phases to check by XRD' checklist."),
@@ -250,8 +342,15 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=True,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=True,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_EXTERNAL_DATA),
+        backend_binding="instruments.xrd_advisory",
+        provenance_requirements=("supplied phase names or measured 2theta peaks",
+                                 "reference basis and advisory sub-mode"),
+        validation_requirements=("measured XRD pattern", "reference pattern source",
+                                 "human expert review"),
+        runtime_requirements=("internal approximate references for current advisory modes",
+                              "external reference patterns for stronger interpretation"),
         uncertainty_controls=("peak overlap awareness", "amorphous-content caveat",
                               "tentative match confidence (never 'high' from one peak)"),
         safety_notes=("A FORMULA alone cannot fix a pattern (e.g. CaCO3 = calcite / aragonite / "
@@ -270,7 +369,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Solution chemistry / data reduction",
         mode=MODE_DATA_PROCESSING,
         execution_mode=EXEC_DATA_PROCESSING,
-        status=STATUS_ACTIVE_EXISTING,
+        maturity=MATURITY_IMPLEMENTED,
         what_it_can_do=("Convert mg/L (or ppm / ppb) to mM, apply dilution and optional blank "
                         "correction, flag below-detection-limit values, and build measured-vs-predicted "
                         "residuals from the rows you provide."),
@@ -279,7 +378,8 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
                          "measured_or_predicted label"),
         honest_outputs=("corrected concentration table (mM)", "QC warnings (advisory)",
                         "measured-vs-predicted residual table"),
-        output_data_type=(OUT_MEASURED_LAB_DATA, OUT_ADVISORY_INTERPRETATION),
+        output_data_type=(OUT_MEASURED_LAB_DATA, OUT_ADVISORY_INTERPRETATION,
+                          OUT_SIMULATED_MODEL_ESTIMATE, OUT_USER_PROVIDED_ASSUMPTION),
         verification_required=("the actual instrument run / user-uploaded measured data",
                                "QA/QC standards where relevant"),
         real_world_verification_method=("Compare against the calibrated ICP-OES/ICP-MS instrument run "
@@ -290,8 +390,16 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING,),
+        backend_binding="instruments.icp_processor",
+        provenance_requirements=("original concentration/unit/role/sample/element values",
+                                 "blank/dilution/conversion/censoring/QC-resolution evidence",
+                                 "declared measured/predicted source"),
+        validation_requirements=("two unambiguous QC-eligible measured/predicted sides",
+                                 "explicit mapping and criteria outside residual existence"),
+        runtime_requirements=("user-supplied concentration rows",
+                              "explicit Phase 1B correction and QC evidence"),
         uncertainty_controls=("dilution factor", "blank value", "detection limit"),
         safety_notes=("It reduces only the rows you provide; it never fabricates measured values.",
                       "The output label mirrors the INPUT: measured in → measured out; predicted in → "
@@ -309,7 +417,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Vibrational spectroscopy (advisory)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_EVIDENCE_REQUIRED,
-        status=STATUS_BLUEPRINT_ONLY,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Given a user-supplied spectrum, suggest possible functional groups / bonds and "
                         "approximate band regions to look for, and compare against reference bands."),
         required_inputs=("a user-supplied (measured) FTIR/Raman spectrum or peak list",
@@ -328,8 +436,16 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=True,
         needs_trained_model=False,
         needs_reference_database=True,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=True,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED, BACKEND_REQUIRES_EXTERNAL_DATA,
+                              BACKEND_REQUIRES_MEASURED_DATA),
+        backend_binding="instruments.virtual_lab_machine_runner.run_ftir_raman",
+        provenance_requirements=("user-supplied measured peak positions and technique",
+                                 "reference-band source for any assignment"),
+        validation_requirements=("measured spectrum", "sourced reference bands",
+                                 "expert and complementary-method review"),
+        runtime_requirements=("user-supplied measured peaks",
+                              "external reference data for more than broad FTIR regions"),
         uncertainty_controls=("band overlap awareness", "signal-to-noise / weak-band caveat"),
         safety_notes=("Strong claims require a MEASURED spectrum + a REFERENCE band library + human "
                       "review; weak/single bands are advisory only.",
@@ -346,7 +462,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Microscopy / microanalysis",
         mode=MODE_DATA_PROCESSING,
         execution_mode=EXEC_MEASURED_DATA_REQUIRED,
-        status=STATUS_REQUIRES_MEASURED_DATA,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Organise measured SEM images and EDS elemental tables/maps, compare regions, "
                         "and surface QC warnings (semi-quantitative, surface-sensitive)."),
         required_inputs=("measured SEM images and/or measured EDS elemental data",),
@@ -364,8 +480,14 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=True,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED, BACKEND_REQUIRES_MEASURED_DATA),
+        backend_binding="instruments.virtual_lab_machine_runner.run_sem_eds",
+        provenance_requirements=("user-supplied SEM/EDS row or image identifiers",
+                                 "declared source, instrument settings, and standards"),
+        validation_requirements=("measured calibrated SEM/EDS data",
+                                 "complementary phase evidence and expert review"),
+        runtime_requirements=("user-supplied measured EDS rows for the current limited workflow",),
         uncertainty_controls=("standardless-EDS caveat", "spot-to-spot variability",
                               "surface-sensitivity caveat"),
         safety_notes=("Requires MEASURED SEM/EDS data — it never fabricates images or maps.",
@@ -382,7 +504,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Thermal analysis",
         mode=MODE_DATA_PROCESSING,
         execution_mode=EXEC_MEASURED_DATA_REQUIRED,
-        status=STATUS_REQUIRES_MEASURED_DATA,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Process measured TGA/DSC curves: identify mass-loss / heat-flow steps, "
                         "estimate event temperatures, and compare samples."),
         required_inputs=("measured TGA and/or DSC curves (temperature vs mass / heat flow)",),
@@ -400,8 +522,14 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=True,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED, BACKEND_REQUIRES_MEASURED_DATA),
+        backend_binding="instruments.virtual_lab_machine_runner.run_tga_dsc",
+        provenance_requirements=("user-supplied measured curve arrays",
+                                 "temperature program, atmosphere, and correction context"),
+        validation_requirements=("measured TGA/DSC curves",
+                                 "complementary evidence for event attribution"),
+        runtime_requirements=("user-supplied measured TGA and/or DSC arrays",),
         uncertainty_controls=("baseline / buoyancy correction awareness", "overlapping-event caveat"),
         safety_notes=("Requires MEASURED curves — it never fabricates a curve.",
                       "Step attributions are advisory until confirmed by other methods."),
@@ -417,7 +545,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Mechanical testing",
         mode=MODE_DATA_PROCESSING,
         execution_mode=EXEC_MEASURED_DATA_REQUIRED,
-        status=STATUS_REQUIRES_MEASURED_DATA,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Process measured strength data: compute averages and standard deviation, plot "
                         "strength vs curing age, and compare formulations from replicate measurements."),
         required_inputs=("measured compressive / flexural strength values (with specimen + age)",),
@@ -435,8 +563,14 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=True,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED, BACKEND_REQUIRES_MEASURED_DATA),
+        backend_binding="instruments.virtual_lab_machine_runner.run_mechanical_testing",
+        provenance_requirements=("user-supplied measured strength rows",
+                                 "specimen, age, standard, geometry, and replicate identity"),
+        validation_requirements=("physical standard-compliant testing",
+                                 "adequate replicates and measured comparison"),
+        runtime_requirements=("user-supplied measured strength rows",),
         uncertainty_controls=("replicate spread (std dev)", "specimen variability"),
         safety_notes=("Requires MEASURED strength data — it never reports a strength number without "
                       "physical testing.",
@@ -454,7 +588,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Surrogate modelling",
         mode=MODE_TRAINED_MODEL_PREDICTION,
         execution_mode=EXEC_TRAINED_MODEL_REQUIRED,
-        status=STATUS_REQUIRES_TRAINED_MODEL,
+        maturity=MATURITY_IMPLEMENTED,
         what_it_can_do=("Predict a property only when a trained model, a feature schema, training-data "
                         "provenance, and uncertainty/domain limits are all present — a screening "
                         "estimate with an uncertainty range, never a measurement."),
@@ -472,8 +606,16 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=True,
         needs_reference_database=False,
-        can_run_live=False,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_APPROVED_MODEL),
+        backend_binding="ml_models.predict",
+        provenance_requirements=("model name/version/card and training-data status",
+                                 "training/evaluation sources and feature schema",
+                                 "prediction inputs, applicability, and uncertainty method"),
+        validation_requirements=("held-out or external measured evaluation data",
+                                 "calculated metrics with sample counts and provenance"),
+        runtime_requirements=("loaded approved trained model with non-demo status",
+                              "sufficient model-compatible input features"),
         uncertainty_controls=("prediction interval", "domain-of-applicability flag", "input sensitivity"),
         safety_notes=("Produces no number unless an approved trained model + provenance exist.",
                       "A surrogate prediction is an experimental estimate, not a simulation and not "
@@ -490,7 +632,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Evidence / literature",
         mode=MODE_EVIDENCE_ENGINE,
         execution_mode=EXEC_EVIDENCE_REQUIRED,
-        status=STATUS_BLUEPRINT_ONLY,
+        maturity=MATURITY_IMPLEMENTED,
         what_it_can_do=("Ingest DOI metadata, user-uploaded PDFs, and permitted/licensed APIs; extract "
                         "candidate evidence with source provenance and a confidence flag for review."),
         required_inputs=("a research question or material system",
@@ -509,8 +651,15 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=False,
         should_use_cached_or_precomputed_data=True,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_EXTERNAL_DATA),
+        backend_binding="literature.research_agent+literature.evidence_store",
+        provenance_requirements=("title/authors/year plus DOI, URL, or source location",
+                                 "source/query, extraction scope/confidence, and review status"),
+        validation_requirements=("human review against the cited source",
+                                 "measured evidence for claims about the user's sample"),
+        runtime_requirements=("permitted source metadata, user PDF, DOI, or supported API",
+                              "network/source availability only when search is requested"),
         uncertainty_controls=("range across sources", "per-claim confidence flag"),
         safety_notes=("Every extracted value keeps its SOURCE PROVENANCE and stays 'candidate / "
                       "unreviewed' until HUMAN REVIEW.",
@@ -529,7 +678,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Sustainability / cost (screening)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
-        status=STATUS_BLUEPRINT_ONLY,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Do an ORDER-OF-MAGNITUDE screening when the user provides assumptions "
                         "(energy, reagent use, transport, waste handling, CO2 factors, cost factors), "
                         "and list the inventory data a real LCA/TEA would need."),
@@ -548,8 +697,15 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED,),
+        backend_binding=("instruments.virtual_lab_machine_runner.run_sustainability_screening+"
+                         "experiments.sustainability_score"),
+        provenance_requirements=("user-provided amounts, factors, units, and assumptions",
+                                 "declared scope and system boundary"),
+        validation_requirements=("reviewed full inventory and sourced factors",
+                                 "defined LCA/TEA boundaries and sensitivity analysis"),
+        runtime_requirements=("explicit user inventory/factor assumptions",),
         uncertainty_controls=("inventory completeness", "assumption sensitivity / ranges"),
         safety_notes=("ORDER-OF-MAGNITUDE screening only — never a quantified LCA, carbon footprint, "
                       "or feasibility verdict.",
@@ -567,7 +723,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Experiment planning (advisory)",
         mode=MODE_ADVISORY_PLANNING,
         execution_mode=EXEC_ADVISORY_ONLY,
-        status=STATUS_BLUEPRINT_ONLY,
+        maturity=MATURITY_LIMITED,
         what_it_can_do=("Suggest an experiment matrix, controls, replicate counts, the measurements "
                         "still missing, and a verification plan to reduce trial-and-error."),
         required_inputs=("a research goal and the candidate materials / factors",),
@@ -582,8 +738,15 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=False,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_RUNNER_NATIVE_LIMITED,),
+        backend_binding=("instruments.virtual_lab_machine_runner.run_experimental_design+"
+                         "experiments.plan_generator"),
+        provenance_requirements=("user research goal, factors, levels, constraints, and prior results",
+                                 "deterministic matrix/control/replicate rules"),
+        validation_requirements=("physical execution of the plan",
+                                 "measured outcomes with QC and provenance"),
+        runtime_requirements=("explicit research goal",),
         uncertainty_controls=("replicate planning", "control / confounder identification"),
         safety_notes=("Plans experiments; it never reports outcomes of experiments not yet run.",
                       "Prioritises which FEW physical experiments are worth doing — it does not "
@@ -600,7 +763,7 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         category="Validation / uncertainty (cross-cutting)",
         mode=MODE_CROSS_CUTTING_VALIDATION,
         execution_mode=EXEC_MEASURED_DATA_REQUIRED,
-        status=STATUS_REQUIRES_MEASURED_DATA,
+        maturity=MATURITY_IMPLEMENTED,
         what_it_can_do=("Compare measured values against simulated/predicted ones, compute residuals, "
                         "show sensitivity to assumptions, and label the validation status honestly."),
         required_inputs=("measured data", "the simulated / predicted values to compare against"),
@@ -616,8 +779,17 @@ _MACHINES: tuple[VirtualLabMachine, ...] = (
         needs_measured_data=True,
         needs_trained_model=False,
         needs_reference_database=False,
-        can_run_live=True,
         should_use_cached_or_precomputed_data=False,
+        backend_capabilities=(BACKEND_DELEGATED_EXISTING, BACKEND_REQUIRES_MEASURED_DATA),
+        backend_binding=("compare.residuals+instruments.icp_processor+"
+                         "experiments.validate_experimental_data+"
+                         "instruments.virtual_lab_machine_runner.run_validation_uncertainty"),
+        provenance_requirements=("measured/predicted source identity and units",
+                                 "mapping, QC eligibility, criteria, and comparison provenance"),
+        validation_requirements=("QC-eligible measured data and compatible predictions",
+                                 "explicit acceptance criteria that are met"),
+        runtime_requirements=("QC-eligible measured and predicted values",
+                              "unambiguous mapping and explicit criteria for a validation claim"),
         uncertainty_controls=("residual distribution", "assumption sensitivity", "acceptance tolerance"),
         safety_notes=("'validated_result' is possible ONLY with measured data — no measured data, no "
                       "validation.",
@@ -640,50 +812,129 @@ def list_virtual_lab_machines() -> tuple[VirtualLabMachine, ...]:
     return _MACHINES
 
 
+def machine_ids() -> tuple[str, ...]:
+    """The twelve canonical IDs in their one deterministic catalogue order."""
+    return tuple(m.machine_id for m in _MACHINES)
+
+
+def canonical_machine_id(value) -> str | None:
+    """Normalize a canonical/known legacy ID; return ``None`` for unknown values.
+
+    This is the sole machine-ID alias authority. It never guesses, performs fuzzy matching, or
+    rewrites historical data. Callers that require a value can raise a controlled error on ``None``.
+    """
+    if not isinstance(value, str):
+        return None
+    supplied = value.strip()
+    if supplied in _BY_ID:
+        return supplied
+    return LEGACY_MACHINE_ID_ALIASES.get(supplied)
+
+
 def get_virtual_lab_machine(machine_id) -> VirtualLabMachine | None:
-    """The machine for ``machine_id``, or ``None`` if unknown (never raises)."""
-    return _BY_ID.get(machine_id)
+    """The canonical machine for a canonical/legacy ID, or ``None`` if unknown."""
+    canonical = canonical_machine_id(machine_id)
+    return _BY_ID.get(canonical) if canonical is not None else None
 
 
 def list_machines_by_mode(mode) -> tuple[VirtualLabMachine, ...]:
-    """All machines with the given :data:`MODES` value (empty tuple if none / unknown mode)."""
+    """Filter by canonical mode, with narrow deprecated-mode compatibility.
+
+    ``signal_simulation`` historically meant XRD/FTIR pattern or band advisories, not every current
+    advisory-planning machine. ``trained_model`` maps through the canonical trained-model requirement.
+    New code should pass a value from :data:`MODES`.
+    """
+    if mode == MODE_SIGNAL_SIMULATION:
+        return tuple(m for m in _MACHINES if m.machine_id in (XRD_ADVISORY, FTIR_RAMAN))
+    if mode == MODE_TRAINED_MODEL:
+        return tuple(m for m in _MACHINES if machine_requires_trained_model(m.machine_id))
     return tuple(m for m in _MACHINES if m.mode == mode)
 
 
+def list_machines_by_maturity(maturity) -> tuple[VirtualLabMachine, ...]:
+    """Filter only the canonical static :data:`MATURITIES` field."""
+    if maturity not in MATURITIES:
+        return ()
+    return tuple(m for m in _MACHINES if m.maturity == maturity)
+
+
 def list_machines_by_status(status) -> tuple[VirtualLabMachine, ...]:
-    """All machines with the given :data:`STATUSES` value (empty tuple if none / unknown status)."""
-    return tuple(m for m in _MACHINES if m.status == status)
+    """Deprecated compatibility query interpreted through canonical machine fields.
+
+    This is intentionally not a maturity alias. Requirement statuses select the corresponding
+    requirement flags/execution modes/capabilities; ``active_existing`` excludes implemented
+    machines whose operation still depends on runtime configuration, reference/evidence data,
+    measured data, or an approved model. New code should query the canonical fields directly.
+    """
+    if status == STATUS_REQUIRES_TRAINED_MODEL:
+        return tuple(m for m in _MACHINES if machine_requires_trained_model(m.machine_id))
+    if status == STATUS_REQUIRES_MEASURED_DATA:
+        return tuple(m for m in _MACHINES if machine_requires_measured_data(m.machine_id))
+    if status == STATUS_REQUIRES_REFERENCE_DATA:
+        return tuple(m for m in _MACHINES if machine_requires_reference_data(m.machine_id))
+    if status == STATUS_PHASE_1_ADVISORY:
+        return list_machines_by_maturity(MATURITY_ADVISORY)
+    if status == STATUS_BLUEPRINT_ONLY:
+        return list_machines_by_maturity(MATURITY_BLUEPRINT)
+    if status == STATUS_ACTIVE_EXISTING:
+        unavailable_without_prerequisite = {
+            BACKEND_REQUIRES_EXTERNAL_DATA,
+            BACKEND_REQUIRES_APPROVED_MODEL,
+            BACKEND_REQUIRES_MEASURED_DATA,
+        }
+        return tuple(
+            m for m in _MACHINES
+            if m.maturity == MATURITY_IMPLEMENTED
+            and not unavailable_without_prerequisite.intersection(m.backend_capabilities)
+            and m.execution_mode not in {
+                EXEC_PREVIEW_THEN_CONFIRM, EXEC_TRAINED_MODEL_REQUIRED,
+                EXEC_EVIDENCE_REQUIRED, EXEC_MEASURED_DATA_REQUIRED,
+            }
+        )
+    return ()
 
 
 def machine_requires_measured_data(machine_id) -> bool:
     """True if the machine needs measured data to operate (flag or ``measured_data_required`` mode)."""
-    m = _BY_ID.get(machine_id)
+    m = get_virtual_lab_machine(machine_id)
     return bool(m and (m.needs_measured_data or m.execution_mode == EXEC_MEASURED_DATA_REQUIRED))
 
 
 def machine_requires_trained_model(machine_id) -> bool:
     """True if the machine needs an approved trained model (flag or ``trained_model_required`` mode)."""
-    m = _BY_ID.get(machine_id)
+    m = get_virtual_lab_machine(machine_id)
     return bool(m and (m.needs_trained_model or m.execution_mode == EXEC_TRAINED_MODEL_REQUIRED))
 
 
 def machine_requires_reference_database(machine_id) -> bool:
     """True if the machine needs a reference/structure/thermodynamic database to operate."""
-    m = _BY_ID.get(machine_id)
+    m = get_virtual_lab_machine(machine_id)
     return bool(m and m.needs_reference_database)
 
 
-def machine_can_produce_validated_result(machine_id, has_measured_data: bool) -> bool:
-    """A machine can yield a ``validated_result`` only if it lists that output AND measured data exists.
+def machine_requires_reference_data(machine_id) -> bool:
+    """True if operation needs reference/database/evidence data supplied outside the machine."""
+    m = get_virtual_lab_machine(machine_id)
+    return bool(m and (
+        m.needs_reference_database
+        or m.execution_mode == EXEC_EVIDENCE_REQUIRED
+        or BACKEND_REQUIRES_EXTERNAL_DATA in m.backend_capabilities
+    ))
 
-    This is the single gate behind the platform rule *validation requires measured data*: no machine —
-    not a simulation, an ML prediction, or a literature lookup — can ever return a validated result
-    without ``has_measured_data=True``.
+
+def machine_can_produce_validated_result(
+        machine_id, has_measured_data: bool, has_explicit_criteria: bool = False) -> bool:
+    """Whether a machine may yield ``validated_result`` under the two mandatory gates.
+
+    No machine — not a simulation, ML prediction, or literature lookup — can return that epistemic
+    type without both QC-eligible measured data and explicit acceptance criteria. The criteria-bearing
+    workflow must still determine that the criteria were actually met before emitting the result.
     """
-    m = _BY_ID.get(machine_id)
+    m = get_virtual_lab_machine(machine_id)
     if m is None:
         return False
-    return OUT_VALIDATED_RESULT in m.output_data_type and bool(has_measured_data)
+    return (OUT_VALIDATED_RESULT in m.output_data_type and bool(has_measured_data)
+            and bool(has_explicit_criteria))
 
 
 def audit_virtual_lab_machines() -> list[str]:
@@ -715,23 +966,40 @@ def audit_virtual_lab_machines() -> list[str]:
             problems.append(f"{tag}: invalid mode {m.mode!r}")
         if m.execution_mode not in EXECUTION_MODES:
             problems.append(f"{tag}: invalid execution_mode {m.execution_mode!r}")
-        if m.status not in STATUSES:
-            problems.append(f"{tag}: invalid status {m.status!r}")
-        if m.ui_activation_status != UI_NOT_ACTIVATED:
-            problems.append(f"{tag}: ui_activation_status must be backend-only ({UI_NOT_ACTIVATED!r})")
+        if m.maturity not in MATURITIES:
+            problems.append(f"{tag}: invalid maturity {m.maturity!r}")
+        for capability in m.backend_capabilities:
+            if capability not in BACKEND_CAPABILITIES:
+                problems.append(f"{tag}: invalid backend capability {capability!r}")
         for o in m.output_data_type:
             if o not in OUTPUT_DATA_TYPES:
                 problems.append(f"{tag}: invalid output_data_type {o!r}")
 
-        # Validation gate: a validated_result is impossible without measured data.
-        if machine_can_produce_validated_result(m.machine_id, has_measured_data=False):
+        if m.needs_measured_data and BACKEND_REQUIRES_MEASURED_DATA not in m.backend_capabilities:
+            problems.append(f"{tag}: measured-data requirement missing from backend capabilities")
+        if m.needs_trained_model and BACKEND_REQUIRES_APPROVED_MODEL not in m.backend_capabilities:
+            problems.append(f"{tag}: approved-model requirement missing from backend capabilities")
+        if m.needs_reference_database and \
+                BACKEND_REQUIRES_EXTERNAL_DATA not in m.backend_capabilities:
+            problems.append(f"{tag}: reference-data requirement missing from backend capabilities")
+        if not m.has_static_implementation and m.maturity != MATURITY_BLUEPRINT:
+            problems.append(f"{tag}: non-blueprint maturity without a static implementation")
+
+        # Validation gate: a validated_result is impossible without measured data + criteria.
+        if machine_can_produce_validated_result(
+                m.machine_id, has_measured_data=False, has_explicit_criteria=True):
             problems.append(f"{tag}: can produce validated_result WITHOUT measured data")
+        if machine_can_produce_validated_result(
+                m.machine_id, has_measured_data=True, has_explicit_criteria=False):
+            problems.append(f"{tag}: can produce validated_result WITHOUT explicit criteria")
         if OUT_VALIDATED_RESULT in m.output_data_type and \
-                not machine_can_produce_validated_result(m.machine_id, has_measured_data=True):
-            problems.append(f"{tag}: lists validated_result but cannot produce it even with measured data")
+                not machine_can_produce_validated_result(
+                    m.machine_id, has_measured_data=True, has_explicit_criteria=True):
+            problems.append(f"{tag}: lists validated_result but cannot produce it through both gates")
         # A machine that needs measured data must not short-circuit the validation gate.
         if machine_requires_measured_data(m.machine_id) and \
-                machine_can_produce_validated_result(m.machine_id, has_measured_data=False):
+                machine_can_produce_validated_result(
+                    m.machine_id, has_measured_data=False, has_explicit_criteria=True):
             problems.append(f"{tag}: measured-data machine yields validated_result without measured data")
 
     # Machine-specific safety invariants.
@@ -765,5 +1033,17 @@ def audit_virtual_lab_machines() -> list[str]:
     xrd = _BY_ID.get(XRD_ADVISORY)
     if xrd and "formula" not in " ".join(xrd.safety_notes + xrd.must_not_claim).lower():
         problems.append("XRD must state the formula-only / polymorph limitation")
+
+    if len(_MACHINES) != 12:
+        problems.append(f"canonical machine count must be 12, got {len(_MACHINES)}")
+    if len(_BY_ID) != len(_MACHINES):
+        problems.append("canonical machine ids must be unique")
+    for alias, canonical in LEGACY_MACHINE_ID_ALIASES.items():
+        if alias in _BY_ID:
+            problems.append(f"legacy alias is also canonical: {alias!r}")
+        if canonical not in _BY_ID:
+            problems.append(f"legacy alias target is unknown: {alias!r} -> {canonical!r}")
+        if canonical_machine_id(alias) != canonical:
+            problems.append(f"legacy alias does not normalize deterministically: {alias!r}")
 
     return problems

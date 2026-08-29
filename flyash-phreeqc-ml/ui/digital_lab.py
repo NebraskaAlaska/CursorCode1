@@ -1,7 +1,8 @@
 """Digital Lab / Virtual Instruments — the section that lists the instruments and runs the two
 new safe modules (ICP data reduction, XRD advisory).
 
-UI only. It renders the instrument **registry** (status · what each can do · required inputs ·
+UI only. It renders the twelve-machine canonical contract through the deprecated instrument-registry
+compatibility view (status · what each can do · required inputs ·
 limitations), exposes the three cross-cutting **mode toggles** (validation / uncertainty / evidence)
 on the shared per-run agent state, and provides hands-on demos for the ICP Data Processor and the
 XRD Advisory module. It runs **no PHREEQC** and never executes anything — the simulation engine
@@ -16,7 +17,9 @@ import streamlit as st
 import app_ui
 from flyash_phreeqc_ml import units
 from flyash_phreeqc_ml.instruments import (icp_processor as icp, instrument_registry as reg,
-                                           lab_modes, xrd_advisory as xrd)
+                                           lab_modes, virtual_lab_machines as machines,
+                                           xrd_advisory as xrd)
+from flyash_phreeqc_ml.simulation import phreeqc_executor
 
 from .common import _render_next_step
 from .state import get_agent_state
@@ -112,7 +115,8 @@ def _render_mode_toggles(state) -> None:
 # Instrument registry
 # --------------------------------------------------------------------------- #
 def _render_registry() -> None:
-    app_ui.section_header("Instrument registry", "what each instrument can do, and its limits")
+    app_ui.section_header("Instrument registry",
+                          "12 canonical machines · one metadata authority · current layout")
     instruments = reg.all_instruments()
     cols = st.columns(2)
     for i, spec in enumerate(instruments):
@@ -120,16 +124,42 @@ def _render_registry() -> None:
             with st.container(border=True):
                 st.markdown(f"**{spec.display_name}**")
                 app_ui.render_status_badge(spec.readiness_label(), spec.readiness_badge())
-                st.caption(spec.what_it_can_do)
+                runtime = _runtime_availability(spec)
+                if runtime is not None and not runtime.available:
+                    app_ui.render_status_badge("Runtime configuration unavailable", "warning")
+                st.caption(spec.short_description)
                 st.markdown("**Needs:** " + ", ".join(spec.required_inputs))
                 if spec.output_types:
                     st.caption("Outputs: " + ", ".join(spec.output_types))
+                st.caption("Epistemic type(s): " + ", ".join(spec.output_data_type))
                 with st.expander("Limitations & safety"):
                     for lim in spec.limitations:
                         st.markdown(f"- {lim}")
                     for note in spec.safety_notes:
                         st.caption("🛡️ " + note)
-                    st.caption(f"Mode: `{spec.mode}` · Execution: `{spec.execution_mode}`")
+                    st.caption(f"Machine ID: `{spec.instrument_id}`")
+                    st.caption(f"Maturity: `{spec.maturity}` · Mode: `{spec.mode}` · "
+                               f"Execution: `{spec.execution_mode}`")
+                    st.caption(f"Backend: `{spec.backend_binding}`")
+                    st.caption("Runtime requirements: " + "; ".join(spec.runtime_requirements))
+                    if runtime is not None:
+                        for blocker in runtime.blockers:
+                            st.caption("⚠️ " + blocker)
+
+
+def _runtime_availability(spec) -> machines.MachineRuntimeAvailability | None:
+    """Current-computer checks stay outside immutable catalogue metadata."""
+    if spec.instrument_id != machines.PHREEQC_LEACHING:
+        return None
+    availability = phreeqc_executor.check_availability(run_smoke=False)
+    available = bool(availability.can_run and availability.environment_identity is not None)
+    return machines.MachineRuntimeAvailability(
+        machine_id=machines.PHREEQC_LEACHING,
+        available=available,
+        status="available" if available else "runtime_configuration_unavailable",
+        blockers=() if available else (availability.message,),
+        checked_by="simulation.phreeqc_executor.check_availability(run_smoke=False)",
+    )
 
 
 # --------------------------------------------------------------------------- #

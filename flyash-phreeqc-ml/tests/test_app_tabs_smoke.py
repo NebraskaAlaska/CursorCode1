@@ -18,6 +18,7 @@ import pytest
 
 from flyash_phreeqc_ml import config, mapping_table, run_manager, scenarios
 from flyash_phreeqc_ml.compare import compare_measured_vs_phreeqc
+from flyash_phreeqc_ml.instruments import virtual_lab_machines as machine_contract
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
@@ -155,6 +156,20 @@ def test_advanced_workflows_reachable():
     at2 = AppTest.from_file(APP, default_timeout=90).run()
     _goto(at2, "Workspace")
     assert _no_exception(at2)
+
+
+def test_digital_lab_renders_all_canonical_machine_cards_and_specialized_modules():
+    """Phase 1C: current layout consumes 12 canonical cards without replacing ICP/XRD hands-on UI."""
+    at = AppTest.from_file(APP, default_timeout=120).run()
+    _goto(at, "Digital Lab")
+    assert _no_exception(at)
+    rendered = " ".join(
+        [*(str(m.value) for m in at.markdown), *(str(c.value) for c in at.caption)])
+    for machine in machine_contract.list_virtual_lab_machines():
+        assert machine.display_name in rendered
+    assert "ICP Data Processor" in rendered
+    assert "XRD Advisory" in rendered
+    assert len(machine_contract.machine_ids()) == 12
 
 
 # --------------------------------------------------------------------------- #

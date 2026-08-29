@@ -7,6 +7,7 @@ model, an unsupported target, or an essentially empty input (no core feature sup
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from . import feature_schema, model_schema, preprocessing, uncertainty
@@ -23,6 +24,36 @@ LEGACY_UNKNOWN_NOTE = ("LEGACY MODEL — the saved artifact did not record train
 REFUSE_NO_MODEL = "no_model"
 REFUSE_UNSUPPORTED = "unsupported_target"
 REFUSE_INCOMPLETE = "inputs_incomplete"
+REFUSE_INVALID_MODEL_OUTPUT = "invalid_model_output"
+
+INVALID_MODEL_OUTPUT_MESSAGE = (
+    "The fitted model produced a non-finite prediction or uncertainty value. No ML prediction was "
+    "produced; re-train or re-select the model and verify its model card and feature schema."
+)
+
+
+def _is_finite_number(value) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _numeric_outputs_are_valid(value, lower, upper, sigma) -> bool:
+    """A mean is required; optional uncertainty values must be finite when present."""
+    return (_is_finite_number(value)
+            and all(item is None or _is_finite_number(item) for item in (lower, upper, sigma)))
+
+
+def _serialization_safe(value):
+    """Recursively replace non-finite floats so strict JSON callers never receive NaN/Infinity."""
+    if isinstance(value, dict):
+        return {key: _serialization_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialization_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 @dataclass
@@ -49,6 +80,7 @@ class Prediction:
     missing_features: list = field(default_factory=list)
     out_of_domain: list = field(default_factory=list)
     unseen_categories: dict = field(default_factory=dict)
+    refusal_code: str | None = None
 
     def headline(self) -> str:
         if self.refused:
@@ -61,6 +93,43 @@ class Prediction:
             return None
         unit = model_schema.target_unit(self.target)
         return f"{self.lower:.2f} – {self.upper:.2f} {unit}".strip()
+
+    def to_dict(self) -> dict:
+        """Return a serialization-safe prediction envelope with no NaN or Infinity tokens."""
+        invalid_success = not self.refused and not _numeric_outputs_are_valid(
+            self.value, self.lower, self.upper, self.sigma)
+        refused = self.refused or invalid_success
+        refusal_code = (REFUSE_INVALID_MODEL_OUTPUT if invalid_success else self.refusal_code)
+        refusal_reason = (INVALID_MODEL_OUTPUT_MESSAGE if invalid_success else self.refusal_reason)
+        warnings = list(self.warnings)
+        if invalid_success and INVALID_MODEL_OUTPUT_MESSAGE not in warnings:
+            warnings.append(INVALID_MODEL_OUTPUT_MESSAGE)
+        numeric = {
+            "value": None if invalid_success else self.value,
+            "lower": None if invalid_success else self.lower,
+            "upper": None if invalid_success else self.upper,
+            "sigma": None if invalid_success else self.sigma,
+        }
+        return _serialization_safe({
+            "target": self.target,
+            **numeric,
+            "interval_method": self.interval_method,
+            "model_name": self.model_name,
+            "model_version": self.model_version,
+            "n_training_rows": self.n_training_rows,
+            "source_of_model": self.source_of_model,
+            "status": self.status,
+            "training_data_status": self.training_data_status,
+            "is_demo": self.is_demo,
+            "warnings": warnings,
+            "refused": refused,
+            "refusal_code": refusal_code,
+            "refusal_reason": refusal_reason,
+            "used_features": self.used_features,
+            "missing_features": self.missing_features,
+            "out_of_domain": self.out_of_domain,
+            "unseen_categories": self.unseen_categories,
+        })
 
 
 def _coerce_features(features: dict) -> dict:
@@ -77,8 +146,18 @@ def _coerce_features(features: dict) -> dict:
 
 
 def _refuse(target, reason_code, message, **kw) -> Prediction:
-    return Prediction(target=target, refused=True, refusal_reason=message,
+    return Prediction(target=target, refused=True, refusal_code=reason_code, refusal_reason=message,
                       warnings=[message], **kw)
+
+
+def _invalid_model_output(model, target: str, known: dict) -> Prediction:
+    """Return a controlled refusal without exposing artifact internals or non-finite values."""
+    return _refuse(
+        target, REFUSE_INVALID_MODEL_OUTPUT, INVALID_MODEL_OUTPUT_MESSAGE,
+        model_name=model.name, model_version=model.version,
+        n_training_rows=model.n_train, source_of_model=model.source_type,
+        status=model.validation_status, training_data_status=model.training_status,
+        is_demo=model.is_demo, used_features=known)
 
 
 def predict(model: model_schema.TrainedModel | None, features: dict) -> Prediction:
@@ -114,7 +193,12 @@ def predict(model: model_schema.TrainedModel | None, features: dict) -> Predicti
 
     # Build the single-row frame over the model's own feature set.
     x_df = preprocessing.single_row_frame(known, model.numeric_features, model.categorical_features)
-    mean, sigma, lower, upper, method = uncertainty.predict_with_uncertainty(model, x_df)
+    try:
+        mean, sigma, lower, upper, method = uncertainty.predict_with_uncertainty(model, x_df)
+    except uncertainty.InvalidModelOutputError:
+        return _invalid_model_output(model, target, known)
+    if not _numeric_outputs_are_valid(mean, lower, upper, sigma):
+        return _invalid_model_output(model, target, known)
 
     warnings: list = []
     if model.is_demo:

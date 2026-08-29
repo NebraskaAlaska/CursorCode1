@@ -23,7 +23,8 @@ models) can be added modularly.
 
 - **Identity:** a broad **Materials Research Assistant** — a conversational front door (the
   **Assistant** tab) over deterministic simulation + validation tooling. PHREEQC leaching is the
-  first executable engine; everything else is planning-only for now, by design.
+  first external simulation engine. Other capabilities are honestly separated into measured-data
+  processors, advisory workflows, evidence/model-dependent engines, and limited planning workflows.
 - **Strongest executable + validation workflow:** the **Class C fly ash + PHREEQC** leaching demo —
   measured ICP data → mapping → residuals → mapping-status → one honest validity line. This is the
   part with the most machinery and tests, and it is an *example of* the platform, not its whole scope.
@@ -53,6 +54,11 @@ models) can be added modularly.
 - **Save provenance & export** — every simulation run and every validation comparison is saved
   with a full provenance chain (inputs, assumptions, database/executable paths, hashes) and can be
   exported as a self-contained report.
+- **Browse one 12-machine capability contract in Digital Lab** — the current page renders canonical
+  metadata for PHREEQC, XRD, ICP, FTIR/Raman, SEM/EDS, TGA/DSC, mechanical testing, ML, literature,
+  sustainability, experimental design, and validation/uncertainty. It retains the hands-on ICP and
+  XRD modules; this is not yet the future Machines gallery. See
+  [`docs/virtual_lab_machines.md`](docs/virtual_lab_machines.md).
 
 ## What it cannot (yet) claim
 
@@ -138,14 +144,12 @@ Validation), so nothing technical competes with the assistant.
   a run is **blocked when required fields are missing** or no confirmed material composition exists.
 - **Current executable engine:** PHREEQC, for **leaching / geochemical (aqueous dissolution)**
   scenarios only.
-- **Unsupported domains are planning-only — and useful, not a dead-end.** For polymer/composite
+- **Non-PHREEQC domains are never presented as physical simulations.** For polymer/composite
   strength, thermal treatment, mechanical testing, corrosion/durability, battery materials, and a
-  cementitious binder not framed as leaching, the assistant **does not pretend to simulate**. Instead
-  it offers to **structure the experiment**, **build a data template**, and **identify the missing
-  variables**, and it suggests the domain's **response variables** (e.g. for a composite: compressive
-  strength, flexural strength, density, water absorption, toughness) and the inputs a **future model**
-  would need — so you can build a dataset now. Future engines (literature RAG, surrogate ML,
-  atomistic, mechanical-property models) can be added modularly.
+  cementitious binder not framed as leaching, the assistant structures the experiment, identifies
+  missing variables, and routes only to an existing measured-data processor, advisory workflow, or
+  approved trained model where one genuinely applies. Metadata or a limited workflow never implies
+  that an external scientific engine or measured result exists.
 - **Simulation is not validation.** Every estimate the assistant explains carries the standing
   "model estimate under reviewed assumptions — not measured, not validated" caveat, and measured ICP
   / pH data remain necessary to validate.
@@ -199,7 +203,7 @@ streamlit run app.py
 ```
 
 The app opens on the **Assistant** — the front door. A dark, compact left rail holds run
-management and a simple **nine-section** navigation:
+management and a simple **ten-section** navigation:
 
 | Section | What's there |
 | --- | --- |
@@ -211,6 +215,7 @@ management and a simple **nine-section** navigation:
 | **Evidence Library** | search official scholarly APIs, rank + AI-extract cited evidence, curate per-run datasets (no Google Scholar scraping) |
 | **Prediction Models** | train + use the **ML surrogate** (composite mechanical properties) on **approved** evidence/lab rows — experimental estimates with uncertainty, never validated |
 | **Engine Library** | the modular engine registry — PHREEQC executable now; composites/thermal/cementitious/battery planning-only; future engines |
+| **Digital Lab** | canonical 12-machine capability cards plus the existing hands-on ICP QC processor and tentative XRD advisory |
 | **Settings** | AI provider/model + status, PHREEQC engine status, preferences, and the future AI-framework architecture |
 
 No technical tab competes with the assistant — the Assistant is the product, and every advanced

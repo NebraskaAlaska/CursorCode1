@@ -14,6 +14,7 @@ import re
 
 from flyash_phreeqc_ml.instruments import instrument_registry as reg
 from flyash_phreeqc_ml.instruments import instrument_router as router
+from flyash_phreeqc_ml.instruments import virtual_lab_machines as machines
 from flyash_phreeqc_ml.instruments import xrd_advisory as xrd
 
 
@@ -36,6 +37,7 @@ def test_measured_vs_phreeqc_routes_to_icp_with_validation():
     assert rr.primary == reg.ICP_DATA_PROCESSOR
     assert rr.validation is True
     assert reg.PHREEQC_LEACHING in rr.instruments         # PHREEQC supplies the predictions
+    assert reg.VALIDATION_UNCERTAINTY_ASSISTANT in rr.instruments
     assert rr.validation_options                          # comparison options surfaced
 
 
@@ -76,6 +78,48 @@ def test_router_never_auto_runs():
                    "convert Ca 84 mg/L to mM",
                    "expected XRD peaks for calcite"):
         assert _route(prompt).auto_run is False
+
+
+def test_every_router_output_is_a_canonical_machine_id():
+    prompts = (
+        "convert ICP Ca 84 mg/L to mM",
+        "expected XRD peaks for calcite",
+        "estimate pH after NaOH leaching",
+        "interpret an FTIR spectrum",
+        "summarize SEM EDS data",
+        "analyze my TGA curve",
+        "predict compressive strength",
+        "find literature evidence about fly ash leaching",
+        "screen the carbon footprint assumptions",
+        "design an experiment with controls and replicates",
+        "compare measured versus predicted values with acceptance criteria",
+    )
+    canonical = set(machines.machine_ids())
+    for prompt in prompts:
+        rr = _route(prompt)
+        assert rr.primary in canonical
+        assert set(rr.instruments) <= canonical
+        assert rr.auto_run is False
+
+
+def test_experimental_design_intent_routes_to_canonical_assistant():
+    rr = _route("design an experiment matrix with controls and three replicates")
+    assert rr.primary == machines.EXPERIMENTAL_DESIGN
+    assert rr.instruments[0] == machines.EXPERIMENTAL_DESIGN
+
+
+def test_validation_uncertainty_intent_routes_to_canonical_assistant():
+    rr = _route("compare measured versus predicted values against acceptance criteria")
+    assert rr.primary == machines.VALIDATION_UNCERTAINTY
+    assert rr.validation is True
+    assert rr.auto_run is False
+
+
+def test_routing_result_normalizes_legacy_ids_without_leaking_aliases():
+    rr = router.RoutingResult(objective="compatibility", primary="xrd_advisory_module",
+                              instruments=("xrd_advisory_module",))
+    assert rr.primary == machines.XRD_ADVISORY
+    assert rr.instruments == (machines.XRD_ADVISORY,)
 
 
 def test_router_module_owns_no_executor():

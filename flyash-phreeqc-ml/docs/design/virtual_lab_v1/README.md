@@ -24,6 +24,10 @@ the product should *look and feel*, not how the science should work.
 Anything in this folder is design intent. Turning it into shipped UI is a separate, reviewed step
 that edits `app.py` / `ui/` deliberately — never an automatic copy-paste of an export.
 
+Phase 1C does not implement this shell. It only makes `instruments/virtual_lab_machines.py` the
+authoritative 12-machine metadata contract and lets the existing Digital Lab render those metadata
+cards while retaining its current ICP/XRD layout.
+
 ---
 
 ## Design export contents (Claude Design / Fable)
@@ -85,4 +89,5 @@ working):
 
 - Design notes and tokens: [`design_notes.md`](design_notes.md)
 - Product / backend contract: `../../../CLAUDE.md`
-- Virtual LAB machine backend: `docs/virtual_lab_machines.md`, `docs/virtual_lab_machine_runner.md`
+- Virtual LAB machine contract: [`../../virtual_lab_machines.md`](../../virtual_lab_machines.md)
+- Limited coordination runner: [`../../virtual_lab_machine_runner.md`](../../virtual_lab_machine_runner.md)

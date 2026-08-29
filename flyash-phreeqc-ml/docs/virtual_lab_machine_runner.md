@@ -1,69 +1,79 @@
-# Virtual LAB — Machine runner (executable, backend-only)
+# Virtual LAB — limited machine runner
 
-> **Status: executable backend layer. Not wired into the website.** This documents
-> `flyash_phreeqc_ml/instruments/virtual_lab_machine_runner.py`. It runs small, safe workflows over
-> **user-provided** inputs. It does **not** import Streamlit, does **not** execute PHREEQC, does **not**
-> call external APIs, and is not imported by `app.py` or any `ui/` file.
+`flyash_phreeqc_ml/instruments/virtual_lab_machine_runner.py` is a coordination layer over the
+authoritative contract in `virtual_lab_machines.py`. It normalizes a request ID, validates top-level
+inputs, delegates where a specialized backend exists, runs only explicitly limited data/advisory
+workflows, and returns one standard result envelope. It is not a giant generic scientific engine and is
+not a replacement for the specialized PHREEQC, ICP, XRD, ML, literature, or validation authorities.
 
-## What it is
+The runner is not a dedicated UI. The current Digital Lab consumes canonical metadata and retains its
+hands-on ICP/XRD modules; a full machine execution shell belongs to a later phase.
 
-The first *executable* layer on top of the machine blueprint
-(`virtual_lab_machines.py`). `run_virtual_lab_machine(machine_id, payload, confirm=False)` dispatches to
-a per-machine handler and returns a standard, self-describing `VirtualLabMachineResult`.
+## Result envelope and identity
 
-## The standard result
+`run_virtual_lab_machine(machine_id, payload, confirm=False)` returns:
 
-Every result carries: `machine_id`, `status`, `output_data_type`, `result_summary`, `results`,
-`warnings`, `missing_inputs`, `assumptions`, `provenance`, `validation_status`,
-`can_be_used_for_validation_claim`.
+- `machine_id` (canonical, or `None` for an unknown request);
+- `status` and honest `output_data_type`;
+- `result_summary` and `results`;
+- `warnings`, `missing_inputs`, and `assumptions`;
+- `provenance`, including canonical ID and backend binding;
+- `validation_status` and `can_be_used_for_validation_claim`.
 
-`output_data_type` is the honest epistemic label (reused from the blueprint). The hard gate:
-`can_be_used_for_validation_claim` is `True` **only** for the Validation machine when measured data +
-explicit criteria are present **and met** — every other result is an estimate / advisory / processed
-data and is `False`.
+Known historical aliases are accepted through `canonical_machine_id()`. A result uses the canonical ID
+and retains a differing supplied alias as `provenance.input_machine_id`. Unknown values produce a
+controlled `unknown_machine` result; the runner never guesses.
 
-## Public API
+No result receives a stronger epistemic type merely because it passes through this envelope. Only the
+criteria-bearing validation workflow can set `can_be_used_for_validation_claim=True`, and only with
+QC-eligible measured data, compatible predictions, explicit criteria, and criteria met.
 
-- `VirtualLabMachineRequest` / `VirtualLabMachineResult`
-- `run_virtual_lab_machine(machine_id, payload, confirm=False)`
-- `validate_machine_inputs(machine_id, payload)` — missing required inputs (or `['unknown machine_id']`)
-- `explain_missing_inputs(machine_id, payload)` — human-readable "provide X — …" lines
-- `get_machine_result_label(machine_id)` — the machine's primary honest output_data_type
-- One `run_<machine>()` helper per machine (e.g. `run_phreeqc_leaching`, `run_icp_processor`, …)
+## Dispatch boundaries
 
-## What each machine does now — and still refuses
+- ICP delegates correction, canonical row-role normalization, censoring, duplicate resolution,
+  residual eligibility, and QC provenance to `instruments.icp_processor`. Its table-level epistemic
+  type is derived from those processed row roles and QC state: all-measured may be measured,
+  all-predicted may be a simulated/model estimate, and mixed or role-unresolved tables are advisory
+  (or a user assumption when no row role is trustworthy). The optional top-level `source` is retained
+  as provenance only; it cannot relabel rows, and a contradiction produces an actionable warning and
+  a weaker advisory result. Corrected rows retain their own role and `row_output_data_type`.
+- XRD delegates expected-peak/checklist advice to `instruments.xrd_advisory`; wording remains tentative
+  and advisory.
+- ML delegates a number to `ml_models.predict` only for an approved, non-demo `TrainedModel` with
+  features. Missing, demo, exploratory, and legacy models produce no prediction. Delegation also has
+  a narrow fail-closed artifact boundary: an approved-status object with a missing, unfitted, corrupt,
+  or incompatible pipeline returns an advisory prerequisite result with no prediction value and no
+  exception detail. Result provenance distinguishes `model_status_appeared_approved` from
+  `model_artifact_usable`; the artifact is not rewritten.
+- Literature records supplied evidence metadata with provenance and human-review status; it fabricates
+  no citations and performs no scraping.
+- Sustainability multiplies only user-supplied amount/factor pairs and labels the result as
+  order-of-magnitude advice, never an LCA/TEA.
+- FTIR/Raman, SEM/EDS, TGA/DSC, mechanical testing, experimental design, and validation are narrow
+  workflows over supplied data or planning inputs. They do not invent measurements or outcomes.
 
-| Machine | Does now | Still refuses |
-|---|---|---|
-| PHREEQC Leaching | validates inputs, builds an input **preview**, enforces preview→confirm | **executes nothing** (delegates to the existing gated engine); never claims validation |
-| XRD Advisory | delegates to the repo's `xrd_advisory` (expected peaks / PHREEQC checklist); records measured peaks as **user-provided** | inventing peaks; identifying phases; matching measured peaks (no reference data this phase) |
-| ICP Processor | delegates to `icp_processor` (mg/L→mM, blank/dilution, QC, residuals) over your rows | simulating the plasma; fabricating measured values; labelling assumptions "measured" |
-| FTIR / Raman | matches **your** peaks to broad functional-group **regions** (advisory) | fabricating spectra; definitive compound identification; unmatched peaks → reference-data-needed |
-| SEM-EDS | summarises **your** elemental rows (elements present, min/max/mean), flags missing standards | fabricating images/maps; inferring exact mineral phases from EDS |
-| TGA / DSC | computes total mass loss / DSC extrema from **your** arrays | fabricating curves; definitive phase/reaction assignment |
-| Mechanical | mean / std-dev / count from **your** measured strengths; flags <3 replicates | inventing strengths; claiming code/standard compliance |
-| ML Surrogate | returns `trained_model_required` (no model wired this phase) | predicting / claiming accuracy or validation without a trained model |
-| Literature | records **your** metadata rows as candidate, unreviewed, provenance-tracked | web scraping (incl. Google Scholar); treating evidence as reviewed truth |
-| Sustainability | order-of-magnitude `amount × factor` from **your** assumptions | inventing factors; final LCA/TEA; certified carbon savings |
-| Experimental Design | a deterministic plan (controls, replicates, factor matrix, measurement plan) | reporting any experimental result |
-| Validation & Uncertainty | residuals / abs & % error from measured vs predicted; gated validated-result | calling anything validated without measured data **and** met criteria |
+## PHREEQC boundary
 
-## Validation status values
+The runner deliberately builds no PHREEQC input text. It reports top-level missing inputs, checks
+environment availability without a smoke simulation, and routes the caller to the existing
+Assistant/Workspace path. It always returns `executed=False`, `auto_run=False`, and `preview=None`.
 
-`not_applicable`, `no_measured_data`, `comparison_available`, `insufficient_data`,
-`validated_against_measured_data` (the last only with measured data + criteria that are met).
+A bare `confirm=True` on the generic runner is ignored because it is not the Phase 1A reviewed-input,
+environment-identity, and source-term confirmation evidence. Input authoring and execution remain with:
 
-## Safety properties
+1. `simulation.phreeqc_input_builder`;
+2. `simulation.phreeqc_run_contract`;
+3. `simulation.phreeqc_executor`.
 
-- No fabrication: ICP / SEM-EDS / TGA-DSC / Mechanical process only supplied rows; XRD never invents
-  peaks; FTIR matches only to broad advisory regions; Sustainability invents no factors.
-- PHREEQC is preview/gate only — `executed` and `auto_run` are always `False` here.
-- Simulation / advisory / literature / ML are never "validated" on their own — only a measured
-  comparison meeting explicit criteria yields `validated_result`.
-- Import-safe: the module imports only stdlib + the blueprint at top; `xrd_advisory` / `icp_processor`
-  are lazy-imported inside their handlers. No Streamlit anywhere.
+That preserves preview → review → exact confirmation → existing executor and prevents a second drifting
+chemistry template.
 
-## Not wired in (by design)
+## Public helpers
 
-Backend-only. Not imported by `app.py`, not rendered by any `ui/` file, not auto-registered. UI
-activation is a separate, later step.
+- `runner_machine_ids()` returns the exact canonical 12-ID order.
+- `validate_machine_inputs()` and `explain_missing_inputs()` accept canonical or known legacy IDs.
+- `get_machine_result_label()` queries the canonical contract.
+- `VirtualLabMachineRequest` and `VirtualLabMachineResult` provide request/result representations.
+
+The runner imports no Streamlit and performs no external API calls. Environment availability and static
+contract maturity remain separate concepts.
