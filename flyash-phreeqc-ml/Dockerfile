@@ -179,6 +179,7 @@ COPY --chown=root:root ui ./ui
 COPY --chown=root:root scripts ./scripts
 COPY --chown=root:root release ./release
 COPY --chown=root:root resources ./resources
+COPY --chown=root:root config ./config
 COPY --chown=root:root release/templates/SYNTHETIC_DEMO_icp_template.csv \
     /opt/wpi/templates/SYNTHETIC_DEMO_icp_template.csv
 COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/wpi-entrypoint

@@ -31,7 +31,7 @@ for required in AGENTS.md START_HERE.md tools/council_route.py tools/council_sta
   test -f "$WPI_AI_COUNCIL_ROOT/$required" || { echo "Council contract is missing: $required" >&2; exit 1; }
 done
 
-"$python_bin" -m pip install --user --no-deps "$project_dir"
+"$python_bin" -m pip install --user --no-deps --editable "$project_dir"
 "$python_bin" -c 'from pathlib import Path; import sys; from flyash_phreeqc_ml.council_operator.backends import CouncilCompatibilityAdapter; from flyash_phreeqc_ml.council_operator.contracts import ProjectPolicy; policy=ProjectPolicy.load(Path(sys.argv[1])); observed=CouncilCompatibilityAdapter(Path(sys.argv[2]), policy).verify(); print("Verified authoritative Council SHA-256 contracts and role outboxes:", len(observed))' "$project_dir/config/council_operator_policy.toml" "$WPI_AI_COUNCIL_ROOT"
 
 for profile in \

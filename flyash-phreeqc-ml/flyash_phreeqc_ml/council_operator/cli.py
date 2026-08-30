@@ -31,7 +31,7 @@ DEFAULT_CONFIG = Path.home() / ".config" / "wpi-virtual-lab" / "council.toml"
 
 def _operator(arguments: argparse.Namespace) -> CouncilOperator:
     config = Path(arguments.config or os.environ.get("WPI_COUNCIL_CONFIG", DEFAULT_CONFIG)).expanduser()
-    policy = Path(arguments.policy or DEFAULT_POLICY).expanduser()
+    policy = Path(arguments.policy or os.environ.get("WPI_COUNCIL_POLICY", DEFAULT_POLICY)).expanduser()
     return CouncilOperator.load(config, policy)
 
 

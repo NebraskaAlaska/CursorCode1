@@ -3,6 +3,7 @@
 # WPI_COUNCIL_REPOSITORY, WPI_COUNCIL_CODE_REPO, WPI_COUNCIL_CONTROL_REPO,
 # WPI_COUNCIL_WORKER_ID, WPI_COUNCIL_SANDBOX_ROOT, and
 # WPI_COUNCIL_STATE_CACHE_ROOT. Never place credentials in this file.
+# The tracked policy location may be selected with WPI_COUNCIL_POLICY.
 # Private-control attestation may be overridden with
 # WPI_COUNCIL_CONTROL_REPO_PRIVATE=true after verifying remote visibility.
 
