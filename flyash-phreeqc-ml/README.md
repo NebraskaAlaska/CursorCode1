@@ -195,6 +195,14 @@ Validate/Compare graphs. (Pinned by `tests/test_ai_boundary.py`.)
 
 ---
 
+## Phase 5 controlled Council operator
+
+Phase 5 adds a trusted-host `wpi-council` control plane for bounded cross-computer source tasks. The personal computer submits and monitors immutable requests through a Git-backed remote lock; a configured Hermes worker runs the existing hash-verified Council router, launcher, coder/tester gates, and reviewer against disposable clones. Model roles never receive repository credentials or a writable live checkout. Successful automation may push only `council/wpi/<task-id>` and stops at `awaiting_human_review`—it never merges, deploys, changes `main`, or promotes/rolls back a scientific resource.
+
+The repository and every task branch are public. Only public/sanitized task content is allowed without a separate private control remote; raw role transcripts, credentials, private research data, database bytes, model weights, and generated scientific output are prohibited. See [`docs/council_operator.md`](docs/council_operator.md) for architecture, requests, states, recovery, and approvals, and [`docs/hermes_operator_installation.md`](docs/hermes_operator_installation.md) for the portable worker bootstrap.
+
+---
+
 ## Phase 4 release-candidate distribution
 
 The supported invite-only beta distribution is a checksum-pinned, multi-stage, non-root container with separate local and authenticated-server Compose bundles. It includes official USGS PHREEQC `3.8.6-17100`, databases at `/opt/phreeqc/database/`, official examples under `/opt/phreeqc/share/examples/`, and the complete USGS rights notice. The source archive SHA-256 is `b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1`; bundled `phreeqc.dat` is `59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10`.

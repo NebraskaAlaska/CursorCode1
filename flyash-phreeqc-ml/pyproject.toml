@@ -21,6 +21,9 @@ dependencies = [
     "joblib==1.5.3",
 ]
 
+[project.scripts]
+wpi-council = "flyash_phreeqc_ml.council_operator.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest==9.1.1"]
 

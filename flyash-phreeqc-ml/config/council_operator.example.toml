@@ -1,0 +1,33 @@
+# Copy to ~/.config/wpi-virtual-lab/council.toml and replace every placeholder.
+# Environment overrides are also supported: WPI_AI_COUNCIL_ROOT,
+# WPI_COUNCIL_REPOSITORY, WPI_COUNCIL_CODE_REPO, WPI_COUNCIL_CONTROL_REPO,
+# WPI_COUNCIL_WORKER_ID, WPI_COUNCIL_SANDBOX_ROOT, and
+# WPI_COUNCIL_STATE_CACHE_ROOT. Never place credentials in this file.
+# Private-control attestation may be overridden with
+# WPI_COUNCIL_CONTROL_REPO_PRIVATE=true after verifying remote visibility.
+
+[operator]
+repository_path = "/absolute/path/to/VirtualLAB-Codex"
+code_remote = "https://github.com/NebraskaAlaska/CursorCode1.git"
+control_remote = "https://github.com/your-private-control-repository.git"
+# Set true only after separately verifying this remote is private.
+control_remote_private = false
+worker_id = "replace-with-stable-worker-id"
+sandbox_root = "/absolute/path/to/disposable/wpi-council-sandboxes"
+state_cache_root = "/absolute/path/to/wpi-council-state-cache"
+council_root = "/absolute/path/to/live/AI-Council"
+hermes_executable = "/absolute/path/to/hermes"
+obsidian_vault = ""
+
+[command_backend.profiles]
+# Each profile is an argument array. The executable must be hash-bound below.
+# planner = ["/absolute/path/to/approved-role-cli", "planner"]
+# coder = ["/absolute/path/to/approved-role-cli", "coder"]
+# tester = ["/absolute/path/to/approved-role-cli", "tester"]
+# reviewer = ["/absolute/path/to/approved-role-cli", "reviewer"]
+
+[command_backend.executable_sha256]
+# planner = "64 lowercase hexadecimal characters"
+# coder = "64 lowercase hexadecimal characters"
+# tester = "64 lowercase hexadecimal characters"
+# reviewer = "64 lowercase hexadecimal characters"
