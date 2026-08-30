@@ -560,7 +560,6 @@ class ExternalDatabaseImporter:
             imported_kind = ResourceKind.DATABASE_EXTENSION
             test_status = TestStatus.NOT_APPLICABLE_REQUIRES_BASE
             requires_database_family = summary.requires_database_family
-            manifest_dependencies.add(summary.requires_database_filename)
             warnings.add(
                 "extension compatibility requires an explicit administrator-reviewed INCLUDE$ "
                 "test with the declared base; no files were concatenated"
@@ -591,9 +590,11 @@ class ExternalDatabaseImporter:
             licence_notice=str(licence_notice).strip(),
             redistribution_state=redistribution_state,
             temperature_range=temperature_range or TemperatureRange(),
+            database_filename=database_filename,
             database_family=database_family or summary.detected_family,
             dependencies=tuple(sorted(manifest_dependencies)),
             conflicts=tuple(sorted(set(conflicts))),
+            requires_database_filename=summary.requires_database_filename,
             requires_database_family=requires_database_family,
             domain_notes=tuple(sorted(notes)),
             supported_summary=summary.supported_summary,

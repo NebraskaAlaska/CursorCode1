@@ -10,6 +10,7 @@ This bundle is an invite-only scientific beta, not a public SaaS deployment. No 
 - Durable project/material/run/artifact storage is hashed by tenant; active context is additionally hashed by subject. Raw subject/tenant claims never become path components.
 - Legacy global Validate, Match, Compare, validation-report, and shared pipeline surfaces return before any global reader/action in hosted mode. Tenant-scoped durable workflows remain available.
 - The app runs as UID 10001 and the TLS proxy as UID 101. Both use read-only root filesystems and drop all capabilities; Compose also bounds CPU/memory/PIDs/files, upload/rate limits, and the five durable app volumes.
+- The app service sets `init: true`; this PID-1 subreaper is required to reap exited PHREEQC descendants after exact process-group cleanup.
 - AI is disabled by default. A hosted endpoint/model is administrator-managed; endpoint and credential values are not shown to users.
 
 ## Required operator inputs
@@ -46,7 +47,7 @@ From the package directory:
 ```bash
 docker compose -f docker-compose.server.yml config --quiet
 docker build --pull --target test -t wpi-virtual-lab:phase4-test .
-docker run --rm --entrypoint python wpi-virtual-lab:phase4-test \
+docker run --rm --init --entrypoint python wpi-virtual-lab:phase4-test \
   -m pytest -q -p no:cacheprovider
 docker compose -f docker-compose.server.yml build --pull app
 docker compose -f docker-compose.server.yml up -d
@@ -66,7 +67,7 @@ Compose defaults cap the app at 2 CPUs, 4 GiB memory, 256 processes, 4096/8192 f
 
 ## Database administrator workflow
 
-Ordinary hosted users see scientific resources read-only. A human administrator may use **Settings & Diagnostics → Database Manager** to upload one reviewed official/user-supplied `.dat` or one exact `.dat` archive member. They must record source, version, archive/member hashes, citation, and rights basis. Import is side-by-side and inactive; extensions require their declared base and are never concatenated.
+Ordinary hosted users see scientific resources read-only. A human administrator may use **Settings & Diagnostics → Database Manager** to upload one reviewed official/user-supplied `.dat` or one exact `.dat` archive member. They must record source, version, archive/member hashes, citation, and rights basis. Import is side-by-side and inactive; extensions require one exact declared base and are never concatenated. The Steward mechanically tests exact verified extension bytes as self-contained input against that base, binds both content identities, and still leaves activation to exact human confirmation. Ordinary project `INCLUDE`/`INCLUDE$` remains blocked. See [`resource_steward.md`](resource_steward.md).
 
 For a PHREEQC runtime/official database update, use the deterministic Steward inside the app container. Replace example metadata only with reviewed official-source evidence:
 

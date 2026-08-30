@@ -556,9 +556,47 @@ def _database_manifest(
     dependencies: tuple[str, ...] = ()
     extension_for = ""
     duplicate_risk = ""
+    extension_for_installation_id = ""
+    extension_base_version = ""
+    extension_base_sha256 = ""
+    combined_identity_sha256 = ""
     if record.requires_database_filename:
         extension_for = resource_ids_by_filename[record.requires_database_filename]
         dependencies = (extension_for,)
+        base_records = [
+            item for item in registry.databases
+            if item.filename == record.requires_database_filename
+        ]
+        if len(base_records) != 1:
+            raise ReleaseBootstrapError(
+                f"official extension base is ambiguous for {record.filename}")
+        base_record = base_records[0]
+        extension_for_installation_id = make_installation_id(
+            base_record.resource_id, registry.phreeqc_version,
+            base_record.database_sha256)
+        extension_base_version = registry.phreeqc_version
+        extension_base_sha256 = base_record.database_sha256
+        combined_identity_sha256 = canonical_hash({
+            "schema": "wpi.virtual-lab.database-extension-binding",
+            "version": 1,
+            "base": {
+                "resource_id": base_record.resource_id,
+                "installation_id": extension_for_installation_id,
+                "version": extension_base_version,
+                "filename": base_record.filename,
+                "family": base_record.database_family,
+                "sha256": extension_base_sha256,
+            },
+            "extension": {
+                "resource_id": record.resource_id,
+                "installation_id": make_installation_id(
+                    record.resource_id, registry.phreeqc_version,
+                    record.database_sha256),
+                "version": registry.phreeqc_version,
+                "filename": record.filename,
+                "sha256": record.database_sha256,
+            },
+        })
         duplicate_risk = (
             "Extension/add-on only: use an explicit administrator-reviewed INCLUDE$ with the "
             "declared base; never concatenate database text automatically."
@@ -593,10 +631,16 @@ def _database_manifest(
         redistribution_state=RedistributionState.PERMITTED,
         temperature_range=TemperatureRange(
             notes="Database-specific valid temperature range was not inferred by the registry."),
+        database_filename=record.filename,
         database_family=record.database_family,
         dependencies=dependencies,
+        requires_database_filename=record.requires_database_filename,
         requires_database_family=record.requires_database_family,
         extension_for_resource_id=extension_for,
+        extension_for_installation_id=extension_for_installation_id,
+        extension_base_version=extension_base_version,
+        extension_base_sha256=extension_base_sha256,
+        combined_identity_sha256=combined_identity_sha256,
         duplicate_species_phase_risk=duplicate_risk,
         domain_notes=record.limitations,
         supported_summary=summary.supported_summary,

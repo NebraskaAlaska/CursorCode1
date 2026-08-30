@@ -44,6 +44,9 @@ def test_dockerfile_pins_official_runtime_and_stable_layout() -> None:
     assert f"debian:bookworm-slim@sha256:{DEBIAN_IMAGE_SHA}" in dockerfile
     assert dockerfile.count(f"python:3.12.10-slim-bookworm@sha256:{PYTHON_IMAGE_SHA}") == 2
     assert "https://water.usgs.gov/water-resources/software/PHREEQC/phreeqc-3.8.6-17100.tar.gz" in dockerfile
+    assert "--retry 12 --retry-all-errors --retry-delay 2 --retry-max-time 900" in dockerfile
+    assert dockerfile.count('while [ "$attempt" -le 6 ]') == 2
+    assert dockerfile.count('sleep "$((attempt * 2))"') == 2
     assert ARCHIVE_SHA in dockerfile
     assert DATABASE_SHA in dockerfile
     assert "PHREEQC_DATABASE=/opt/phreeqc/database/phreeqc.dat" in dockerfile
@@ -51,6 +54,7 @@ def test_dockerfile_pins_official_runtime_and_stable_layout() -> None:
     assert "FROM runtime AS test" in dockerfile
     assert "FROM runtime AS release" in dockerfile
     assert "USER 10001:10001" in dockerfile
+    assert "Private-beta" not in dockerfile
     assert '"manifest_schema": "wpi.virtual-lab.scientific-resource"' in dockerfile
     assert '"resource_kind": "phreeqc_runtime"' in dockerfile
     assert '"test_status": "passed"' in dockerfile
@@ -94,6 +98,8 @@ def test_no_raw_data_can_enter_any_image_target() -> None:
 def test_compose_local_and_server_boundaries() -> None:
     local = text("docker-compose.local.yml")
     server = text("docker-compose.server.yml")
+    compatibility = text("docker-compose.yml")
+    assert all("init: true" in compose for compose in (local, server, compatibility))
     assert '127.0.0.1:${WPI_PORT:-8501}:8501' in local
     assert "VLAB_AI_PROVIDER: ${VLAB_AI_PROVIDER:-disabled}" in local
     for root in (
@@ -219,7 +225,51 @@ def test_ci_executes_phreeqc_contracts_on_each_release_architecture() -> None:
         assert "tests/test_phreeqc_executor.py" in workflow
         assert "tests/test_phreeqc_runner.py" in workflow
         assert "tests/test_phreeqc_run_contract.py" in workflow
+        assert "tests/test_resource_steward_phase4.py" in workflow
+        assert "docker run --rm --init" in workflow
+        assert "-p no:cacheprovider" in workflow
     assert "per-architecture-phreeqc-integration:linux-amd64-linux-arm64" in release
+
+
+@pytest.mark.release
+def test_ci_official_phreeqc_example_uses_writable_nonroot_workdir() -> None:
+    workflow = workflow_text("ci.yml")
+    if workflow is None:
+        return
+    assert "docker run --rm --init --workdir /tmp --entrypoint /bin/sh" in workflow
+
+
+@pytest.mark.release
+def test_ci_has_a_fail_closed_aggregate_release_gate() -> None:
+    workflow = workflow_text("ci.yml")
+    if workflow is None:
+        return
+    assert "phase4-release-gate:" in workflow
+    assert "if: ${{ always() }}" in workflow
+    for required_job in (
+        "python-and-release-contracts",
+        "dependency-vulnerability-audit",
+        "container-and-compose",
+        "per-architecture-phreeqc-integration",
+    ):
+        assert f"- {required_job}" in workflow
+        assert f"needs.{required_job}.result" in workflow
+    assert workflow.count('test "$') >= 4
+
+
+@pytest.mark.release
+def test_direct_ci_container_runs_always_request_an_init_process() -> None:
+    for name in ("ci.yml", "release-candidate.yml"):
+        workflow = workflow_text(name)
+        if workflow is None:
+            continue
+        direct_runs = [
+            line.strip()
+            for line in workflow.splitlines()
+            if "docker run" in line and not line.lstrip().startswith("#")
+        ]
+        assert direct_runs
+        assert all("--init" in line for line in direct_runs), direct_runs
 
 
 @pytest.mark.release

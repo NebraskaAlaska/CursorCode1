@@ -176,7 +176,9 @@ def test_concrete_import_records_extension_dependency_and_no_standalone_test(
         actor_role="admin",
     )
     assert manifest.resource_kind == ResourceKind.DATABASE_EXTENSION
+    assert manifest.database_filename == "Concrete_PZ.dat"
+    assert manifest.requires_database_filename == "pitzer.dat"
     assert manifest.requires_database_family == "pitzer"
-    assert "pitzer.dat" in manifest.dependencies
+    assert manifest.dependencies == ()
     assert manifest.test_status == ResourceTestStatus.NOT_APPLICABLE_REQUIRES_BASE
     assert "no files were concatenated" in " ".join(manifest.warnings)

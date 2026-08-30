@@ -197,7 +197,9 @@ Validate/Compare graphs. (Pinned by `tests/test_ai_boundary.py`.)
 
 ## Phase 4 release-candidate distribution
 
-The supported private-beta distribution is a checksum-pinned, multi-stage, non-root container with separate local and authenticated-server Compose bundles. It includes official USGS PHREEQC `3.8.6-17100`, databases at `/opt/phreeqc/database/`, official examples under `/opt/phreeqc/share/examples/`, and the complete USGS rights notice. The source archive SHA-256 is `b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1`; bundled `phreeqc.dat` is `59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10`.
+The supported invite-only beta distribution is a checksum-pinned, multi-stage, non-root container with separate local and authenticated-server Compose bundles. It includes official USGS PHREEQC `3.8.6-17100`, databases at `/opt/phreeqc/database/`, official examples under `/opt/phreeqc/share/examples/`, and the complete USGS rights notice. The source archive SHA-256 is `b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1`; bundled `phreeqc.dat` is `59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10`.
+
+The GitHub repository `NebraskaAlaska/CursorCode1` is currently **public**. Every branch in a public repository, including the Phase 4 correction branch, is publicly readable. Repository visibility does not make an unpromoted container candidate a public service or accepted scientific release. Never commit real/private research data, secrets or credentials, CEMDATA or other unapproved database bytes, model weights, or generated scientific outputs. Hosted user data remains in deployment storage outside Git. Any future repository-visibility change is a separate owner decision.
 
 ```bash
 ./scripts/launch-local.sh --build
@@ -206,7 +208,7 @@ The supported private-beta distribution is a checksum-pinned, multi-stage, non-r
 
 Windows equivalents are under `scripts/*.ps1`. AI is disabled by default. User state persists in named volumes; stop retains it, and backup/restore covers all five durable roots. Raw/local records, downloaded databases, models, secrets, and workspaces are excluded from every image target.
 
-See [`docs/local_installation.md`](docs/local_installation.md), [`docs/hosted_deployment.md`](docs/hosted_deployment.md), and [`docs/NSF_DEMO_SCRIPT.md`](docs/NSF_DEMO_SCRIPT.md). Server Compose fails without auth/TLS paths and exposes neither app nor optional Ollama directly. A release candidate is not promoted/public, and an official example is an operability check—not experimental validation.
+See [`docs/local_installation.md`](docs/local_installation.md), [`docs/hosted_deployment.md`](docs/hosted_deployment.md), [`docs/resource_steward.md`](docs/resource_steward.md), [`docs/ci_release.md`](docs/ci_release.md), and [`docs/NSF_DEMO_SCRIPT.md`](docs/NSF_DEMO_SCRIPT.md). Server Compose fails without auth/TLS paths and exposes neither app nor optional Ollama directly. A release candidate is not promoted or deployed merely because its source branch is readable, and an official example is an operability check—not experimental validation.
 
 ## Developer install
 

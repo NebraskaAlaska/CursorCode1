@@ -33,6 +33,14 @@ the **Validate** and **Compare Results** tabs.
   status (`phreeqc_missing` / `failed` / `timeout`), never an exception.
 - **Clearly labelled.** Every result carries: *"Generated from PHREEQC execution of the reviewed
   simulation input. Not validated against measured data."*
+- **Closed input.** Ordinary project execution rejects `INCLUDE` and `INCLUDE$`; reviewed input is
+  self-contained and cannot select an arbitrary external file. Database-extension testing uses a
+  separate Steward-owned contract described in [`resource_steward.md`](resource_steward.md).
+- **Bounded process tree.** On POSIX, PHREEQC starts in its own process group. Timeout and normal
+  completion terminate that exact group, wait for the direct child, and close captured pipes.
+  Containers must provide an init/subreaper (`init: true` in Compose or `docker run --init`) so an
+  exited grandchild adopted by PID 1 is reaped. Windows retains its exact `taskkill /T /F` tree
+  contract. These are runtime requirements, not optional test accommodations.
 
 ## Configuring PHREEQC
 

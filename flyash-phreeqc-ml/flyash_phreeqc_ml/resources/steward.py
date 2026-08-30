@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import threading
 import zipfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -38,6 +38,7 @@ from .models import (
     TestStatus,
     TemperatureRange,
     UpdateProposal,
+    canonical_hash,
     proposal_id_for,
     make_installation_id,
     sha256_bytes,
@@ -68,7 +69,14 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     rb"(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*"
     rb"['\"]?[A-Za-z0-9_./+\-=]{16,}"
 )
+_INCLUDE_LINE_RE = re.compile(r"(?im)^\s*INCLUDE\$?(?:\s|$)")
+_STEWARD_SMOKE_TEMPLATE = (
+    "TITLE Steward candidate software smoke; not experimental validation\n"
+    "SOLUTION 1\n    temp 25\n    pH 7\n"
+    "SELECTED_OUTPUT\n    -file selected.out\n    -reset false\n    -pH true\nEND\n"
+)
 _PROJECT_INTEGRATION_PROGRAM = r"""
+import json
 import os
 from pathlib import Path
 
@@ -103,12 +111,67 @@ result = executor.execute_preview(
 )
 if result.status != executor.STATUS_SUCCESS or not result.selected_output_path:
     raise SystemExit("candidate failed the project execution contract")
-print(result.environment_identity_hash)
+print(json.dumps({
+    "schema": "wpi.virtual-lab.steward-project-integration",
+    "version": 1,
+    "environment_identity_sha256": result.environment_identity_hash,
+    "database_sha256": result.database_sha256,
+    "input_sha256": result.input_hash,
+}, sort_keys=True, separators=(",", ":")))
 """
 
 
 class StewardError(RuntimeError):
     """A Steward command failed closed without changing the active resource."""
+
+
+@dataclass(frozen=True)
+class _ProjectIntegrationResult:
+    environment_identity_sha256: str
+    database_sha256: str
+    input_sha256: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "wpi.virtual-lab.steward-project-integration",
+            "version": 1,
+            "environment_identity_sha256": self.environment_identity_sha256,
+            "database_sha256": self.database_sha256,
+            "input_sha256": self.input_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class _ExtensionContract:
+    base: ResourceManifest
+    extension: ResourceManifest
+    self_contained_input: str
+    input_sha256: str
+    combined_identity_sha256: str
+
+    def provenance_dict(self, integration: _ProjectIntegrationResult) -> dict[str, object]:
+        return {
+            "schema": "wpi.virtual-lab.database-extension-run-provenance",
+            "version": 1,
+            "base": {
+                "resource_id": self.base.resource_id,
+                "installation_id": self.base.installation_id,
+                "version": self.base.installed_version,
+                "filename": self.base.database_filename,
+                "family": self.base.database_family,
+                "sha256": self.base.primary_sha256,
+            },
+            "extension": {
+                "resource_id": self.extension.resource_id,
+                "installation_id": self.extension.installation_id,
+                "version": self.extension.installed_version,
+                "filename": self.extension.database_filename,
+                "sha256": self.extension.primary_sha256,
+            },
+            "combined_identity_sha256": self.combined_identity_sha256,
+            "reviewed_input_sha256": self.input_sha256,
+            "executor_environment_identity_sha256": integration.environment_identity_sha256,
+        }
 
 
 def compare_resource_manifests(current: ResourceManifest | None,
@@ -630,7 +693,112 @@ class ResourceSteward:
             return sha256_bytes(output_path.read_bytes())
 
     @staticmethod
-    def _project_integration_test(executable: Path, database: Path, input_text: str) -> str:
+    def _verified_manifest_bytes(manifest: ResourceManifest, *, label: str) -> bytes:
+        path = Path(manifest.install_path)
+        try:
+            details = path.lstat()
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise StewardError(f"{label} path is unavailable: {exc}") from exc
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+            raise StewardError(f"{label} must be a regular non-symlink file")
+        if resolved != path or details.st_size <= 0 \
+                or details.st_size > DEFAULT_MAX_DOWNLOAD_BYTES:
+            raise StewardError(f"{label} path/size is outside the sealed contract")
+        raw = path.read_bytes()
+        if sha256_bytes(raw) != manifest.primary_sha256:
+            raise StewardError(f"{label} bytes changed after identity verification")
+        return raw
+
+    def _extension_contract(self, manifest: ResourceManifest) -> _ExtensionContract:
+        if manifest.resource_kind != ResourceKind.DATABASE_EXTENSION:
+            raise StewardError("extension contract requires a database-extension manifest")
+        state = self.store.load()
+        database_kinds = {
+            ResourceKind.PHREEQC_OFFICIAL_DATABASE,
+            ResourceKind.EXTERNAL_THERMODYNAMIC_DATABASE,
+        }
+        if manifest.extension_for_installation_id:
+            try:
+                bases = [self.store.get_installation(
+                    manifest.extension_for_installation_id, state=state)]
+            except CatalogError as exc:
+                raise StewardError("bound database extension base is unavailable") from exc
+        else:
+            bases = [
+                item for item in state.resources
+                if item.resource_kind in database_kinds
+                and item.database_filename == manifest.requires_database_filename
+                and item.database_family == manifest.requires_database_family
+                and (not manifest.extension_for_resource_id
+                     or item.resource_id == manifest.extension_for_resource_id)
+            ]
+        if len(bases) != 1:
+            qualifier = "ambiguous" if len(bases) > 1 else "unavailable"
+            raise StewardError(
+                f"database extension declared base is {qualifier}; one exact filename/family "
+                "and resource identity is required")
+        base = bases[0]
+        if base.resource_kind not in database_kinds \
+                or base.database_filename != manifest.requires_database_filename \
+                or base.database_family != manifest.requires_database_family:
+            raise StewardError("database extension bound base filename/family is incorrect")
+        if manifest.extension_for_resource_id \
+                and base.resource_id != manifest.extension_for_resource_id:
+            raise StewardError("database extension bound base resource identity is incorrect")
+        if manifest.extension_base_version \
+                and base.installed_version != manifest.extension_base_version:
+            raise StewardError("database extension bound base version is incorrect")
+        if manifest.extension_base_sha256 \
+                and base.primary_sha256 != manifest.extension_base_sha256:
+            raise StewardError("database extension bound base hash is incorrect")
+
+        base_raw = self._verified_manifest_bytes(base, label="extension base database")
+        extension_raw = self._verified_manifest_bytes(
+            manifest, label="database extension candidate")
+        try:
+            extension_text = extension_raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise StewardError("database extension candidate is not exact UTF-8 text") from exc
+        if "\x00" in extension_text or _INCLUDE_LINE_RE.search(extension_text):
+            raise StewardError(
+                "database extension candidate cannot contain an external include directive")
+        self_contained_input = extension_text.rstrip() + "\n\n" + _STEWARD_SMOKE_TEMPLATE
+        input_sha256 = sha256_bytes(self_contained_input.encode("utf-8"))
+        combined_identity_sha256 = canonical_hash({
+            "schema": "wpi.virtual-lab.database-extension-binding",
+            "version": 1,
+            "base": {
+                "resource_id": base.resource_id,
+                "installation_id": base.installation_id,
+                "version": base.installed_version,
+                "filename": base.database_filename,
+                "family": base.database_family,
+                "sha256": sha256_bytes(base_raw),
+            },
+            "extension": {
+                "resource_id": manifest.resource_id,
+                "installation_id": manifest.installation_id,
+                "version": manifest.installed_version,
+                "filename": manifest.database_filename,
+                "sha256": sha256_bytes(extension_raw),
+            },
+        })
+        if manifest.combined_identity_sha256 \
+                and combined_identity_sha256 != manifest.combined_identity_sha256:
+            raise StewardError("database extension combined identity changed after testing")
+        return _ExtensionContract(
+            base=base,
+            extension=manifest,
+            self_contained_input=self_contained_input,
+            input_sha256=input_sha256,
+            combined_identity_sha256=combined_identity_sha256,
+        )
+
+    @staticmethod
+    def _project_integration_test(
+        executable: Path, database: Path, input_text: str,
+    ) -> _ProjectIntegrationResult:
         """Exercise the candidate through the application's review/confirmation/executor path."""
         package_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory(prefix="wpi-steward-project-") as temporary:
@@ -674,21 +842,36 @@ class ResourceSteward:
                     "PHREEQC_DATABASE": str(database),
                 },
             )
-            identity = stdout.strip().splitlines()[-1] if stdout.strip() else ""
-            if not re.fullmatch(r"[0-9a-f]{64}", identity):
-                raise StewardError("project integration test omitted its environment identity")
-            return identity
+            serialized = stdout.strip().splitlines()[-1] if stdout.strip() else ""
+            try:
+                document = json.loads(serialized)
+            except (TypeError, ValueError) as exc:
+                raise StewardError("project integration test omitted closed run provenance") \
+                    from exc
+            expected_keys = {
+                "schema", "version", "environment_identity_sha256",
+                "database_sha256", "input_sha256",
+            }
+            if set(document) != expected_keys \
+                    or document.get("schema") != "wpi.virtual-lab.steward-project-integration" \
+                    or document.get("version") != 1:
+                raise StewardError("project integration run provenance contract is invalid")
+            hashes = (
+                document.get("environment_identity_sha256"),
+                document.get("database_sha256"),
+                document.get("input_sha256"),
+            )
+            if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in hashes):
+                raise StewardError("project integration run provenance hashes are invalid")
+            return _ProjectIntegrationResult(*hashes)
 
     def builtin_tester(
         self,
     ) -> Callable[[ResourceManifest], tuple[Iterable[EvidenceRecord], Iterable[Finding]]]:
         """Return actual executable/database smoke tests owned by deterministic Steward code."""
         def worker(manifest: ResourceManifest):
-            minimal = (
-                "TITLE Steward candidate software smoke; not experimental validation\n"
-                "SOLUTION 1\n    temp 25\n    pH 7\n"
-                "SELECTED_OUTPUT\n    -file selected.out\n    -reset false\n    -pH true\nEND\n"
-            )
+            minimal = _STEWARD_SMOKE_TEMPLATE
             if manifest.resource_kind == ResourceKind.PHREEQC_RUNTIME:
                 executable = Path(manifest.install_path)
                 install_root = executable.parent.parent
@@ -724,7 +907,7 @@ class ResourceSteward:
                     "builtin-project-executor-integration",
                     EvidenceStatus.PASSED,
                     "Candidate completed the project review, confirmation, and executor contract.",
-                    integration_identity,
+                    canonical_hash(integration_identity.to_dict()),
                 ))
                 return evidence, ()
 
@@ -740,21 +923,40 @@ class ResourceSteward:
             database = Path(manifest.install_path)
             input_text = minimal
             if manifest.resource_kind == ResourceKind.DATABASE_EXTENSION:
-                bases = [
-                    item for item in state.resources
-                    if item.resource_kind in {
-                        ResourceKind.PHREEQC_OFFICIAL_DATABASE,
-                        ResourceKind.EXTERNAL_THERMODYNAMIC_DATABASE,
-                    }
-                    and item.database_family == manifest.requires_database_family
-                ]
-                if not bases:
-                    raise StewardError("database extension test cannot resolve its declared base")
-                database = Path(bases[0].install_path)
-                input_text = f'INCLUDE$ "{Path(manifest.install_path).resolve()}"\n' + minimal
+                extension = self._extension_contract(manifest)
+                database = Path(extension.base.install_path)
+                input_text = extension.self_contained_input
             artifact = self._assert_phreeqc_success(executable, database, input_text)
             integration_identity = self._project_integration_test(
                 executable, database, input_text)
+            if manifest.resource_kind == ResourceKind.DATABASE_EXTENSION:
+                if integration_identity.database_sha256 != extension.base.primary_sha256 \
+                        or integration_identity.input_sha256 != extension.input_sha256:
+                    raise StewardError(
+                        "extension integration run did not retain exact base/input identities")
+                run_provenance = extension.provenance_dict(integration_identity)
+                return (
+                    EvidenceRecord(
+                        "builtin-extension-self-contained-compatibility",
+                        EvidenceStatus.PASSED,
+                        "Exact extension bytes completed a direct self-contained smoke with "
+                        "the uniquely resolved exact base; no database concatenation occurred.",
+                        artifact,
+                    ),
+                    EvidenceRecord(
+                        "builtin-project-executor-extension-integration",
+                        EvidenceStatus.PASSED,
+                        json.dumps(run_provenance, sort_keys=True, separators=(",", ":")),
+                        canonical_hash(run_provenance),
+                    ),
+                    EvidenceRecord(
+                        "builtin-extension-base-content-binding",
+                        EvidenceStatus.PASSED,
+                        "Exact base and extension resource/version/installation/content "
+                        "identities are sealed for promotion, rollback, and historical runs.",
+                        extension.combined_identity_sha256,
+                    ),
+                ), ()
             return (
                 EvidenceRecord(
                     "builtin-database-load-selected-output",
@@ -766,7 +968,7 @@ class ResourceSteward:
                     "builtin-project-executor-integration",
                     EvidenceStatus.PASSED,
                     "Candidate database completed the project review, confirmation, and executor contract.",
-                    integration_identity,
+                    canonical_hash(integration_identity.to_dict()),
                 ),
             ), ()
         return worker
@@ -864,12 +1066,35 @@ class ResourceSteward:
             ))
             raise StewardError(failure.summary)
         if manifest.resource_kind == ResourceKind.DATABASE_EXTENSION:
+            extension = self._extension_contract(manifest)
+            binding_evidence = [
+                item for item in evidence
+                if item.evidence_id == "builtin-extension-base-content-binding"
+            ]
+            if len(binding_evidence) != 1 \
+                    or binding_evidence[0].artifact_sha256 \
+                    != extension.combined_identity_sha256:
+                raise StewardError(
+                    "extension test evidence does not match the exact base/content binding")
             tested_manifest = replace(
                 manifest,
+                dependencies=tuple(sorted(set((
+                    *manifest.dependencies, extension.base.resource_id,
+                )))),
+                extension_for_resource_id=extension.base.resource_id,
+                extension_for_installation_id=extension.base.installation_id,
+                extension_base_version=extension.base.installed_version,
+                extension_base_sha256=extension.base.primary_sha256,
+                combined_identity_sha256=extension.combined_identity_sha256,
                 test_status=TestStatus.NOT_APPLICABLE_REQUIRES_BASE,
                 standalone_test_status=TestStatus.NOT_APPLICABLE_REQUIRES_BASE,
                 base_include_test_status=TestStatus.PASSED,
                 compatibility_status=CompatibilityStatus.COMPATIBLE,
+                warnings=tuple(sorted(set((
+                    *manifest.warnings,
+                    "Exact extension/base identities are bound; ordinary INCLUDE/INCLUDE$ "
+                    "execution remains prohibited.",
+                )))),
             )
         else:
             tested_manifest = replace(
@@ -938,6 +1163,11 @@ class ResourceSteward:
             and candidate.base_include_test_status == TestStatus.PASSED
             and candidate.compatibility_status == CompatibilityStatus.COMPATIBLE
         )
+        if extension_tested:
+            extension = self._extension_contract(candidate)
+            if extension.combined_identity_sha256 != candidate.combined_identity_sha256:
+                raise StewardError(
+                    "catalog extension/base identity differs from tested proposal evidence")
         if candidate.primary_sha256 != candidate_sha256 or not (
                 candidate.test_status == TestStatus.PASSED or extension_tested):
             raise StewardError("catalog candidate identity/test status differs from proposal evidence")

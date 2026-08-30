@@ -32,7 +32,8 @@ RUN set -eu; \
       /out/share/manifest; \
     cd /build; \
     curl --fail --show-error --silent --proto '=https' --tlsv1.2 \
-      --retry 3 --retry-delay 2 --output phreeqc.tar.gz "$PHREEQC_SOURCE_URL"; \
+      --retry 12 --retry-all-errors --retry-delay 2 --retry-max-time 900 \
+      --output phreeqc.tar.gz "$PHREEQC_SOURCE_URL"; \
     echo "$PHREEQC_SOURCE_SHA256  phreeqc.tar.gz" | sha256sum -c -; \
     tar -tzf phreeqc.tar.gz | awk \
       'BEGIN { bad=0 } /^\// || /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad }'; \
@@ -103,17 +104,18 @@ COPY requirements.txt constraints-py312.txt /tmp/dependencies/
 RUN --mount=type=cache,id=wpi-pip-runtime-${TARGETARCH},target=/root/.cache/pip \
     set -eu; \
     attempt=1; \
-    while [ "$attempt" -le 3 ]; do \
+    while [ "$attempt" -le 6 ]; do \
       if python -m pip install \
         --constraint /tmp/dependencies/constraints-py312.txt \
         --requirement /tmp/dependencies/requirements.txt; then \
         break; \
       fi; \
-      if [ "$attempt" -eq 3 ]; then \
+      if [ "$attempt" -eq 6 ]; then \
         echo "Verified runtime dependency installation failed after $attempt attempts" >&2; \
         exit 1; \
       fi; \
       python -m pip cache purge >/dev/null 2>&1 || :; \
+      sleep "$((attempt * 2))"; \
       attempt=$((attempt + 1)); \
     done
 
@@ -127,7 +129,7 @@ LABEL org.opencontainers.image.title="WPI Virtual LAB" \
       org.opencontainers.image.revision="$VCS_REF" \
       org.opencontainers.image.vendor="WPI Virtual LAB research prototype" \
       org.opencontainers.image.licenses="USGS-PHREEQC-User-Rights-Notice" \
-      org.opencontainers.image.description="Private-beta materials research app with verified PHREEQC runtime"
+      org.opencontainers.image.description="Invite-only beta materials research app with verified PHREEQC runtime"
 
 ENV APP_VERSION=$APP_VERSION \
     APP_VCS_REF=$VCS_REF \
@@ -225,17 +227,18 @@ COPY constraints-py312.txt requirements.txt /tmp/dependencies/
 RUN --mount=type=cache,id=wpi-pip-dev-${TARGETARCH},target=/root/.cache/pip \
     set -eu; \
     attempt=1; \
-    while [ "$attempt" -le 3 ]; do \
+    while [ "$attempt" -le 6 ]; do \
       if python -m pip install \
         --constraint /tmp/dependencies/constraints-py312.txt \
         --requirement /tmp/dependencies/requirements-dev.txt; then \
         break; \
       fi; \
-      if [ "$attempt" -eq 3 ]; then \
+      if [ "$attempt" -eq 6 ]; then \
         echo "Verified development dependency installation failed after $attempt attempts" >&2; \
         exit 1; \
       fi; \
       python -m pip cache purge >/dev/null 2>&1 || :; \
+      sleep "$((attempt * 2))"; \
       attempt=$((attempt + 1)); \
     done
 COPY --chown=root:root conftest.py ./conftest.py

@@ -338,11 +338,17 @@ class ResourceManifest:
     licence_notice: str = ""
     redistribution_state: RedistributionState = RedistributionState.UNKNOWN
     temperature_range: TemperatureRange = field(default_factory=TemperatureRange)
+    database_filename: str = ""
     database_family: str = ""
     dependencies: tuple[str, ...] = ()
     conflicts: tuple[str, ...] = ()
+    requires_database_filename: str = ""
     requires_database_family: str = ""
     extension_for_resource_id: str = ""
+    extension_for_installation_id: str = ""
+    extension_base_version: str = ""
+    extension_base_sha256: str = ""
+    combined_identity_sha256: str = ""
     duplicate_species_phase_risk: str = ""
     domain_notes: tuple[str, ...] = ()
     supported_summary: SupportedSpeciesPhaseSummary = field(
@@ -382,6 +388,12 @@ class ResourceManifest:
             _validate_time(value, label)
         if self.install_path and not Path(self.install_path).is_absolute():
             raise ResourceContractError("install_path must be absolute when supplied")
+        for label, value in (
+            ("database_filename", self.database_filename),
+            ("requires_database_filename", self.requires_database_filename),
+        ):
+            if value and (Path(value).name != value or value in {".", ".."}):
+                raise ResourceContractError(f"{label} must be a plain file name")
         for label, values in (
             ("architectures", self.architectures),
             ("operating_system_targets", self.operating_system_targets),
@@ -395,6 +407,11 @@ class ResourceManifest:
         if self.extension_for_resource_id and not _RESOURCE_ID_RE.fullmatch(
                 self.extension_for_resource_id):
             raise ResourceContractError("extension_for_resource_id is invalid")
+        if self.extension_for_installation_id and not _INSTALLATION_ID_RE.fullmatch(
+                self.extension_for_installation_id):
+            raise ResourceContractError("extension_for_installation_id is invalid")
+        _validate_sha256(self.extension_base_sha256, "extension_base_sha256")
+        _validate_sha256(self.combined_identity_sha256, "combined_identity_sha256")
         if self.superseded_by and not _INSTALLATION_ID_RE.fullmatch(self.superseded_by):
             raise ResourceContractError("superseded_by is invalid")
         if self.resource_kind == ResourceKind.PHREEQC_RUNTIME \
@@ -410,11 +427,26 @@ class ResourceManifest:
                 and not self.content_sha256:
             raise ResourceContractError("a knowledge pack requires a content hash")
         if self.resource_kind == ResourceKind.DATABASE_EXTENSION:
-            if not self.requires_database_family:
-                raise ResourceContractError("a database extension requires its base family")
+            if not self.database_filename or not self.requires_database_filename \
+                    or not self.requires_database_family:
+                raise ResourceContractError(
+                    "a database extension requires its filename and exact base filename/family")
             if self.standalone_test_status != TestStatus.NOT_APPLICABLE_REQUIRES_BASE:
                 raise ResourceContractError(
                     "a database extension standalone test is not_applicable_requires_base")
+            binding = (
+                self.extension_for_resource_id,
+                self.extension_for_installation_id,
+                self.extension_base_version,
+                self.extension_base_sha256,
+                self.combined_identity_sha256,
+            )
+            if any(binding) and not all(binding):
+                raise ResourceContractError(
+                    "a bound database extension requires the complete exact base identity")
+            if self.base_include_test_status == TestStatus.PASSED and not all(binding):
+                raise ResourceContractError(
+                    "a passing extension compatibility test requires exact base binding")
         elif self.standalone_test_status == TestStatus.NOT_APPLICABLE_REQUIRES_BASE:
             raise ResourceContractError(
                 "only a database extension may require a base for standalone testing")
@@ -453,11 +485,17 @@ class ResourceManifest:
             "licence_notice": self.licence_notice,
             "redistribution_state": self.redistribution_state.value,
             "temperature_range": self.temperature_range.to_dict(),
+            "database_filename": self.database_filename,
             "database_family": self.database_family,
             "dependencies": list(self.dependencies),
             "conflicts": list(self.conflicts),
+            "requires_database_filename": self.requires_database_filename,
             "requires_database_family": self.requires_database_family,
             "extension_for_resource_id": self.extension_for_resource_id,
+            "extension_for_installation_id": self.extension_for_installation_id,
+            "extension_base_version": self.extension_base_version,
+            "extension_base_sha256": self.extension_base_sha256,
+            "combined_identity_sha256": self.combined_identity_sha256,
             "duplicate_species_phase_risk": self.duplicate_species_phase_risk,
             "domain_notes": list(self.domain_notes),
             "supported_summary": self.supported_summary.to_dict(),
@@ -479,8 +517,11 @@ class ResourceManifest:
             "source_sha256", "executable_sha256", "database_sha256", "content_sha256",
             "architectures", "operating_system_targets", "build_toolchain", "install_path",
             "installed_at", "verified_at", "citation", "rights_notice", "licence_notice",
-            "redistribution_state", "temperature_range", "database_family", "dependencies",
-            "conflicts", "requires_database_family", "extension_for_resource_id",
+            "redistribution_state", "temperature_range", "database_filename",
+            "database_family", "dependencies", "conflicts", "requires_database_filename",
+            "requires_database_family", "extension_for_resource_id",
+            "extension_for_installation_id", "extension_base_version",
+            "extension_base_sha256", "combined_identity_sha256",
             "duplicate_species_phase_risk", "domain_notes", "supported_summary",
             "compatibility_status", "test_status", "warnings", "superseded_by",
             "standalone_test_status", "base_include_test_status", "rollback_state",

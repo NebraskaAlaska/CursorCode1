@@ -106,6 +106,38 @@ def _script_exe_db(tmp_path, script: str):
     return str(exe), str(db)
 
 
+def _process_state(pid: int) -> str:
+    """Return absent/running/zombie without treating an exited zombie as a live worker."""
+    status = Path(f"/proc/{pid}/status")
+    if status.is_file():
+        try:
+            for line in status.read_text(encoding="utf-8").splitlines():
+                if line.startswith("State:"):
+                    return "zombie" if "Z (zombie)" in line else "running"
+        except OSError:
+            pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "absent"
+    except PermissionError:
+        return "running"
+    return "running"
+
+
+def _assert_descendant_stopped_and_reaped(pid: int, *, label: str) -> None:
+    initial = _process_state(pid)
+    assert initial != "running", f"{label} descendant is still running"
+    deadline = time.monotonic() + 1.0
+    state = initial
+    while state != "absent" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        state = _process_state(pid)
+    assert state == "absent", (
+        f"{label} descendant exited but remains a zombie awaiting PID-1 reaping; "
+        "the container execution contract requires an init/subreaper")
+
+
 def _configure_release_identity(monkeypatch, tmp_path, exe: str, db: str):
     monkeypatch.setattr(config, "PHREEQC_EXE_PATH", exe)
     monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", db)
@@ -575,14 +607,7 @@ def test_timeout_kills_and_reaps_process_group(tmp_path):
     result = _execute(workdir=tmp_path / "jobs", exe=exe, database=db, timeout=1.0)
     assert result.status == E.STATUS_TIMEOUT
     child_pid = int((Path(result.workspace_path) / "child.pid").read_text())
-    for _ in range(20):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("timed-out PHREEQC descendant remained alive")
+    _assert_descendant_stopped_and_reaped(child_pid, label="timed-out PHREEQC")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses POSIX process-group semantics")
@@ -596,15 +621,112 @@ def test_normal_parent_exit_does_not_orphan_background_descendant(tmp_path):
     )
     result = _execute(workdir=tmp_path / "jobs", exe=exe, database=db, timeout=5)
     assert result.status == E.STATUS_SUCCESS
+    assert result.error_message is None
     child_pid = int((Path(result.workspace_path) / "child.pid").read_text())
-    for _ in range(100):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("background PHREEQC descendant remained alive after its parent exited")
+    _assert_descendant_stopped_and_reaped(child_pid, label="normal-exit PHREEQC")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX process-group semantics")
+def test_repeated_process_group_cleanup_closes_descendant_pipes(tmp_path):
+    for index in range(3):
+        run_root = tmp_path / f"run-{index}"
+        run_root.mkdir()
+        exe, db = _script_exe_db(
+            run_root,
+            "sleep 60 &\n"
+            "child=$!\n"
+            "printf '%s' \"$child\" > child.pid\n"
+            "printf 'End of Run\\n' > \"$2\"\n",
+        )
+        result = _execute(
+            workdir=run_root / "jobs", exe=exe, database=db, timeout=5)
+        assert result.status == E.STATUS_SUCCESS
+        assert result.error_message is None
+        child_pid = int((Path(result.workspace_path) / "child.pid").read_text())
+        _assert_descendant_stopped_and_reaped(
+            child_pid, label=f"repeated PHREEQC run {index}")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX process-group semantics")
+def test_concurrent_real_process_groups_are_isolated_and_reaped(tmp_path):
+    jobs = []
+    for index in range(4):
+        run_root = tmp_path / f"concurrent-{index}"
+        run_root.mkdir()
+        jobs.append((run_root, *_script_exe_db(
+            run_root,
+            "sleep 60 &\n"
+            "child=$!\n"
+            "printf '%s' \"$child\" > child.pid\n"
+            "printf 'End of Run\\n' > \"$2\"\n",
+        )))
+
+    def run(job):
+        run_root, exe, db = job
+        return _execute(
+            workdir=run_root / "jobs", exe=exe, database=db, timeout=5)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(run, jobs))
+    assert all(result.status == E.STATUS_SUCCESS for result in results)
+    assert len({result.workspace_path for result in results}) == 4
+    for index, result in enumerate(results):
+        child_pid = int((Path(result.workspace_path) / "child.pid").read_text())
+        _assert_descendant_stopped_and_reaped(
+            child_pid, label=f"concurrent PHREEQC run {index}")
+
+
+def test_posix_cleanup_signals_only_the_spawned_process_group(monkeypatch):
+    class Process:
+        pid = 24680
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    signals = []
+    monkeypatch.setattr(E.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        E.os, "kill", lambda *_: pytest.fail("cleanup must not signal a broad host PID"))
+    E._terminate_process_tree(Process())
+    assert signals == [
+        (Process.pid, E.signal.SIGTERM),
+        (Process.pid, E.signal.SIGKILL),
+    ]
+
+
+def test_windows_cleanup_remains_fail_closed_to_exact_process_tree(monkeypatch):
+    class Process:
+        pid = 13579
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+        @staticmethod
+        def terminate():
+            pytest.fail("taskkill tree contract should complete before fallback terminate")
+
+        @staticmethod
+        def kill():
+            pytest.fail("taskkill tree contract should complete before fallback kill")
+
+    calls = []
+    monkeypatch.setattr(E.os, "name", "nt")
+    monkeypatch.setattr(
+        E.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)))
+    E._terminate_process_tree(Process())
+    assert calls[0][0] == ["taskkill", "/PID", str(Process.pid), "/T", "/F"]
+    assert calls[0][1]["check"] is False
+    assert calls[0][1]["timeout"] == 2.0
 
 
 @pytest.mark.parametrize("value", ["", "garbage", "0", "-1", "1.5", str(2**63)])

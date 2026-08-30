@@ -279,6 +279,24 @@ class CatalogStore:
             )
             if immutable != replacement_identity:
                 raise CatalogError("replacement attempts to change immutable installation identity")
+            existing_extension_binding = (
+                existing.extension_for_resource_id,
+                existing.extension_for_installation_id,
+                existing.extension_base_version,
+                existing.extension_base_sha256,
+                existing.combined_identity_sha256,
+            )
+            replacement_extension_binding = (
+                manifest.extension_for_resource_id,
+                manifest.extension_for_installation_id,
+                manifest.extension_base_version,
+                manifest.extension_base_sha256,
+                manifest.combined_identity_sha256,
+            )
+            if existing.combined_identity_sha256 \
+                    and existing_extension_binding != replacement_extension_binding:
+                raise CatalogError(
+                    "replacement attempts to rebind an already tested database extension")
             resources = tuple(manifest if item.installation_id == manifest.installation_id else item
                               for item in current.resources)
             return self._commit(current, CatalogState(
