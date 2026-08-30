@@ -224,6 +224,15 @@ def test_private_control_remote_requires_explicit_visibility_attestation(tmp_pat
         CouncilOperator(replace(config, code_remote=str(tmp_path / "other.git")), policy)
 
 
+def test_git_client_is_present_only_in_the_exact_test_image_stage():
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    runtime, test_and_release = dockerfile.split("FROM runtime AS test", 1)
+    test_stage, release_stage = test_and_release.split("FROM runtime AS release", 1)
+    assert "apt-get install -y --no-install-recommends git" in test_stage
+    assert "apt-get install -y --no-install-recommends git" not in runtime
+    assert "apt-get install -y --no-install-recommends git" not in release_stage
+
+
 def _vault(tmp_path):
     vault = tmp_path / "Obsidian Test"
     (vault / ".obsidian").mkdir(parents=True)

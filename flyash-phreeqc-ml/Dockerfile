@@ -222,6 +222,9 @@ FROM runtime AS test
 ARG TARGETARCH
 
 USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements-dev.txt /tmp/dependencies/requirements-dev.txt
 COPY constraints-py312.txt requirements.txt /tmp/dependencies/
 RUN --mount=type=cache,id=wpi-pip-dev-${TARGETARCH},target=/root/.cache/pip \
