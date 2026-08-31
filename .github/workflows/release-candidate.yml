@@ -81,7 +81,7 @@ jobs:
             --test-evidence "dependency-vulnerability-audit:pip-audit-2.10.1:${{ github.sha }}" \
             --test-evidence "per-architecture-phreeqc-integration:linux-amd64-linux-arm64:${{ github.sha }}" \
             --test-evidence "multi-platform-build:${{ steps.build.outputs.digest }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: wpi-virtual-lab-${{ inputs.candidate_version }}-unpromoted
           path: |
