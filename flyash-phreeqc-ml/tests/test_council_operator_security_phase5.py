@@ -229,6 +229,7 @@ def test_git_client_is_present_only_in_the_exact_test_image_stage():
     runtime, test_and_release = dockerfile.split("FROM runtime AS test", 1)
     test_stage, release_stage = test_and_release.split("FROM runtime AS release", 1)
     assert "apt-get install -y --no-install-recommends git" in test_stage
+    assert "setuptools==83.0.0" in test_stage
     assert "apt-get install -y --no-install-recommends git" not in runtime
     assert "apt-get install -y --no-install-recommends git" not in release_stage
     assert "COPY --chown=root:root config ./config" in runtime

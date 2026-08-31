@@ -68,6 +68,17 @@ def _copy_project(target: Path) -> Path:
         "README.md",
     ):
         shutil.copy2(ROOT / name, project / name)
+
+    # The exact test image deliberately makes /app immutable (root-owned
+    # 0444/0555). copy2/copytree preserve those source modes even though the
+    # disposable fixture is owned by the unprivileged test user. Normalize
+    # only this temporary copy so its policy can be rewritten with synthetic
+    # Council hashes and its operator scripts can be executed.
+    for copied in project.rglob("*"):
+        if copied.is_dir():
+            copied.chmod(0o755)
+        elif copied.is_file():
+            copied.chmod(0o755 if copied.parent == project / "scripts" else 0o644)
     return project
 
 
@@ -515,6 +526,7 @@ def test_resolver_uses_absolute_python312_fallback_and_rejects_relative_override
     scripts.mkdir(parents=True)
     resolver = scripts / "resolve-council-python.sh"
     shutil.copy2(ROOT / "scripts" / "resolve-council-python.sh", resolver)
+    resolver.chmod(0o755)
     fallback_dir = tmp_path / "fallback"
     fallback_dir.mkdir()
     (fallback_dir / "python3.12").symlink_to(sys.executable)

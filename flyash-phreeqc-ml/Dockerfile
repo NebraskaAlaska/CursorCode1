@@ -234,6 +234,7 @@ RUN --mount=type=cache,id=wpi-pip-dev-${TARGETARCH},target=/root/.cache/pip \
     while [ "$attempt" -le 6 ]; do \
       if python -m pip install \
         --constraint /tmp/dependencies/constraints-py312.txt \
+        setuptools==83.0.0 \
         --requirement /tmp/dependencies/requirements-dev.txt; then \
         break; \
       fi; \
