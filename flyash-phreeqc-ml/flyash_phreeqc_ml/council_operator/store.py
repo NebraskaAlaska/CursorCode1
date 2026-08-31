@@ -22,7 +22,7 @@ from .contracts import (
     parse_time,
     transition_record,
     utc_now,
-    validate_approval_artifact,
+    validate_stale_takeover_approval,
     validate_state_record,
 )
 
@@ -249,26 +249,20 @@ class TaskStateController:
     def claim(self, task_id: str, worker_id: str, *, human_override: Mapping[str, Any] | None = None) -> dict[str, Any]:
         def mutate(record: dict[str, Any]) -> dict[str, Any]:
             if record["state"] == "claimed" and record["worker_id"] == worker_id:
+                if human_override is not None:
+                    validate_stale_takeover_approval(human_override, record)
                 return record
             if record["state"] not in {"submitted", "expired"}:
                 raise ContractError("task is not claimable")
-            if record["state"] == "expired" and not self.policy.allow_policy_expiry_takeover:
-                bindings = human_override.get("bindings", {}) if human_override else {}
-                approval_valid = False
-                if human_override:
-                    try:
-                        validate_approval_artifact(human_override)
-                    except ContractError:
-                        pass
-                    else:
-                        approval_valid = bool(
-                            human_override.get("kind") == "stale_lock_takeover"
-                            and bindings.get("task_id") == record["task_id"]
-                            and bindings.get("request_hash") == record["request_hash"]
-                            and bindings.get("base_commit") == record["base_commit"]
-                        )
-                if not approval_valid:
+            takeover_approval: Mapping[str, Any] | None = None
+            if record["state"] == "expired":
+                if human_override is not None:
+                    validate_stale_takeover_approval(human_override, record)
+                    takeover_approval = human_override
+                elif not self.policy.allow_policy_expiry_takeover:
                     raise ContractError("stale-lock takeover requires exact human approval")
+            elif human_override is not None:
+                raise ContractError("stale-lock approval applies only to its exact expired state")
             lease_expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=self.policy.lease_seconds)
 
             def bind(updated: dict[str, Any]) -> None:
@@ -284,6 +278,8 @@ class TaskStateController:
                     "operator_version": OPERATOR_VERSION,
                     "state_revision": updated["revision"],
                 }
+                if takeover_approval is not None:
+                    updated["approvals"].append(json.loads(json.dumps(takeover_approval)))
 
             return transition_record(record, "claimed", actor=worker_id, event="claim", mutate=bind)
 
@@ -293,6 +289,8 @@ class TaskStateController:
         def mutate(record: dict[str, Any]) -> dict[str, Any]:
             if record["worker_id"] != worker_id or record["lock"] is None:
                 raise ContractError("worker does not hold the task lock")
+            if record["state"] == "expired":
+                raise ContractError("an explicitly expired task cannot be heartbeated")
             before_request = record["request_hash"]
             now = dt.datetime.now(dt.timezone.utc)
             record["revision"] += 1

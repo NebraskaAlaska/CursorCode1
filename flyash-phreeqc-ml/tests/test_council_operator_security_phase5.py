@@ -233,7 +233,9 @@ def test_git_client_is_present_only_in_the_exact_test_image_stage():
     assert "apt-get install -y --no-install-recommends git" not in release_stage
     assert "COPY --chown=root:root config ./config" in runtime
     installer = (Path(__file__).resolve().parents[1] / "scripts" / "install-council-operator.sh").read_text(encoding="utf-8")
-    assert 'pip install --user --no-deps --editable "$project_dir"' in installer
+    assert "pip install --user" not in installer
+    assert '"$operator_python" -m pip install' in installer
+    assert '--no-build-isolation --no-deps --editable "$project_dir"' in installer
 
 
 def _vault(tmp_path):

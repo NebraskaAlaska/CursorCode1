@@ -10,7 +10,48 @@
     "kind": {"enum": ["task_branch", "pull_request", "merge", "deployment", "resource_promotion", "resource_rollback", "stale_lock_takeover"]},
     "approved_by": {"type": "string", "pattern": "^human:.+"},
     "approved_at": {"type": "string", "format": "date-time"},
-    "bindings": {"type": "object", "additionalProperties": {"type": "string"}},
+    "bindings": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "required": [
+        "task_id",
+        "request_hash",
+        "base_commit",
+        "final_task_commit",
+        "patch_hash",
+        "test_evidence_hash",
+        "reviewer_report_hash"
+      ]
+    },
     "approval_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "stale_lock_takeover"}}},
+      "then": {
+        "properties": {
+          "bindings": {
+            "required": [
+              "expired_state_sha256",
+              "expired_state_revision",
+              "previous_worker_id",
+              "lease_expires_at",
+              "expired_at",
+              "approved_at",
+              "approved_by"
+            ],
+            "properties": {
+              "expired_state_sha256": {"pattern": "^[0-9a-f]{64}$"},
+              "expired_state_revision": {"pattern": "^[1-9][0-9]*$"},
+              "previous_worker_id": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+              "lease_expires_at": {"format": "date-time"},
+              "expired_at": {"format": "date-time"},
+              "approved_at": {"format": "date-time"},
+              "approved_by": {"pattern": "^human:.+"}
+            }
+          }
+        }
+      }
+    }
+  ]
 }

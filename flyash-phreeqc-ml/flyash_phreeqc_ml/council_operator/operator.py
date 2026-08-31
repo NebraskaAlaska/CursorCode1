@@ -44,6 +44,8 @@ from .contracts import (
     validate_state_record,
 )
 from .obsidian import append_handoff
+from .remote_preflight import RemotePreflightError, probe_operator_remotes
+from .runtime import RuntimeIdentityError, current_python_identity, effective_test_command
 from .sandbox import SandboxError, SandboxManager, bounded_process, run_git, safe_git_environment, tree_hash
 from .store import GitRefStateStore, StateStoreError, TaskStateController
 
@@ -58,6 +60,10 @@ class CouncilOperator:
         policy.validate()
         if config.code_remote != policy.allowed_repository:
             raise OperatorError("configured code remote does not match the tracked repository identity")
+        try:
+            self.python_runtime = current_python_identity()
+        except RuntimeIdentityError as exc:
+            raise OperatorError(str(exc)) from exc
         self.config = config
         self.policy = policy
         self.store = GitRefStateStore(config.control_remote, config.state_cache_root, policy.project_slug)
@@ -71,26 +77,14 @@ class CouncilOperator:
     def doctor(self, *, worker: bool = False) -> dict[str, Any]:
         self.config.validate()
         self.policy.validate()
+        try:
+            self.python_runtime.verify_pinned_environment()
+        except RuntimeIdentityError as exc:
+            raise OperatorError(str(exc)) from exc
         live = self.sandboxes.verify_live_checkout()
         origin = run_git(self.config.repository_path, "remote", "get-url", "origin").stdout.decode().strip()
-        remote_check = subprocess.run(
-            ["git", "ls-remote", "--heads", self.config.code_remote],
-            capture_output=True,
-            shell=False,
-            timeout=60,
-            env=safe_git_environment(),
-        )
-        if remote_check.returncode:
-            raise OperatorError("code remote authentication/read access check failed")
-        control_check = subprocess.run(
-            ["git", "ls-remote", "--heads", self.config.control_remote],
-            capture_output=True,
-            shell=False,
-            timeout=60,
-            env=safe_git_environment(),
-        )
-        if control_check.returncode:
-            raise OperatorError("control remote authentication/read access check failed")
+        permissions = self.remote_permission_preflight()
+        self._require_remote_write_permissions(permissions)
         council_hashes: dict[str, str] = {}
         profile_hashes: dict[str, dict[str, str]] = {}
         if worker:
@@ -115,13 +109,48 @@ class CouncilOperator:
             "private_control_remote_configured": self.config.has_private_control_remote,
             "live_checkout": live,
             "configured_origin_matches": origin == self.config.code_remote,
-            "code_remote_readable": True,
-            "control_remote_readable": True,
+            "code_remote_readable": permissions["code"]["readable"],
+            "code_remote_push_authorized": permissions["code"]["push_authorized"],
+            "code_remote_permission_failure": permissions["code"]["failure_kind"],
+            "control_remote_readable": permissions["control"]["readable"],
+            "control_remote_push_authorized": permissions["control"]["push_authorized"],
+            "control_remote_permission_failure": permissions["control"]["failure_kind"],
+            "remote_permission_preflight_non_mutating": all(
+                result["non_mutating"] for result in permissions.values()
+            ),
+            "operator_python": self.python_runtime.to_dict(),
             "worker_ready": worker,
             "council_contract_sha256": council_hashes,
             "required_hermes_profiles": list(COUNCIL_REQUIRED_PROFILES),
             "hermes_profile_file_sha256": profile_hashes,
         }
+
+    def remote_permission_preflight(self) -> dict[str, dict[str, Any]]:
+        """Check both remote namespaces without creating or updating a ref."""
+
+        try:
+            return probe_operator_remotes(
+                self.config.repository_path,
+                self.config.code_remote,
+                self.config.control_remote,
+                project_slug=self.policy.project_slug,
+            )
+        except RemotePreflightError as exc:
+            raise OperatorError(str(exc)) from exc
+
+    @staticmethod
+    def _require_remote_write_permissions(permissions: Mapping[str, Mapping[str, Any]]) -> None:
+        for label in ("code", "control"):
+            result = permissions.get(label)
+            if not isinstance(result, Mapping):
+                raise OperatorError(f"{label} remote permission preflight is missing")
+            if result.get("non_mutating") is not True:
+                raise OperatorError(f"{label} remote permission preflight was not non-mutating")
+            failure = str(result.get("failure_kind") or "permission_not_established")
+            if result.get("readable") is not True:
+                raise OperatorError(f"{label} remote read permission preflight failed ({failure})")
+            if result.get("push_authorized") is not True:
+                raise OperatorError(f"{label} remote push permission preflight failed ({failure})")
 
     def submit(self, request_path: Path) -> dict[str, Any]:
         request = load_request_file(request_path)
@@ -248,13 +277,23 @@ class CouncilOperator:
     def _run_required_tests(self, request: TaskRequest, result: Any, started: float) -> Any:
         """Run every immutable request command after the external tester gate."""
 
+        try:
+            self.python_runtime.verify_pinned_environment()
+        except RuntimeIdentityError as exc:
+            raise OperatorError(str(exc)) from exc
         records: list[dict[str, Any]] = []
         passed = True
         for command in request.required_test_commands:
+            try:
+                effective = effective_test_command(command, self.python_runtime)
+            except RuntimeIdentityError as exc:
+                raise OperatorError(str(exc)) from exc
             remaining = int(request.max_duration_seconds - (time.monotonic() - started))
             if remaining < 1:
                 record = {
                     "arguments": list(command),
+                    "requested_arguments": list(command),
+                    "effective_arguments": list(effective),
                     "exit_code": 124,
                     "timed_out": True,
                     "truncated": False,
@@ -263,7 +302,7 @@ class CouncilOperator:
                 }
             else:
                 execution = bounded_process(
-                    command,
+                    effective,
                     cwd=result.workspace,
                     timeout_seconds=remaining,
                     max_output_bytes=self.policy.max_log_bytes,
@@ -272,10 +311,17 @@ class CouncilOperator:
                 record = {
                     key: execution[key]
                     for key in (
-                        "arguments", "exit_code", "timed_out", "truncated",
+                        "exit_code", "timed_out", "truncated",
                         "stdout_sha256", "stderr_sha256",
                     )
                 }
+                record.update(
+                    {
+                        "arguments": list(command),
+                        "requested_arguments": list(command),
+                        "effective_arguments": list(effective),
+                    }
+                )
             records.append(record)
             if record["exit_code"] != 0 or record["timed_out"]:
                 passed = False
@@ -283,12 +329,13 @@ class CouncilOperator:
         trusted_hash = digest_json(
             {
                 "commands": records,
-                "python_version": sys.version.split()[0],
+                "trusted_test_python": self.python_runtime.to_dict(),
                 "credential_environment_forwarded": False,
             }
         )
         evidence = dict(result.evidence)
         evidence["trusted_required_tests"] = records
+        evidence["trusted_test_python"] = self.python_runtime.to_dict()
         evidence["trusted_required_tests_sha256"] = trusted_hash
         combined_hash = digest_json(
             {
@@ -358,6 +405,18 @@ class CouncilOperator:
         selected_backend = backend_name or request.requested_backend
         if selected_backend != request.requested_backend:
             raise OperatorError("runtime backend does not match the immutable request")
+        if overnight:
+            supervised_instance = os.environ.get("WPI_COUNCIL_SUPERVISED_INSTANCE", "")
+            if not re.fullmatch(r"[0-9a-f]{32}", supervised_instance):
+                raise OperatorError("overnight execution requires the safe worker supervisor")
+            if sys.platform == "darwin" and os.environ.get("WPI_COUNCIL_SLEEP_ASSERTION") != "caffeinate":
+                raise OperatorError("macOS overnight execution requires the supervisor caffeinate assertion")
+        try:
+            self.python_runtime.verify_pinned_environment()
+        except RuntimeIdentityError as exc:
+            raise OperatorError(str(exc)) from exc
+        permissions = self.remote_permission_preflight()
+        self._require_remote_write_permissions(permissions)
         backend = self._backend(selected_backend, fake_scenario=fake_scenario)
         workspace, journal = self.sandboxes.create_trusted_workspace(request)
         record, start_index = self._record_orphaned_attempts(task_id, record)

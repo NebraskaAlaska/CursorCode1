@@ -1,12 +1,15 @@
 #!/bin/sh
 set -eu
-state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/wpi-council
-pid_file="$state_dir/hermes-worker.pid"
-test -s "$pid_file" || { echo "No Hermes worker PID file exists."; exit 0; }
-worker_pid=$(sed -n '1p' "$pid_file")
-case "$worker_pid" in *[!0-9]*|'') echo "Unsafe worker PID file." >&2; exit 1 ;; esac
-if kill -0 "$worker_pid" 2>/dev/null; then
-  kill "$worker_pid"
-fi
-rm -f "$pid_file"
-echo "Hermes worker stop requested. The task lease remains recoverable."
+test "$#" -eq 0 || { echo "usage: stop-hermes-worker.sh" >&2; exit 2; }
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+runtime_record="${WPI_COUNCIL_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wpi-council}/operator-python.runtime"
+python_bin=$("$script_dir/resolve-council-python.sh" \
+  --project-root "$project_dir" \
+  --runtime-record "$runtime_record" \
+  --require-record)
+case "$python_bin" in
+  /*) ;;
+  *) echo "Council Python resolver did not return an absolute path." >&2; exit 1 ;;
+esac
+exec "$python_bin" -m flyash_phreeqc_ml.council_operator.worker_supervisor stop

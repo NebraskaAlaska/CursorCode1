@@ -831,15 +831,19 @@ def transition_record(record: Mapping[str, Any], target: str, *, actor: str, eve
     return updated
 
 
-def approval_artifact(kind: str, record: Mapping[str, Any], *, approved_by: str, extra_bindings: Mapping[str, str] | None = None) -> dict[str, Any]:
-    validate_state_record(record)
-    allowed = {"task_branch", "pull_request", "merge", "deployment", "resource_promotion", "resource_rollback", "stale_lock_takeover"}
-    if kind not in allowed:
-        raise ContractError("unknown approval kind")
-    if not approved_by.startswith("human:") or len(approved_by) <= len("human:"):
-        raise ContractError("approval must be attributed to a human")
+APPROVAL_BINDING_FIELDS = {
+    "task_id", "request_hash", "base_commit", "final_task_commit",
+    "patch_hash", "test_evidence_hash", "reviewer_report_hash",
+}
+STALE_LOCK_BINDING_FIELDS = APPROVAL_BINDING_FIELDS | {
+    "expired_state_sha256", "expired_state_revision", "previous_worker_id",
+    "lease_expires_at", "expired_at", "approved_at", "approved_by",
+}
+
+
+def _approval_bindings(record: Mapping[str, Any]) -> dict[str, str]:
     summary = record["evidence"]["summary"]
-    bindings = {
+    return {
         "task_id": record["task_id"],
         "request_hash": record["request_hash"],
         "base_commit": record["base_commit"],
@@ -848,9 +852,67 @@ def approval_artifact(kind: str, record: Mapping[str, Any], *, approved_by: str,
         "test_evidence_hash": str(summary.get("test_evidence_hash", "")),
         "reviewer_report_hash": str(summary.get("reviewer_report_hash", "")),
     }
-    if extra_bindings:
-        bindings.update(extra_bindings)
+
+
+def canonical_expired_state_sha256(record: Mapping[str, Any]) -> str:
+    """Return the deterministic identity of one explicitly expired state.
+
+    The complete closed state record is hashed.  A heartbeat, evidence update,
+    timestamp edit, revision change, approval, or transition therefore produces
+    a different identity and invalidates an approval created for an earlier
+    observation.
+    """
+
+    validate_state_record(record)
+    if record["state"] != "expired" or record["lock"] is None or record["worker_id"] is None:
+        raise ContractError("stale-lock approval requires an explicitly expired locked state")
+    transition = record["transitions"][-1]
+    if (
+        transition["to"] != "expired"
+        or transition["event"] != "lease_expired"
+    ):
+        raise ContractError("expired state does not have exact lease-expiry provenance")
+    if parse_time(transition["at"], "expired_at") < parse_time(
+        record["lock"]["lease_expires_at"], "lease_expires_at"
+    ):
+        raise ContractError("expired state predates its exact lease expiry")
+    return digest_json(record)
+
+
+def _stale_lock_bindings(
+    record: Mapping[str, Any], *, approved_at: str, approved_by: str
+) -> dict[str, str]:
+    bindings = _approval_bindings(record)
+    bindings.update(
+        {
+            "expired_state_sha256": canonical_expired_state_sha256(record),
+            "expired_state_revision": str(record["revision"]),
+            "previous_worker_id": str(record["worker_id"]),
+            "lease_expires_at": str(record["lock"]["lease_expires_at"]),
+            "expired_at": str(record["transitions"][-1]["at"]),
+            "approved_at": approved_at,
+            "approved_by": approved_by,
+        }
+    )
+    return bindings
+
+
+def approval_artifact(kind: str, record: Mapping[str, Any], *, approved_by: str, extra_bindings: Mapping[str, str] | None = None) -> dict[str, Any]:
+    validate_state_record(record)
+    allowed = {"task_branch", "pull_request", "merge", "deployment", "resource_promotion", "resource_rollback", "stale_lock_takeover"}
+    if kind not in allowed:
+        raise ContractError("unknown approval kind")
+    if not approved_by.startswith("human:") or len(approved_by) <= len("human:"):
+        raise ContractError("approval must be attributed to a human")
     approved_at = utc_now()
+    if kind == "stale_lock_takeover":
+        if extra_bindings:
+            raise ContractError("stale-lock bindings are derived only from the exact expired state")
+        bindings = _stale_lock_bindings(record, approved_at=approved_at, approved_by=approved_by)
+    else:
+        bindings = _approval_bindings(record)
+        if extra_bindings:
+            bindings.update(extra_bindings)
     artifact = {
         "schema_version": APPROVAL_SCHEMA,
         "kind": kind,
@@ -884,14 +946,23 @@ def validate_approval_artifact(artifact: Mapping[str, Any]) -> None:
         raise ContractError("approval must be attributed to a human")
     parse_time(artifact.get("approved_at"), "approval approved_at")
     bindings = artifact.get("bindings")
-    required = {
-        "task_id", "request_hash", "base_commit", "final_task_commit",
-        "patch_hash", "test_evidence_hash", "reviewer_report_hash",
-    }
-    if not isinstance(bindings, Mapping) or not required.issubset(bindings):
+    if not isinstance(bindings, Mapping) or not APPROVAL_BINDING_FIELDS.issubset(bindings):
         raise ContractError("approval bindings are incomplete")
     if any(not isinstance(key, str) or not isinstance(value, str) for key, value in bindings.items()):
         raise ContractError("approval bindings must be strings")
+    if artifact["kind"] == "stale_lock_takeover":
+        if set(bindings) != STALE_LOCK_BINDING_FIELDS:
+            raise ContractError("stale-lock approval bindings are incomplete")
+        if not SHA256_RE.fullmatch(bindings["expired_state_sha256"]):
+            raise ContractError("stale-lock expired-state hash is invalid")
+        if not re.fullmatch(r"[1-9][0-9]*", bindings["expired_state_revision"]):
+            raise ContractError("stale-lock expired-state revision is invalid")
+        if not WORKER_ID_RE.fullmatch(bindings["previous_worker_id"]):
+            raise ContractError("stale-lock previous worker identity is invalid")
+        parse_time(bindings["lease_expires_at"], "stale-lock lease_expires_at")
+        parse_time(bindings["expired_at"], "stale-lock expired_at")
+        if bindings["approved_at"] != artifact["approved_at"] or bindings["approved_by"] != approved_by:
+            raise ContractError("stale-lock approval attribution binding is invalid")
     expected = digest_json(
         {
             "schema_version": APPROVAL_SCHEMA,
@@ -903,6 +974,37 @@ def validate_approval_artifact(artifact: Mapping[str, Any]) -> None:
     )
     if artifact.get("approval_hash") != expected:
         raise ContractError("approval hash is invalid")
+
+
+def validate_stale_takeover_approval(
+    artifact: Mapping[str, Any],
+    record: Mapping[str, Any],
+    *,
+    now: dt.datetime | None = None,
+) -> None:
+    """Validate one takeover approval against the exact current remote state."""
+
+    validate_approval_artifact(artifact)
+    validate_state_record(record)
+    if artifact.get("kind") != "stale_lock_takeover":
+        raise ContractError("stale-lock takeover requires the dedicated approval kind")
+    if any(item.get("approval_hash") == artifact["approval_hash"] for item in record["approvals"]):
+        raise ContractError("stale-lock approval has already been consumed")
+    approved_at = parse_time(artifact["approved_at"], "approval approved_at")
+    expected = _stale_lock_bindings(
+        record,
+        approved_at=artifact["approved_at"],
+        approved_by=artifact["approved_by"],
+    )
+    if dict(artifact["bindings"]) != expected:
+        raise ContractError("stale-lock approval does not match the exact expired state")
+    expired_at = parse_time(record["transitions"][-1]["at"], "expired_at")
+    lease_expires_at = parse_time(record["lock"]["lease_expires_at"], "lease_expires_at")
+    if approved_at < expired_at or approved_at < lease_expires_at:
+        raise ContractError("stale-lock approval predates the current expiry")
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if approved_at > current.astimezone(dt.timezone.utc):
+        raise ContractError("stale-lock approval time is in the future")
 
 
 def command_text(arguments: Iterable[str]) -> str:

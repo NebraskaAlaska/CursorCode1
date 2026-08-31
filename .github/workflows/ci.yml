@@ -248,6 +248,10 @@ jobs:
           cache-dependency-path: |
             flyash-phreeqc-ml/requirements*.txt
             flyash-phreeqc-ml/constraints-py312.txt
+      - name: Create isolated Phase 5 Python 3.12 environment
+        run: |
+          python -m venv /tmp/wpi-phase5-ci-venv
+          echo "/tmp/wpi-phase5-ci-venv/bin" >> "$GITHUB_PATH"
       - name: Install exactly constrained dependencies
         run: python -m pip install -c constraints-py312.txt setuptools==83.0.0 -r requirements-dev.txt
       - name: Validate operator schemas, scripts, and release boundary
@@ -255,13 +259,21 @@ jobs:
           python -m json.tool resources/schemas/council-task-request.schema.json >/dev/null
           python -m json.tool resources/schemas/council-task-state.schema.json >/dev/null
           python -m json.tool resources/schemas/council-approval.schema.json >/dev/null
+          sh -n scripts/resolve-council-python.sh
           sh -n scripts/install-council-operator.sh
           sh -n scripts/check-council-operator.sh
           sh -n scripts/start-hermes-worker.sh
           sh -n scripts/stop-hermes-worker.sh
           sh -n scripts/run-hermes-task.sh
-          python -m compileall -q flyash_phreeqc_ml/council_operator tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py
+          python -m compileall -q flyash_phreeqc_ml/council_operator tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py tests/test_council_operator_*_phase5_r1.py tests/test_council_operator_stale_lock_r1.py
           python scripts/release_scan.py --tracked --docker-context
+      - name: Functionally verify the Phase 5-R1 live-operator corrections
+        run: |
+          python -m pytest -q -p no:cacheprovider -o addopts='' \
+            tests/test_council_operator_installation_phase5_r1.py \
+            tests/test_council_operator_runtime_phase5_r1.py \
+            tests/test_council_operator_stale_lock_r1.py \
+            tests/test_council_operator_worker_supervisor_phase5_r1.py
       - name: Run request, lock, sandbox, adapter, privacy, approval, and two-clone journeys
         run: |
           python -m pytest -q -p no:cacheprovider -o addopts='' \

@@ -20,7 +20,29 @@ The external Council remains authoritative for routing, stage launching, role ou
 
 Tracked policy is [`config/council_operator_policy.toml`](../config/council_operator_policy.toml). It binds the repository, permitted base branch, `council/wpi/` branch namespace, test-command prefixes, correction and resource limits, forbidden paths, approval classes, and exact Council contract hashes.
 
-Copy [`config/council_operator.example.toml`](../config/council_operator.example.toml) to `~/.config/wpi-virtual-lab/council.toml`. This local file is untracked and contains machine paths and remote URLs but must not contain credentials. Supported overrides include `WPI_AI_COUNCIL_ROOT`, `WPI_COUNCIL_POLICY`, `WPI_COUNCIL_REPOSITORY`, `WPI_COUNCIL_CODE_REPO`, `WPI_COUNCIL_CONTROL_REPO`, `WPI_COUNCIL_CONTROL_REPO_PRIVATE`, `WPI_COUNCIL_WORKER_ID`, `WPI_COUNCIL_SANDBOX_ROOT`, and `WPI_COUNCIL_STATE_CACHE_ROOT`. Authentication comes from the user's existing Git credential helper or SSH configuration.
+Copy [`config/council_operator.example.toml`](../config/council_operator.example.toml) to `~/.config/wpi-virtual-lab/council.toml`. This local file is untracked and contains machine paths and remote URLs but must not contain credentials. Supported runtime overrides include `WPI_AI_COUNCIL_ROOT`, `WPI_HERMES_EXECUTABLE`, `WPI_OBSIDIAN_VAULT`, `WPI_COUNCIL_POLICY`, `WPI_COUNCIL_REPOSITORY`, `WPI_COUNCIL_CODE_REPO`, `WPI_COUNCIL_CONTROL_REPO`, `WPI_COUNCIL_CONTROL_REPO_PRIVATE`, `WPI_COUNCIL_WORKER_ID`, `WPI_COUNCIL_SANDBOX_ROOT`, and `WPI_COUNCIL_STATE_CACHE_ROOT`; the bootstrap additionally accepts the absolute `WPI_COUNCIL_PYTHON`. Authentication comes from the user's existing Git credential helper or SSH configuration.
+
+Installation resolves exactly Python 3.12 in this order: an absolute
+`WPI_COUNCIL_PYTHON`, the checked-out project's `.venv/bin/python` when that
+interpreter is 3.12, and an absolute `python3.12` found on `PATH`. Python 3.9,
+3.10, 3.11, and 3.13 are rejected. If no accepted interpreter exists, the
+resolver emits one installation instruction for creating the project's
+`.venv` from an absolute Python 3.12 executable. The installer never changes
+the system Python and never uses a user-site install inside a virtual
+environment.
+
+When the selected interpreter is already a virtual environment, the package
+is installed there. When it is a base interpreter, the installer creates a
+dedicated environment under the user-local operator installation root. It
+records the absolute Python path, exact 3.12 version, executable SHA-256, and
+project path in a mode-`0600` runtime record. A stable `wpi-council` launcher
+verifies that record on every invocation, so routine commands work in a new
+terminal without activating an environment. A valid existing installation is
+preserved; a missing, altered, or incompatible runtime record or environment
+fails closed instead of being replaced silently.
+Config, runtime-record, and launcher directory chains must stay under the
+configured user home and be real, current-user-owned, and not group- or
+world-writable; shared writable or symlinked installation parents are refused.
 
 Use a private `control_remote` for private state metadata. The operator does not create that repository or infer its visibility. Private/confidential classification is enabled only when a separate remote is configured and `control_remote_private = true` is explicitly attested after verifying its visibility. With an unattested, public, or shared control remote, only public or sanitized requests are accepted and secret/research-content scans still run.
 
@@ -58,7 +80,7 @@ draft → submitted → claimed → routing → planning → coding → coder_ga
       → task_branch_pushed → awaiting_human_review → approved | rejected
 ```
 
-`correction_required` may return to a new `routing` attempt. `expired`, `failed`, and `cancelled` are explicit bounded stops. Transitions are allowlisted; there is no silent backward transition. Heartbeats update only lease metadata. Release is idempotent at the safe `submitted` boundary. Stale leases remain visible, and takeover requires either policy-enabled expiry or a separate human override bound to the exact state hash.
+`correction_required` may return to a new `routing` attempt. `expired`, `failed`, and `cancelled` are explicit bounded stops. Transitions are allowlisted; there is no silent backward transition. Heartbeats update only lease metadata while the task remains in an active owned state; an explicitly `expired` state rejects the previous worker's heartbeat so its identity is frozen for review. Release is idempotent at the safe `submitted` boundary. Stale leases remain visible, and takeover requires either policy-enabled expiry or a separate human override. Under the default policy, that approval is created only after explicit expiry and binds the task ID, request hash, base commit, canonical SHA-256 of the complete expired state, expired-state revision, previous worker ID, exact lease expiry, exact expiry transition time, approval time, and approving human. Claim re-reads the current remote state and compares every binding before its normal non-force compare-and-swap update. A heartbeat, timestamp or revision edit, state change, new expiry cycle, different worker/request/base, future or pre-expiry approval, or a second use after successful takeover is rejected.
 
 ## Disposable workspaces and role isolation
 
@@ -77,6 +99,32 @@ Failed attempts are retained as immutable evidence; attempt identifiers cannot b
 Each correction binds the previous patch, test, and reviewer evidence hashes. A correction always gets a new immutable attempt directory. Policy caps rounds, duration, invocations, changed files, patch bytes, and logs. Repeated failures, path expansion, scientific authority changes, real-data requirements, malformed output, and all limits stop for a human rather than retrying indefinitely.
 
 ## Operating commands
+
+The stable launcher and every operator shell entry point verify the runtime
+record before loading the operator; the loaded operator independently requires
+exactly Python 3.12 and captures its executable identity. After the Council
+tester gate, an immutable requested test whose first argument is `python` or
+`python3` is executed with that exact operator/test interpreter. The original
+argument array and effective argument array are both retained, along with
+interpreter path, version, SHA-256, environment prefix, base prefix,
+implementation, virtual-environment status, and the SHA-256 of the complete
+tracked dependency contract. Doctor, task run, and trusted-test execution each
+revalidate that contract, every active installed pin, and `pip check` through
+the recorded interpreter before proceeding. Execution remains an argument
+array in the disposable workspace with the credential-stripped environment;
+no shell activation or interpolation is introduced. Other executables remain
+subject to the tracked prefix allowlist.
+
+`doctor` checks more than remote readability. For both the code remote and
+control remote it performs `git ls-remote`, then a Git push dry run from the
+exact local commit to a fresh nonexistent ref in the required namespace:
+`council/wpi/permission-preflight-*` for code and
+`council-state/<project>/permission-preflight-*` for control. It confirms the
+probe ref is absent before and after. The bounded report distinguishes read
+success, dry-run push authorization, authentication failure, network failure,
+and branch/ref-policy refusal without returning the remote error text or URL.
+Both read and write checks must pass before any backend or model stage is
+constructed.
 
 Personal computer:
 
@@ -97,7 +145,7 @@ Hermes worker:
 wpi-council doctor --worker
 wpi-council claim <task-id>
 wpi-council heartbeat <task-id>
-wpi-council run <task-id> --backend hermes --overnight
+wpi-council run <task-id> --backend hermes
 wpi-council resume <task-id>
 wpi-council release <task-id>
 ```
@@ -115,6 +163,28 @@ An interrupted or partially written attempt directory is retained and recorded a
 
 The local CLI is the status authority; no scientist-facing admin surface is enabled. `status` and `watch` disclose only bounded state/evidence metadata, not unrestricted role output.
 
+For background operation, `start-hermes-worker.sh` and
+`stop-hermes-worker.sh` use the same recorded Python runtime as the launcher.
+Start associates one task with a random worker-instance identity, starts a
+supervisor and worker in dedicated sessions/process groups, and writes strict
+atomic mode-`0600` JSON metadata. That metadata binds the requested and
+effective command hashes, operator Python identity, kernel-derived process
+start identities, executable hashes, process group/session IDs, stop
+capability, and sleep assertion. Malformed, symlinked, wrong-mode, PID-only,
+PID-reused, or unrelated metadata is refused rather than signalled.
+
+On macOS the worker command is held under the verified absolute
+`/usr/bin/caffeinate -dimsu`; the assertion ends with the owned worker process.
+The public `--overnight` mode is accepted only inside that owned supervisor
+instance; a raw foreground invocation fails before remote preflight or model
+work. Use `start-hermes-worker.sh` for every unattended or overnight run.
+Stop is delivered to the owning supervisor, which re-verifies process identity,
+sends SIGTERM to the complete owned worker process group, waits a bounded
+period, sends SIGKILL only if that same group remains owned, and reaps the
+child. Local active metadata is removed only after verified shutdown. A
+finished worker is reported as already finished, while the configured control
+remote remains the source of truth for task evidence and lease recovery.
+
 ## Evidence and approvals
 
 `review` returns the request/base/task identities, route, worker, task branch and commit, patch/test/reviewer hashes, and automatic-gate outcome. Inspect the actual task-branch diff and run the required tests before approval.
@@ -130,7 +200,11 @@ wpi-council approve-resource-promotion <task-id> --approved-by human:<name> --pr
 wpi-council approve-resource-rollback <task-id> --approved-by human:<name> --proposal-id <id> --candidate-sha256 <sha256>
 ```
 
-Every approval binds the current request hash, state hash, base commit, final commit, patch, tests, and reviewer report. Stale or forged hashes fail. Reviewer output can never act as human approval.
+Every completion approval binds the current request, base, final commit, patch,
+tests, and reviewer identities. Stale-lock takeover uses its stricter exact
+expired-state binding described above and is recorded as consumed in the
+successful successor state. Stale, forged, modified, or replayed artifacts
+fail. Reviewer output can never act as human approval.
 
 The Resource Steward adapter delegates to the existing Phase 4 deterministic CLI. `check`, `show`, `download-candidate`, `verify-candidate`, `build-candidate`, `test-candidate`, `compare`, and `export-report` may run automatically. `promote` and `rollback` always require their own exact human artifact; task or merge approval is insufficient.
 
@@ -140,10 +214,12 @@ The Resource Steward adapter delegates to the existing Phase 4 deterministic CLI
 - Base reported stale: revise the request against the exact current remote commit. Do not mutate a claimed request.
 - Claim collision: inspect `status`. Only the remote state-ref winner owns the lease.
 - Interrupted process: inspect `status`, preserve the attempt directory, then use `resume` at a supported attempt boundary. Do not reuse a Council run ID.
-- Stale lease: keep it visible until an exact human takeover approval or policy-bound expiry is available. Default policy disables automatic takeover.
+- Stale lease: explicitly expire it before creating the exact human takeover approval. The expired state rejects further heartbeats and remains frozen for binding; default policy disables automatic takeover.
 - Task branch already exists or moved: stop and review it; the operator will not force-push or overwrite it.
 - Contract/profile hash mismatch: compare the configured live Council/Hermes installation with the audited contract. Produce and separately approve a compatibility update; never patch the live Council automatically.
 - Network failure: no state is inferred from local intent. Re-read the remote state ref and code branch before retrying.
+- Remote permission failure: inspect the bounded `doctor` failure class. Readability alone is insufficient; both the ordinary task-branch namespace and control state-ref namespace must pass the non-mutating push dry run before model stages can begin.
+- Worker stop refusal: retain the metadata and inspect it. A malformed record, reused PID, unrelated process identity, or legacy PID-only file is deliberately never treated as authority to send a signal. Remote lease recovery remains a separate operator action.
 - Handoff conflict: re-read the Obsidian note, calculate its current SHA-256, and explicitly retry `sync-handoff`; synchronization only appends sanitized summaries.
 
-See [`hermes_operator_installation.md`](hermes_operator_installation.md) for the worker bootstrap and acceptance boundary.
+See [`hermes_operator_installation.md`](hermes_operator_installation.md) for the corrected worker bootstrap and [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) for the controlled physical acceptance procedure. The latter has not yet been run on live Hermes.
