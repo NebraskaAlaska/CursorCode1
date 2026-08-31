@@ -13,6 +13,7 @@ are configured (skipped otherwise).
 """
 from __future__ import annotations
 
+import os
 import re
 import types
 from dataclasses import replace
@@ -22,6 +23,7 @@ import pandas as pd
 import pytest
 
 from flyash_phreeqc_ml import config, phreeqc_runner as pr, profiles, replicates, scenarios
+from flyash_phreeqc_ml.simulation import phreeqc_executor as E
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -233,23 +235,49 @@ def test_run_failure_propagates_phreeqc_error(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kw):
         Path(cmd[2]).write_text("ERROR: simulation did not converge\n")
-        return types.SimpleNamespace(returncode=1, stdout="", stderr="ERROR: boom")
+        return 1, "", "ERROR: boom", False, None
 
-    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    monkeypatch.setattr(E, "_bounded_subprocess_run", fake_run)
     with pytest.raises(pr.PhreeqcRunError) as exc:
         pr.run(generated, tmp_path, exe=exe, database=db, basename="bad",
                confirmation=_confirmation(generated, exe, db))
     assert "did not converge" in str(exc.value)
 
 
+def test_normal_percent_error_line_is_not_a_failure(monkeypatch, tmp_path):
+    exe, db = _fake_exe_db(tmp_path)
+    generated = _valid_input("percent-error")
+
+    def fake_run(cmd, **kw):
+        Path(cmd[2]).write_text("Percent error = 0.01\nEnd of Run\n")
+        return 0, "", "", False, None
+
+    monkeypatch.setattr(E, "_bounded_subprocess_run", fake_run)
+    output = pr.run(
+        generated, tmp_path / "safe", exe=exe, database=db,
+        confirmation=_confirmation(generated, exe, db))
+    assert output.is_file()
+
+
+def test_legacy_runner_refuses_protected_workspace(monkeypatch, tmp_path):
+    exe, db = _fake_exe_db(tmp_path)
+    generated = _valid_input("unsafe")
+    calls = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(pr.PhreeqcRunError) as exc:
+        pr.run(
+            generated, config.RAW_DIR / "legacy-unsafe", exe=exe, database=db,
+            confirmation=_confirmation(generated, exe, db))
+    assert "refusing" in str(exc.value).lower()
+    assert calls == []
+
+
 def test_run_timeout_raises(monkeypatch, tmp_path):
     exe, db = _fake_exe_db(tmp_path)
     generated = _valid_input("slow")
 
-    def fake_run(cmd, **kw):
-        raise pr.subprocess.TimeoutExpired(cmd, kw.get("timeout", 1))
-
-    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    monkeypatch.setattr(E, "_bounded_subprocess_run", lambda cmd, **kw: (
+        None, "", "", True, "PHREEQC timed out after 1s."))
     with pytest.raises(pr.PhreeqcRunError) as exc:
         pr.run(generated, tmp_path, exe=exe, database=db, timeout=1, basename="slow",
                confirmation=_confirmation(generated, exe, db))
@@ -375,6 +403,9 @@ def test_run_uses_exact_verified_absolute_paths_not_workdir_decoys(monkeypatch, 
     (workdir / "phreeqc").write_text("decoy executable")
     (workdir / "cemdata.dat").write_text("decoy database")
     monkeypatch.chdir(configured_dir)
+    # Resolve the intentionally configured basename from this test fixture even when the
+    # release image also has its canonical PHREEQC runtime on PATH.
+    monkeypatch.setenv("PATH", str(configured_dir) + os.pathsep + os.environ.get("PATH", ""))
 
     generated = _valid_input("resolved-paths")
     reviewed = pr.review_input(generated)
@@ -383,36 +414,43 @@ def test_run_uses_exact_verified_absolute_paths_not_workdir_decoys(monkeypatch, 
     calls = []
 
     def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        Path(cmd[2]).write_text("successful mocked PHREEQC output\n")
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        calls.append({
+            "command": tuple(cmd),
+            "cwd": Path(kwargs["cwd"]),
+            "executable_bytes": Path(cmd[0]).read_bytes(),
+            "database_bytes": Path(cmd[3]).read_bytes(),
+        })
+        Path(cmd[2]).write_text("successful mocked PHREEQC output\nEnd of Run\n")
+        return 0, "", "", False, None
 
-    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    monkeypatch.setattr(E, "_bounded_subprocess_run", fake_run)
     out = pr.run(
         generated, workdir, exe="phreeqc", database="cemdata.dat",
         confirmation=confirmation)
 
     assert out.exists() and len(calls) == 1
-    command, kwargs = calls[0]
-    assert command[0] == str(Path(exe).resolve())
-    assert command[3] == str(Path(database).resolve())
+    call = calls[0]
+    command = call["command"]
+    assert Path(command[0]).name == E._SNAPSHOT_EXECUTABLE
+    assert Path(command[3]).name == E._SNAPSHOT_DATABASE
     assert Path(command[0]).is_absolute() and Path(command[3]).is_absolute()
-    assert command[0] != str(workdir / "phreeqc")
-    assert command[3] != str(workdir / "cemdata.dat")
-    assert kwargs["cwd"] == str(workdir)
+    assert call["executable_bytes"] == Path(exe).read_bytes()
+    assert call["database_bytes"] == Path(database).read_bytes()
+    assert call["cwd"].parent == workdir.resolve()
 
 
 # --------------------------------------------------------------------------- #
-# Optional integration test (real PHREEQC) — runs only with a CEMDATA18-compatible
-# database, because the generated input uses CEMDATA phase names (e.g. ``Cal``).
+# Optional integration test using the official USGS database family. The historical CEMDATA
+# default remains unchanged, but release images can run this path without redistributing CEMDATA.
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not (pr.is_configured() and pr.is_cemdata_compatible()),
-                    reason="no real PHREEQC binary + CEMDATA18-compatible PHREEQC_DATABASE "
-                           "configured (the runner's input needs CEMDATA phases like 'Cal')")
+@pytest.mark.skipif(not pr.is_configured(),
+                    reason="no real PHREEQC binary + database configured")
 def test_integration_real_phreeqc(tmp_path):  # pragma: no cover - env-dependent
-    generated = pr.build_design_input(0.5, 5.0, 25.0, "atm_CO2", sample_id="it")
+    generated = pr.build_design_input(
+        0.5, 5.0, 25.0, "atm_CO2", sample_id="it", database_family="usgs")
     reviewed = pr.review_input(generated)
-    confirmation = pr.confirm_reviewed_input(reviewed)
+    confirmation = pr.confirm_reviewed_input(
+        reviewed, required_database_phases=("Calcite",))
     out = pr.run(generated, tmp_path, basename="it", confirmation=confirmation)
     keys = pr.ingest(out, condition_key="it_condition",
                      results_path=tmp_path / "results.csv",

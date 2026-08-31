@@ -568,4 +568,4 @@ def run(action, state) -> ToolOutcome:
         return ToolOutcome(ok=False, status="tool_error",
                            summary=f"That step failed ({type(exc).__name__}). "
                                    "Nothing was changed.",
-                           warnings=[f"{type(exc).__name__}: {exc}"])
+                           warnings=[f"{type(exc).__name__}: operation failed safely"])

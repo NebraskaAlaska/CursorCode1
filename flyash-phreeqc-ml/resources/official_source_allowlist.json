@@ -1,0 +1,20 @@
+{
+  "hosts": [
+    "cemdata.info",
+    "empa.ch",
+    "pubs.usgs.gov",
+    "water.usgs.gov",
+    "www.cemdata.info",
+    "www.empa.ch",
+    "www.usgs.gov"
+  ],
+  "policy": {
+    "allow_credentials": false,
+    "allowed_ports": [443],
+    "allowed_schemes": ["https"],
+    "validate_every_redirect": true,
+    "validate_final_url": true
+  },
+  "schema": "wpi.virtual-lab.official-source-allowlist",
+  "version": 1
+}

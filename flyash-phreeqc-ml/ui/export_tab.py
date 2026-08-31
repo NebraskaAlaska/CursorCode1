@@ -13,6 +13,7 @@ import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from flyash_phreeqc_ml import audit  # noqa: E402  (append-only audit log)
 from flyash_phreeqc_ml import report  # noqa: E402  (one-click validation report)
 from flyash_phreeqc_ml import run_manager  # noqa: E402
+from flyash_phreeqc_ml.security.identity import current_identity  # noqa: E402
 from flyash_phreeqc_ml.simulation import run_registry  # noqa: E402  (simulation run provenance)
 
 from ui.common import _render_mapping_status_definitions, _render_next_step, _render_valid_now_section
@@ -59,6 +60,12 @@ def _render_export_report(selected_run: str | None) -> None:
     (report.html + CSVs + figures + MANIFEST.json), which itself logs an audit event,
     then offers the folder as a zip download.
     """
+    if current_identity().is_hosted:
+        st.info(
+            "Legacy validation-report generation is unavailable in hosted mode because the "
+            "report builder consumes shared pipeline artifacts. Tenant-scoped simulation-run "
+            "and audit exports remain available below.")
+        return
     if not selected_run:
         return
     try:

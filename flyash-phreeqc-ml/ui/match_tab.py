@@ -15,6 +15,7 @@ from flyash_phreeqc_ml import phreeqc_runner  # noqa: E402  (on-demand PHREEQC, 
 from flyash_phreeqc_ml import profiles  # noqa: E402
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml import run_manager  # noqa: E402
+from flyash_phreeqc_ml.security.identity import current_identity  # noqa: E402
 from flyash_phreeqc_ml import scenarios  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_run_contract  # noqa: E402
@@ -1093,6 +1094,12 @@ def _render_mapping_section(run_name: str) -> None:
                     st.error(str(exc))
 
 def _render_match_tab(selected_run: str | None) -> None:
+    if current_identity().is_hosted:
+        st.warning(
+            "The legacy Match surface is unavailable in hosted mode because its candidate "
+            "manifest comes from a shared processed-results path. Tenant data was not opened; "
+            "use tenant-scoped durable validation records instead.")
+        return
     app_ui.render_page_header(
         "Match — link measured data to model predictions",
         f"Automatic-first: records are detected and model-prediction mappings are suggested "

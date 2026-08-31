@@ -22,6 +22,15 @@ from typing import Any, Iterable
 
 from . import config
 from .instruments import virtual_lab_machines
+from .security.identity import (
+    AuthenticationRequiredError,
+    DeploymentMode,
+    IdentityContext,
+    ROLE_MEMBER,
+    deployment_mode,
+    local_single_user_identity,
+)
+from .storage_scope import StorageScope, StorageScopeError
 
 # Schema 2 adds full-envelope integrity digests to newly written ArtifactRecord
 # and RunRecord documents. Schema-1 files remain readable without rewriting.
@@ -34,6 +43,7 @@ _ID_RE = re.compile(r"^(prj|mat|run|art)_[0-9a-f]{32}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_LOCKS_GUARD = threading.Lock()
 _REVISION_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_DELETION_LOCK = threading.RLock()
 
 ARTIFACT_ICP_REVIEW = "icp_review"
 ARTIFACT_XRD_PATTERN = "xrd_measured_pattern"
@@ -357,11 +367,33 @@ def run_envelope_hash(record: RunRecord | dict) -> str:
 class WorkspaceStore:
     """One durable authority for Phase 2 project, material, run, and active context state."""
 
-    def __init__(self, root: Path | str | None = None):
-        raw_root = Path(root or config.VIRTUAL_LAB_WORKSPACE_DIR).expanduser()
-        if any(part == ".." for part in raw_root.parts):
-            raise UnsafePathError("workspace root must not contain '..'")
-        self.root = raw_root.absolute()
+    def __init__(self, root: Path | str | None = None, *,
+                 identity: IdentityContext | None = None,
+                 storage_scope: StorageScope | None = None):
+        """Create a local-compatible or authenticated tenant-scoped store.
+
+        Passing neither ``identity`` nor ``storage_scope`` is the explicit historical
+        local-single-user mode. Hosted callers must resolve identity before invoking
+        this constructor; the tenant root is derived deterministically and guessed IDs
+        cannot cross that root.
+        """
+        if identity is None and storage_scope is None \
+                and deployment_mode() is DeploymentMode.HOSTED:
+            raise AuthenticationRequiredError(
+                "hosted workspace construction requires an authenticated identity")
+        principal = identity or (storage_scope.identity if storage_scope else
+                                 local_single_user_identity())
+        try:
+            scope = storage_scope or StorageScope.for_identity(
+                root or config.VIRTUAL_LAB_WORKSPACE_DIR, principal)
+        except StorageScopeError as exc:
+            raise UnsafePathError(str(exc)) from exc
+        if identity is not None and storage_scope is not None and identity != storage_scope.identity:
+            raise UnsafePathError("identity does not match the supplied storage scope")
+        self.identity = principal
+        self.scope = scope
+        self.base_root = scope.base_root
+        self.root = scope.tenant_root
         if self.root.exists() and self.root.is_symlink():
             raise UnsafePathError("workspace root must not be a symlink")
 
@@ -405,6 +437,39 @@ class WorkspaceStore:
         return self._path(kind, f"{self._validate_id(record_id, prefix)}.json")
 
     def _atomic_write(self, path: Path, payload: dict, *, create_only: bool = False) -> None:
+        # Destructive project deletion and ordinary record writes share this
+        # process-wide lock.  Streamlit can execute concurrent sessions in
+        # separate threads; without the lock a write that observed an active
+        # project could land after the administrator's reviewed export and leave
+        # an orphan record behind.
+        with _DELETION_LOCK:
+            self._atomic_write_locked(path, payload, create_only=create_only)
+
+    def _atomic_write_locked(
+        self, path: Path, payload: dict, *, create_only: bool = False,
+    ) -> None:
+        try:
+            relative_for_auth = path.absolute().relative_to(self.root)
+        except ValueError as exc:
+            raise UnsafePathError(f"write path escapes workspace root: {path}") from exc
+        # Per-user active-context state is writable by viewers; tenant scientific
+        # records require member/admin authorization.
+        if relative_for_auth.parts and relative_for_auth.parts[0] in {
+                "projects", "materials", "runs", "artifacts"}:
+            self.identity.require_role(ROLE_MEMBER)
+        if relative_for_auth.parts and relative_for_auth.parts[0] == "projects" \
+                and path.exists() and not create_only:
+            current_project = self._read(path, "project")
+            if current_project.get("archived") is True \
+                    and payload.get("archived") is not True:
+                raise WorkspaceStoreError("an archived project is immutable")
+        if relative_for_auth.parts and relative_for_auth.parts[0] in {
+                "materials", "runs", "artifacts"}:
+            project_id = self._validate_id(payload.get("project_id"), PROJECT_PREFIX)
+            project_payload = self._read(
+                self._record_path("projects", project_id), "project")
+            if project_payload.get("archived") is True:
+                raise WorkspaceStoreError("an archived project is immutable")
         _assert_no_secrets(payload)
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -479,6 +544,7 @@ class WorkspaceStore:
         coordination file. ``O_NOFOLLOW`` prevents a planted lock-file symlink from
         redirecting the open.
         """
+        self.identity.require_role(ROLE_MEMBER)
         logical = self._validate_id(logical_id, ARTIFACT_PREFIX)
         lock_key = f"{self.root}:{logical}"
         with _REVISION_LOCKS_GUARD:
@@ -515,6 +581,7 @@ class WorkspaceStore:
 
     def cleanup_stale_temps(self) -> int:
         """Remove only this store's abandoned atomic-write temp files."""
+        self.identity.require_role(ROLE_MEMBER)
         count = 0
         if not self.root.exists():
             return count
@@ -552,6 +619,8 @@ class WorkspaceStore:
 
     def update_project(self, project_id: str, **changes) -> ProjectRecord:
         record = self.get_project(project_id)
+        if record.archived:
+            raise WorkspaceStoreError("an archived project is immutable")
         before = record.to_dict()
         allowed = {"name", "description", "status", "metadata"}
         unknown = set(changes) - allowed
@@ -570,15 +639,204 @@ class WorkspaceStore:
     def archive_project(self, project_id: str, *, confirmation: str) -> ProjectRecord:
         if confirmation != project_id:
             raise ConfirmationRequiredError("archive confirmation must exactly match the project ID")
-        record = self.get_project(project_id)
-        record.archived = True
-        record.status = "archived"
-        record.updated_at = _now()
-        self._atomic_write(self._record_path("projects", project_id), record.to_dict())
+        with _DELETION_LOCK:
+            path = self._record_path("projects", project_id)
+            payload = self._read(path, "project")
+            record = _record_from_dict(ProjectRecord, payload)
+            payload["archived"] = True
+            payload["status"] = "archived"
+            payload["updated_at"] = _now()
+            # Preserve tolerated schema-1 extension fields. They must remain part of
+            # the subsequent reviewed export instead of disappearing as a side
+            # effect of the archive prerequisite for deletion.
+            self._atomic_write(path, payload)
+            record.archived = True
+            record.status = "archived"
+            record.updated_at = payload["updated_at"]
         context = self.get_active_context()
         if context.get("active_project_id") == project_id:
             self.set_active_context(None, None, None)
         return record
+
+    def export_project_document(self, project_id: str) -> dict:
+        """Return one deterministic, tenant-scoped project export with an integrity hash.
+
+        The export includes durable JSON records but never dereferences ``result_location``
+        paths, which could expose a server filesystem path or files outside this record store.
+        Session-only AI conversations and credentials are not durable records and therefore
+        cannot enter the export.
+        """
+        with _DELETION_LOCK:
+            return self._export_project_document_locked(project_id)
+
+    def _export_project_document_locked(self, project_id: str) -> dict:
+        project = self.get_project(project_id)
+        materials = self.list_materials(project_id)
+        runs = self.list_runs(project_id=project_id)
+        artifacts = self.list_artifacts(project_id=project_id)
+        run_documents = []
+        omitted_locations = []
+        for run in runs:
+            # Schema-1 readers deliberately tolerate extension fields for
+            # backwards compatibility.  Export the validated raw envelope so a
+            # hash-bound deletion can never discard such a field merely because
+            # the current dataclass does not project it.
+            document = self._read(
+                self._record_path("runs", run.run_id), "run")
+            if document.get("result_location"):
+                omitted_locations.append(run.run_id)
+                document["result_location"] = None
+            run_documents.append(document)
+        body = {
+            "schema": "wpi.virtual-lab.project-export",
+            "version": 1,
+            "project": self._read(
+                self._record_path("projects", project.project_id), "project"),
+            "materials": [
+                self._read(self._record_path("materials", item.material_id), "material")
+                for item in materials
+            ],
+            "runs": run_documents,
+            "artifacts": [
+                self._read(self._record_path("artifacts", item.artifact_id), "artifact")
+                for item in artifacts
+            ],
+            "omitted_external_result_locations": sorted(omitted_locations),
+            "storage_scope": self.scope.to_safe_dict(include_paths=False),
+            "notes": [
+                "Session-only AI conversation history is not persisted or exported.",
+                "External result-location paths/files are not dereferenced or exposed.",
+            ],
+        }
+        return {**body, "export_sha256": identity_hash(body)}
+
+    def export_project_bytes(self, project_id: str) -> bytes:
+        _, encoded = self.export_project_bundle(project_id)
+        return encoded
+
+    def export_project_bundle(self, project_id: str) -> tuple[dict, bytes]:
+        """Return one document and byte representation from the same locked snapshot."""
+        with _DELETION_LOCK:
+            document = self._export_project_document_locked(project_id)
+            encoded = self._encode_project_export(document)
+        return document, encoded
+
+    @staticmethod
+    def _encode_project_export(document: dict) -> bytes:
+        return (json.dumps(
+            document, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False,
+        ) + "\n").encode("utf-8")
+
+    def delete_project(
+        self,
+        project_id: str,
+        *,
+        export_sha256: str,
+        confirmation: str,
+    ) -> dict:
+        """Irreversibly remove one archived project and its tenant-scoped records.
+
+        An administrator must bind the request to the hash of the exact current export.
+        Files outside this WorkspaceStore—including legacy runs and external simulation
+        workspaces—are never guessed or recursively deleted.
+        """
+        self.identity.require_role("admin")
+        with _DELETION_LOCK:
+            project = self.get_project(project_id)
+            if not project.archived:
+                raise WorkspaceStoreError("archive the project before permanent deletion")
+            export = self.export_project_document(project_id)
+            observed_export_sha256 = export["export_sha256"]
+            if export_sha256 != observed_export_sha256:
+                raise ConfirmationRequiredError(
+                    "project export changed; generate and review a fresh export")
+            expected = f"DELETE {project_id} {observed_export_sha256}"
+            if confirmation != expected:
+                raise ConfirmationRequiredError(
+                    "delete confirmation must exactly match the project ID and export SHA-256")
+
+            identifiers = {
+                "runs": [item["run_id"] for item in export["runs"]],
+                "artifacts": [item["artifact_id"] for item in export["artifacts"]],
+                "materials": [item["material_id"] for item in export["materials"]],
+                "projects": [project_id],
+            }
+            plan = [
+                self._record_path(kind, record_id)
+                for kind in ("runs", "artifacts", "materials", "projects")
+                for record_id in identifiers[kind]
+            ]
+            for path in plan:
+                if path.is_symlink() or not path.is_file():
+                    raise UnsafePathError(
+                        "project deletion refused because an exact record path is unavailable")
+
+            # Clear every affected context in this exact tenant before deleting
+            # records. Local mode always uses active_context.json even if an
+            # unrelated `contexts/` directory happens to exist.
+            if self.scope.is_local_compatibility_mode:
+                context = self.get_active_context()
+                if context.get("active_project_id") == project_id \
+                        or context.get("active_material_id") in identifiers["materials"] \
+                        or context.get("active_run_id") in identifiers["runs"]:
+                    self.set_active_context(None, None, None)
+            else:
+                contexts = self._path("contexts")
+                if not contexts.exists():
+                    contexts = None
+            if not self.scope.is_local_compatibility_mode and contexts is not None:
+                if contexts.is_symlink():
+                    raise UnsafePathError("tenant contexts directory must not be a symlink")
+                for path in sorted(contexts.glob("subject_*.json")):
+                    context = self._read(path)
+                    if context.get("active_project_id") == project_id \
+                            or context.get("active_material_id") in identifiers["materials"] \
+                            or context.get("active_run_id") in identifiers["runs"]:
+                        self._atomic_write(path, {
+                            "schema_version": SCHEMA_VERSION,
+                            "active_project_id": None,
+                            "active_material_id": None,
+                            "active_run_id": None,
+                            "updated_at": _now(),
+                        })
+            for path in plan:
+                path.unlink()
+            return {
+                "project_id": project_id,
+                "export_sha256": observed_export_sha256,
+                "deleted_records": {key: len(value) for key, value in identifiers.items()},
+                "external_result_files_deleted": False,
+                "recoverable": False,
+            }
+
+    def delete_current_account_state(self, *, confirmation: str) -> dict:
+        """Delete the current principal's only persisted per-user state.
+
+        Scientific records are tenant-shared and are not owned by one account. They remain
+        until an administrator exports and deletes their project. Identity-provider account
+        removal is deliberately outside this application and is an operator action.
+        """
+        namespace = self.scope.session_namespace
+        expected = f"DELETE ACCOUNT {namespace[:16]}"
+        if confirmation != expected:
+            raise ConfirmationRequiredError(
+                "account-state confirmation must exactly match the displayed opaque account ID")
+        path = self._active_context_path()
+        if path.is_symlink():
+            raise UnsafePathError("account context must not be a symlink")
+        deleted = False
+        if path.exists():
+            if not path.is_file():
+                raise UnsafePathError("account context must be a regular file")
+            path.unlink()
+            deleted = True
+        return {
+            "account_namespace": namespace[:16],
+            "active_context_deleted": deleted,
+            "session_ai_history_persisted": False,
+            "tenant_scientific_records_deleted": False,
+            "identity_provider_account_deleted": False,
+        }
 
     def create_material(self, project_id: str, name: str, *, material_id: str | None = None,
                         **values) -> MaterialRecord:
@@ -1309,7 +1567,7 @@ class WorkspaceStore:
                 if not self.run_staleness(record)[0]]
 
     def get_active_context(self) -> dict:
-        path = self._path("active_context.json")
+        path = self._active_context_path()
         if not path.exists():
             return {"schema_version": SCHEMA_VERSION, "active_project_id": None,
                     "active_material_id": None, "active_run_id": None, "updated_at": None}
@@ -1343,8 +1601,15 @@ class WorkspaceStore:
         payload = {"schema_version": SCHEMA_VERSION, "active_project_id": project_id,
                    "active_material_id": material_id, "active_run_id": run_id,
                    "updated_at": _now()}
-        self._atomic_write(self._path("active_context.json"), payload)
+        self._atomic_write(self._active_context_path(), payload)
         return payload
+
+    def _active_context_path(self) -> Path:
+        try:
+            relative = self.scope.active_context_path.relative_to(self.root)
+        except ValueError as exc:
+            raise UnsafePathError("active context path escapes tenant root") from exc
+        return self._path(*relative.parts)
 
     def _list_records(self, kind: str, cls, expected_kind: str):
         directory = self._path(kind)
@@ -1361,9 +1626,12 @@ class WorkspaceStore:
 
     def diagnostics(self) -> dict:
         context = self.get_active_context()
+        reveal_path = self.scope.is_local_compatibility_mode or self.identity.is_admin
         return {
             "schema_version": SCHEMA_VERSION,
-            "storage_root": str(self.root),
+            "storage_root": str(self.root) if reveal_path else "tenant-scoped (path hidden)",
+            "identity": self.identity.to_safe_dict(),
+            "storage_scope": self.scope.to_safe_dict(include_paths=reveal_path),
             "projects": len(self.list_projects(include_archived=True)),
             "materials": len(self.list_materials()),
             "runs": len(self.list_runs()),

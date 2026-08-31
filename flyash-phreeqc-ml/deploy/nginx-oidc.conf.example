@@ -1,0 +1,26 @@
+# Optional external identity-aware-proxy integration point. The application still
+# requires its own verified Streamlit st.user OIDC identity and invite allow-list;
+# proxy headers never replace that application identity.
+#
+# Do not enable this fragment by itself. Replace the basic-auth directives in
+# nginx.conf only after a reviewed OIDC proxy is reachable as `oidc-proxy` on
+# the private backend network and its client secret/cookie secret are provided
+# through the deployment secret manager, never environment files in Git.
+
+location = /oauth2/auth {
+    internal;
+    proxy_pass http://oidc-proxy:4180/oauth2/auth;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Original-URI $request_uri;
+}
+
+location /oauth2/ {
+    proxy_pass http://oidc-proxy:4180;
+    proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+}
+
+# Add inside location /:
+#   auth_request /oauth2/auth;
+#   error_page 401 = /oauth2/sign_in;
+#   proxy_set_header X-Authenticated-User $upstream_http_x_auth_request_user;

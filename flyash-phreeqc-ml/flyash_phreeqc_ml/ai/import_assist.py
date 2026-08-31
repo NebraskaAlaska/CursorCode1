@@ -7,8 +7,8 @@ existing review-and-confirm UI, where the human accepts or rejects it.
 
 Design rules (all enforced here):
 
-* **Disabled by default.** Every AI call requires ``ANTHROPIC_API_KEY`` in the
-  environment *and* the ``anthropic`` SDK installed. If either is missing,
+* **Disabled by default.** Every AI call goes through the shared provider
+  configuration and global live-AI gate. If no approved provider is usable,
   :func:`is_enabled` returns ``False`` and the public functions degrade to an
   empty / rule-only result — the importer works fully without this module.
 * **Minimal data leaves the machine.** Only column headers + the first
@@ -24,8 +24,8 @@ Design rules (all enforced here):
 * **No logging of uploaded content.** This module never prints or logs the
   headers, rows, or sample ids it receives.
 
-The Anthropic SDK is imported lazily inside :func:`_resolve_client` so importing
-this module (and the whole package) never requires ``anthropic`` to be installed.
+Provider clients are resolved lazily inside :func:`_resolve_client`, so importing
+this module performs no provider connection, discovery, or download.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ ALLOWED_UNIT_GUESSES = ("mM", "mg/L", "ppm", "ppb", None)
 # Shown once per session in the AI-assist expander before anything is sent.
 DATA_LEAVES_MACHINE_NOTICE = (
     "These optional suggestions send your column headers and the first "
-    f"{MAX_SAMPLE_ROWS} rows (or a batch of sample names) to the Anthropic API — "
+    f"{MAX_SAMPLE_ROWS} rows (or a batch of sample names) to the configured AI provider — "
     "data leaves this machine for this feature only. Nothing is saved or sent "
     "anywhere else, and every suggestion lands in the review step below for you "
     "to accept or reject."
@@ -83,10 +83,7 @@ CONSENT_LABEL = "I understand and allow sending headers + a preview to the API f
 # Enablement + client resolution
 # --------------------------------------------------------------------------- #
 def is_enabled() -> bool:
-    """True only when an API key *and* the ``anthropic`` SDK are available.
-
-    Delegates to the shared AI config so the key/model/provider rules live in one place.
-    """
+    """Delegate to the global provider/master-switch authority."""
     return ai_config.is_enabled()
 
 

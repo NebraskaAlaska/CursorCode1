@@ -16,8 +16,15 @@ SECRET = "sk-ant-NEVER-LEAK-this-value-987"
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for name in (ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV):
+    for name in (
+        ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV,
+        ai_config.AI_PROVIDER_ENV, ai_config.AI_MODEL_ENV, ai_config.AI_BASE_URL_ENV,
+        ai_config.AI_LOCATION_ENV, ai_config.AI_ALLOWED_HOSTS_ENV,
+        ai_config.AI_ADMIN_MANAGED_ENV, ai_config.AI_API_KEY_ENV,
+        ai_config.OPENAI_API_KEY_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ai_config.DEPLOYMENT_MODE_ENV, "local")
     ai_config.clear_runtime_overrides()
     monkeypatch.setattr(ai_config, "_secrets_get", lambda name: None)
     yield

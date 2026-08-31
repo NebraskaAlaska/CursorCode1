@@ -195,7 +195,30 @@ Validate/Compare graphs. (Pinned by `tests/test_ai_boundary.py`.)
 
 ---
 
-## Install
+## Phase 5 controlled Council operator
+
+Phase 5 adds a trusted-host `wpi-council` control plane for bounded cross-computer source tasks. The personal computer submits and monitors immutable requests through a Git-backed remote lock; a configured Hermes worker runs the existing hash-verified Council router, launcher, coder/tester gates, and reviewer against disposable clones. Model roles never receive repository credentials or a writable live checkout. Successful automation may push only `council/wpi/<task-id>` and stops at `awaiting_human_review`—it never merges, deploys, changes `main`, or promotes/rolls back a scientific resource.
+
+The repository and every task branch are public. Only public/sanitized task content is allowed without a separate private control remote; raw role transcripts, credentials, private research data, database bytes, model weights, and generated scientific output are prohibited. See [`docs/council_operator.md`](docs/council_operator.md) for architecture, requests, states, recovery, and approvals, and [`docs/hermes_operator_installation.md`](docs/hermes_operator_installation.md) for the portable worker bootstrap.
+
+---
+
+## Phase 4 release-candidate distribution
+
+The supported invite-only beta distribution is a checksum-pinned, multi-stage, non-root container with separate local and authenticated-server Compose bundles. It includes official USGS PHREEQC `3.8.6-17100`, databases at `/opt/phreeqc/database/`, official examples under `/opt/phreeqc/share/examples/`, and the complete USGS rights notice. The source archive SHA-256 is `b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1`; bundled `phreeqc.dat` is `59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10`.
+
+The GitHub repository `NebraskaAlaska/CursorCode1` is currently **public**. Every branch in a public repository, including the Phase 4 correction branch, is publicly readable. Repository visibility does not make an unpromoted container candidate a public service or accepted scientific release. Never commit real/private research data, secrets or credentials, CEMDATA or other unapproved database bytes, model weights, or generated scientific outputs. Hosted user data remains in deployment storage outside Git. Any future repository-visibility change is a separate owner decision.
+
+```bash
+./scripts/launch-local.sh --build
+./scripts/check-local-install.sh
+```
+
+Windows equivalents are under `scripts/*.ps1`. AI is disabled by default. User state persists in named volumes; stop retains it, and backup/restore covers all five durable roots. Raw/local records, downloaded databases, models, secrets, and workspaces are excluded from every image target.
+
+See [`docs/local_installation.md`](docs/local_installation.md), [`docs/hosted_deployment.md`](docs/hosted_deployment.md), [`docs/resource_steward.md`](docs/resource_steward.md), [`docs/ci_release.md`](docs/ci_release.md), and [`docs/NSF_DEMO_SCRIPT.md`](docs/NSF_DEMO_SCRIPT.md). Server Compose fails without auth/TLS paths and exposes neither app nor optional Ollama directly. A release candidate is not promoted or deployed merely because its source branch is readable, and an official example is an operability check—not experimental validation.
+
+## Developer install
 
 ```bash
 python3 -m venv .venv
@@ -282,8 +305,10 @@ The thermodynamic **database controls which minerals/phases PHREEQC can predict*
   speciates Na/Ca/Si/Al/Fe and defines common minerals (Calcite, Gibbsite, SiO2(a), Gypsum…). But
   it is **weak for high-pH cementitious systems**: it lacks Portlandite, Ettringite, C-S-H, so a
   fly-ash alkaline-activation prediction is under-constrained.
-- **CEMDATA18** is the cement-chemistry database designed for these systems. It is **not
-  redistributable**, so this project **never ships it**. If you have a licensed copy:
+- **CEMDATA18** is a cement-chemistry database designed for these systems. Reviewed official
+  evidence did not establish explicit redistribution permission, so its release state is
+  **`external_only`**: this project does not bundle, mirror, or commit it. A local user or hosted
+  administrator may import an officially obtained copy only after rights confirmation and hashing:
 
 ```bash
 export PHREEQC_DATABASE=/path/to/CEMDATA18-xx.dat
@@ -361,7 +386,8 @@ PHREEQC)** require `PHREEQC_EXE` + `PHREEQC_DATABASE` configured.
   precipitation and saturation-index results from the *same* input.
 - **`phreeqc.dat` is fine for a smoke test but weak for cementitious high-pH systems** (no
   Portlandite/Ettringite/C-S-H). High-pH fly-ash chemistry needs **CEMDATA18**.
-- **CEMDATA18 is not shipped** (not redistributable) — you supply it locally.
+- **CEMDATA18 is `external_only`** because reviewed evidence did not establish redistribution
+  permission; an authorized user/admin supplies and rights-confirms it outside the release.
 - **Simulation outputs are not validated** until compared with measured / lab data in the
   **Compare** tab. A near-zero residual only indicates agreement **if the mapping is
   scientifically valid**.

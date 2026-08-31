@@ -103,6 +103,7 @@ def _render_evidence_library(
         "Needs review and only the manual review surface can accept or reject it.")
 
     cfg = ai_config.resolve_config()
+    live_ai_enabled = ai_config.is_enabled()
 
     # --- search controls --------------------------------------------------- #
     with st.container(border=True):
@@ -122,12 +123,12 @@ def _render_evidence_library(
                 st.session_state[_rk(selected_run, "research")] = research_agent.research(
                     query, domain=domain, sources=sources or list(ss.DEFAULT_SEARCH_SOURCES))
 
-    _render_results(store, context, selected_run, domain, cfg)
+    _render_results(store, context, selected_run, domain, cfg, live_ai_enabled)
     _render_manual_entry(store, context, domain)
     _render_evidence_table(selected_run, domain)
 
 
-def _render_results(store, context, run, domain, cfg) -> None:
+def _render_results(store, context, run, domain, cfg, live_ai_enabled: bool) -> None:
     res = st.session_state.get(_rk(run, "research"))
     if res is None:
         return
@@ -170,7 +171,7 @@ def _render_candidate(store, context, schema_kind, i, sc, consent, cfg) -> None:
             st.markdown(f"[Open source ↗]({cand.url})")
         col1, col2 = st.columns([1, 3])
         target_ready = _durable_target(store, context) is not None
-        disabled = not (sc.has_extractable_data and consent and cfg.enabled and target_ready)
+        disabled = not (sc.has_extractable_data and consent and live_ai_enabled and target_ready)
         if col1.button("Extract evidence", key=f"evlib_extract_{i}", disabled=disabled):
             with st.spinner("Extracting (AI reads the abstract; values are cited + confidence-scored)…"):
                 ev = extraction.extract_evidence(cand, schema_kind)
@@ -187,14 +188,14 @@ def _render_candidate(store, context, schema_kind, i, sc, consent, cfg) -> None:
                 st.error(f"Could not create durable evidence: {exc}")
         if not target_ready:
             col2.caption("Select an active project and material before saving an extraction.")
-        elif disabled and not cfg.enabled:
+        elif disabled and not live_ai_enabled:
             col2.caption("Enable AI in **Settings** + consent above to extract values from the abstract.")
         elif disabled and not sc.has_extractable_data:
             col2.caption("No clear numeric data in the abstract — open the paper or enter values manually.")
 
 
 def _extraction_consent(cfg) -> bool:
-    if not cfg.enabled:
+    if not live_ai_enabled:
         st.caption("⚪ AI extraction needs an API key (configure in **Settings**). You can still "
                    "search, rank, and add papers/values manually.")
         return False

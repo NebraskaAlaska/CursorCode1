@@ -8,7 +8,9 @@ use) and reports, transparently, which phases it actually defines.
 
 It is conservative and honest:
 
-* It **reads** the configured database (never ships one — CEMDATA18 is not redistributable).
+* It **reads** the configured database and never ships CEMDATA18: explicit redistribution
+  permission was not found in the reviewed official evidence, so policy is external-only and
+  user/administrator supplied.
 * It **never pretends a missing phase exists**: a phase is "available" only if its exact name
   appears at the start of a line in the database text (``^Calcite\\b`` matches ``Calcite`` but
   not ``Calcite_xyz``).

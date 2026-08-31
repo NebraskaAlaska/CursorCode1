@@ -16,6 +16,14 @@ env/
 .env
 *.env
 .streamlit/secrets.toml
+*.pem
+*.key
+*.p12
+*.pfx
+deploy/auth/*
+!deploy/auth/.gitkeep
+deploy/tls/*
+!deploy/tls/.gitkeep
 
 # Generated artifacts (re-creatable from raw data via the scripts)
 data/processed/
@@ -33,6 +41,28 @@ outputs/virtual_lab_workspace/
 # Trained ML prediction-model artifacts + cards (project-level fallback registry). Per-run
 # registries live under experiments/*/outputs/ (already ignored). Models are not committed.
 outputs/model_registry/
+
+# Phase 4 installed/candidate scientific resources stay outside Git. Only
+# source-controlled JSON manifests and rights notices belong in the repository.
+resources/installed/
+resources/downloads/
+resources/candidates/
+resources/active/
+databases/
+*.dat
+*.tar
+*.tar.gz
+*.tgz
+
+# Model binaries and local provider state are external resources.
+models/
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.pt
+*.pth
+*.bin
 
 # Real / generated measured-experimental data — do NOT commit by default.
 # These are research data (confidential) or re-creatable run sheets. The ONLY
@@ -62,8 +92,16 @@ data/raw/icp_mix_design/*.csv
 # generated artifacts; do NOT commit by default. Only experiments/README.md is
 # tracked. (Comments must be on their own line — an inline '#' is part of the pattern.)
 experiments/*/data/*.csv
+experiments/*/data/*.json
+experiments/*/data/*.jsonl
+experiments/*/data/*.xlsx
+experiments/*/data/*.xls
 experiments/*/outputs/
 experiments/*/run_config.yaml
+
+# Local backup/restore archives contain user records and must never enter Git.
+backups/
+wpi-virtual-lab-backup-*.tar.gz
 
 # OS / editor cruft
 .DS_Store

@@ -22,7 +22,9 @@ phases (**Portlandite, Ettringite, C-S-H**) that actually buffer Ca/Al/Si at pH 
 `phreeqc.dat`, a fly-ash alkaline-activation prediction under-constrains Ca/Al/Si solubility.
 
 **CEMDATA18** is the cementitious thermodynamic database designed for exactly these systems. It is
-**not redistributable**, so the project never ships it.
+**`external_only`** because reviewed official evidence did not establish explicit redistribution
+permission. The project does not bundle, mirror, or commit it; a user/admin imports an officially
+obtained copy only after rights confirmation and hashing.
 
 ## Configuring CEMDATA18 (if you have it locally)
 
@@ -84,6 +86,22 @@ warning, and you set `PHREEQC_DATABASE` and re-generate.
 Neither is a validated result. Precipitation claims are only as strong as the phases and database
 support them, and the whole output remains a **model prediction** until compared to measured data.
 
+## Database extensions are sealed Steward candidates
+
+A database extension is not a standalone database and is never automatically concatenated with a
+base. Its manifest declares its own exact filename plus the required base filename and family.
+During candidate testing, the Resource Steward resolves exactly one base and binds both resources'
+IDs, installation IDs, versions, and SHA-256 identities into a combined identity. Missing,
+ambiguous, wrong-family, wrong-filename, changed-byte, symlink, and traversal cases fail closed.
+
+The Steward reads the exact verified extension bytes and mechanically creates one self-contained
+PHREEQC smoke input from those bytes plus a fixed Steward-owned template. It runs both direct
+PHREEQC compatibility and the authoritative project review/confirmation/executor path against the
+exact base. No user-controlled include target is created, and ordinary `INCLUDE`/`INCLUDE$`
+execution remains prohibited. Promotion requires the tested identity and explicit human synthetic
+test confirmation; rollback preserves the prior manifest and historical run references cannot
+rebind to replacement bytes. See [`resource_steward.md`](resource_steward.md).
+
 ## Implementation
 
 - `flyash_phreeqc_ml/simulation/database_compatibility.py` — `DatabaseInfo` / `PhaseAvailability` /
@@ -98,4 +116,5 @@ support them, and the whole output remains a **model prediction** until compared
   the same `database_compatibility.database_defines_phases`, so its integration test runs **only**
   when the configured database defines the CEMDATA phases (`Cal`, `Portlandite`) it templates — it
   **skips** on `phreeqc.dat` instead of failing.
-- Covered by `tests/test_database_compatibility.py`; boundaries by `tests/test_ai_boundary.py`.
+- Covered by `tests/test_database_compatibility.py`, `tests/test_resource_steward_phase4.py`, and
+  `tests/test_phreeqc_executor.py`; boundaries by `tests/test_ai_boundary.py`.

@@ -10,6 +10,7 @@ import app_ui
 from flyash_phreeqc_ml import workspace_store
 from flyash_phreeqc_ml.instruments import xrd_advisory as xrd
 from flyash_phreeqc_ml.instruments import xrd_records
+from ui.common import _guard_uploaded_file
 
 
 def _records(store, context):
@@ -147,13 +148,16 @@ def _render_pattern_import(store, project, material, state: dict) -> None:
         try:
             if upload is None:
                 raise xrd.XrdDataError("choose a measured CSV first")
+            validated = _guard_uploaded_file(upload, allowed_extensions={".csv"})
+            if validated is None:
+                raise xrd.XrdDataError("the measured CSV did not pass validation")
             mapping = {}
             if two_theta_column.strip():
                 mapping["two_theta"] = two_theta_column.strip()
             if intensity_column.strip():
                 mapping["intensity"] = intensity_column.strip()
             pattern = xrd.import_measured_pattern_csv(
-                upload.getvalue(),
+                validated.data,
                 source_filename=upload.name,
                 metadata={
                     "project_id": project.project_id,
@@ -177,7 +181,7 @@ def _render_pattern_import(store, project, material, state: dict) -> None:
                                   else xrd.DUPLICATE_REJECT_LATER),
             )
             state["pattern_preview"] = pattern
-            state["pattern_source_bytes"] = upload.getvalue()
+            state["pattern_source_bytes"] = validated.data
             _save_state(project, material, state)
             st.success("Measured signal imported for review; no phase conclusion was produced.")
         except (ValueError, workspace_store.WorkspaceStoreError) as exc:
@@ -322,6 +326,9 @@ def _render_reference_import(store, project, material, state: dict) -> None:
         try:
             if upload is None:
                 raise xrd.XrdDataError("choose a CSV or JSON reference first")
+            validated = _guard_uploaded_file(upload, allowed_extensions={".csv", ".json"})
+            if validated is None:
+                raise xrd.XrdDataError("the reference file did not pass validation")
             metadata = {
                 "phase_name": phase_name, "formula": formula, "polymorph": polymorph,
                 "source_name": source_name, "source_record_id": source_record_id,
@@ -337,11 +344,11 @@ def _render_reference_import(store, project, material, state: dict) -> None:
             }
             if upload.name.lower().endswith(".json"):
                 reference = xrd.import_reference_json(
-                    upload.getvalue(), source_filename=upload.name,
+                    validated.data, source_filename=upload.name,
                     source_metadata=metadata)
             else:
                 reference = xrd.import_reference_csv(
-                    upload.getvalue(), source_filename=upload.name,
+                    validated.data, source_filename=upload.name,
                     source_metadata=metadata)
             state["reference_preview"] = reference
             _save_state(project, material, state)

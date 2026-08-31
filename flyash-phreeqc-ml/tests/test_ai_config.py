@@ -17,8 +17,15 @@ SECRET = "sk-ant-SECRETVALUE-do-not-leak-123"
 @pytest.fixture(autouse=True)
 def _clean_ai_env(monkeypatch):
     """Every test starts env-only: no key, no overrides, no Streamlit secrets."""
-    for name in (ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV):
+    for name in (
+        ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV,
+        ai_config.AI_PROVIDER_ENV, ai_config.AI_MODEL_ENV, ai_config.AI_BASE_URL_ENV,
+        ai_config.AI_LOCATION_ENV, ai_config.AI_ALLOWED_HOSTS_ENV,
+        ai_config.AI_ADMIN_MANAGED_ENV, ai_config.AI_API_KEY_ENV,
+        ai_config.OPENAI_API_KEY_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ai_config.DEPLOYMENT_MODE_ENV, "local")
     ai_config.clear_runtime_overrides()
     # Outside a Streamlit runtime this already returns None; pin it so a stray secrets.toml
     # on the dev machine can never make these tests flaky. Individual tests re-patch it.

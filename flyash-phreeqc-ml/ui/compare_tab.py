@@ -22,6 +22,7 @@ from flyash_phreeqc_ml.ai import assistant as ai_assistant  # noqa: E402  (groun
 from flyash_phreeqc_ml.compare import comparison_inclusion  # noqa: E402
 from flyash_phreeqc_ml.compare import inclusion as compare_inclusion  # noqa: E402
 from flyash_phreeqc_ml.ml import residual_stats  # noqa: E402  (descriptive bias stats)
+from flyash_phreeqc_ml.security.identity import current_identity  # noqa: E402
 from flyash_phreeqc_ml.viz import compare_plots  # noqa: E402
 
 from ui.common import (_png_provenance_caption, _render_legacy_icp_qc_warning,
@@ -856,6 +857,12 @@ def _render_results_tab(selected_run: str | None) -> None:
 
 def _render_compare_tab(selected_run: str | None) -> None:
     """Run the workflow and read the comparison results (+ interpretation tools)."""
+    if current_identity().is_hosted:
+        st.warning(
+            "The legacy Compare surface is unavailable in hosted mode because it reads and "
+            "writes shared pipeline/report paths. Use tenant-scoped durable run records; no "
+            "legacy comparison, script, assistant tool, or export action was opened.")
+        return
     app_ui.render_page_header(
         "Compare — run the workflow and read the comparison",
         "Run the pipeline for this run, then read the measured-vs-model comparison: "
@@ -984,9 +991,9 @@ def _render_assistant(selected_run: str | None) -> None:
         return
     if not ai_assistant.is_enabled():
         st.caption(
-            "Disabled: set `ANTHROPIC_API_KEY` and install the `anthropic` SDK to enable the "
-            "assistant. It answers only from this run's own tool results — it never invents "
-            "numbers and never changes anything.")
+            "Disabled: configure an approved provider and explicitly enable live AI in "
+            "Settings & Diagnostics. The assistant answers only from this run's own tool "
+            "results — it never invents numbers and never changes anything.")
         return
 
     st.caption(ai_assistant.ASSISTANT_DATA_NOTICE)

@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
 import app_ui
 from flyash_phreeqc_ml import phase3_artifacts, run_manager, workspace_store
+from flyash_phreeqc_ml.security.identity import IdentityContext
 from flyash_phreeqc_ml.instruments import icp_processor
 from flyash_phreeqc_ml.instruments import virtual_lab_machine_runner as machine_runner
 from flyash_phreeqc_ml.instruments import virtual_lab_machines as machines
-from flyash_phreeqc_ml.simulation import phreeqc_executor
+from flyash_phreeqc_ml.simulation import phreeqc_executor, run_registry
 from ui import phase3_workflows
 
 NAV_PAGES = (
@@ -73,8 +76,8 @@ _SCIENTIFIC_SESSION_PREFIXES = (
 )
 
 
-def get_store() -> workspace_store.WorkspaceStore:
-    return workspace_store.WorkspaceStore()
+def get_store(identity: IdentityContext | None = None) -> workspace_store.WorkspaceStore:
+    return workspace_store.WorkspaceStore(identity=identity)
 
 
 def _safe_context(store: workspace_store.WorkspaceStore) -> dict:
@@ -428,6 +431,47 @@ def render_projects(store, context) -> None:
                         st.rerun()
                     except workspace_store.WorkspaceStoreError as exc:
                         st.error(str(exc))
+            try:
+                export_document, export_bytes = store.export_project_bundle(record.project_id)
+                st.download_button(
+                    "Download tenant-scoped project export",
+                    data=export_bytes,
+                    file_name=f"{record.project_id}-export.json",
+                    mime="application/json",
+                    key=f"project_export_{record.project_id}",
+                )
+                st.caption(f"Export SHA-256: `{export_document['export_sha256']}`. "
+                           "External result paths/files and session-only AI history are not included.")
+            except workspace_store.WorkspaceStoreError as exc:
+                st.error(f"Project export unavailable: {exc}")
+                export_document = None
+            if record.archived and store.identity.is_admin and export_document:
+                with st.expander("Permanently delete archived project", expanded=False):
+                    st.warning("This irreversibly deletes the project, material, run, and artifact "
+                               "JSON records in this tenant. External/legacy files are not guessed "
+                               "or deleted. Download and verify the export first.")
+                    expected_delete = (
+                        f"DELETE {record.project_id} {export_document['export_sha256']}")
+                    delete_confirmation = st.text_input(
+                        "Type the exact project ID + export hash confirmation",
+                        key=f"project_delete_confirm_{record.project_id}",
+                        help=expected_delete,
+                    )
+                    if st.button(
+                        "Delete archived project permanently",
+                        key=f"project_delete_{record.project_id}",
+                        disabled=delete_confirmation != expected_delete,
+                    ):
+                        try:
+                            store.delete_project(
+                                record.project_id,
+                                export_sha256=export_document["export_sha256"],
+                                confirmation=delete_confirmation,
+                            )
+                            st.success("Project records deleted. This operation is not recoverable.")
+                            st.rerun()
+                        except workspace_store.WorkspaceStoreError as exc:
+                            st.error(str(exc))
 
 
 def render_legacy_run_manager() -> str | None:
@@ -1253,8 +1297,200 @@ def _render_run_rows(store, records, compact=False, *, key_prefix="run", allow_r
                              "schema_version": record.schema_version})
 
 
+_PLANNER_RESOURCE_PROVENANCE_FIELDS = (
+    "phreeqc_version",
+    "runtime_resource_id",
+    "runtime_installation_id",
+    "executable_sha256",
+    "database_resource_id",
+    "database_version",
+    "database_installation_id",
+    "database_sha256",
+    "environment_identity_hash",
+    "container_image_digest",
+    "runtime_manifest_sha256",
+    "resource_catalog_hash",
+    "resource_catalog_generation",
+    "resource_bootstrap_result_sha256",
+    "knowledge_pack_hash",
+    "source_manifest_sha256",
+    "app_version",
+    "app_vcs_ref",
+    "resource_identity_status",
+)
+
+
+def _planner_execution_state(metadata: dict) -> dict:
+    """Return an execution-only status view without inferring validation success."""
+    outputs = metadata.get("outputs") if isinstance(metadata, dict) else None
+    outputs = outputs if isinstance(outputs, list) else []
+    status_counts: dict[str, int] = {}
+    parse_counts: dict[str, int] = {}
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        status = str(output.get("status") or "status_not_recorded")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        parse_status = str(output.get("parse_status") or "parse_status_not_recorded")
+        parse_counts[parse_status] = parse_counts.get(parse_status, 0) + 1
+
+    if not status_counts:
+        raw_counts = metadata.get("execution_status_summary") \
+            if isinstance(metadata, dict) else None
+        if isinstance(raw_counts, dict):
+            for status, count in raw_counts.items():
+                try:
+                    numeric_count = int(count)
+                except (TypeError, ValueError):
+                    continue
+                if numeric_count >= 0:
+                    status_counts[str(status)] = numeric_count
+
+    total = sum(status_counts.values())
+    succeeded = status_counts.get(phreeqc_executor.STATUS_SUCCESS, 0)
+    if total == 0:
+        label, tone = "Execution outcome not recorded", "warning"
+    elif succeeded == total:
+        incomplete_parse = sum(
+            count for status, count in parse_counts.items()
+            if status != phreeqc_executor.PARSE_PARSED
+        )
+        if incomplete_parse:
+            label = "Execution succeeded; parsing was incomplete or not recorded"
+            tone = "warning"
+        else:
+            label, tone = "Execution succeeded for all recorded scenarios", "success"
+    elif succeeded:
+        label, tone = "Mixed PHREEQC execution outcomes", "warning"
+    else:
+        label, tone = "No recorded scenario succeeded", "error"
+    return {
+        "label": label,
+        "tone": tone,
+        "status_counts": status_counts,
+        "parse_status_counts": parse_counts,
+        "recorded_outcomes": total,
+    }
+
+
+def _planner_resource_identities(metadata: dict) -> list[dict]:
+    """Read saved identities only; never rebind a historical run to active resources."""
+    candidates = metadata.get("scientific_resource_identities") \
+        if isinstance(metadata, dict) else None
+    candidates = list(candidates) if isinstance(candidates, list) else []
+    for output in metadata.get("outputs", []) if isinstance(metadata, dict) else []:
+        identity = output.get("resource_identity") if isinstance(output, dict) else None
+        if isinstance(identity, dict):
+            candidates.append(identity)
+
+    identities: list[dict] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        public = {
+            field: candidate[field]
+            for field in _PLANNER_RESOURCE_PROVENANCE_FIELDS
+            if candidate.get(field) is not None
+        }
+        marker = json.dumps(public, sort_keys=True, default=str)
+        if public and marker not in seen:
+            seen.add(marker)
+            identities.append(public)
+    return identities
+
+
+def _planner_provenance_payload(metadata: dict) -> dict:
+    """Whitelisted immutable planner provenance for the read-only Results disclosure."""
+    outcomes = []
+    raw_outputs = metadata.get("outputs") if isinstance(metadata, dict) else None
+    for output in raw_outputs if isinstance(raw_outputs, list) else []:
+        if not isinstance(output, dict):
+            continue
+        outcomes.append({
+            "scenario_id": output.get("scenario_id"),
+            "execution_status": output.get("status"),
+            "parse_status": output.get("parse_status"),
+            "executed_at": output.get("executed_at"),
+            "input_sha256": output.get("input_sha256"),
+            "runtime_seconds": output.get("runtime_seconds"),
+        })
+    state = _planner_execution_state(metadata)
+    return {
+        "run_id": metadata.get("run_id"),
+        "saved_at": metadata.get("created_at"),
+        "record_label": metadata.get("label_note") or run_registry.SIM_RUN_LABEL,
+        "app_version_at_save": metadata.get("app_version"),
+        "execution_status_summary": state["status_counts"],
+        "parse_status_summary": state["parse_status_counts"],
+        "scenario_outcomes": outcomes,
+        "scientific_resource_identities": _planner_resource_identities(metadata),
+    }
+
+
+def _load_planner_simulations(identity) -> list[dict]:
+    """Load tenant-scoped planner records, tolerating malformed legacy folders."""
+    registry = run_registry.SimulationRunRegistry(identity=identity)
+    records = []
+    for summary in registry.list_runs():
+        run_id = summary.get("run_id") if isinstance(summary, dict) else None
+        try:
+            metadata = registry.load_run(run_id)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(metadata, dict):
+            records.append(metadata)
+    return records
+
+
+def _render_planner_simulations(store) -> bool:
+    """Surface saved PHREEQC planner runs in Results/History without mutating them."""
+    try:
+        records = _load_planner_simulations(store.identity)
+    except (OSError, ValueError):
+        records = []
+    if not records:
+        return False
+
+    st.markdown("### PHREEQC planner simulations")
+    st.caption(
+        "Read-only saved planner executions in this storage scope. They are simulated model "
+        "estimates, not measured data or experimental validation, and are not rebound to the "
+        "active project, runtime, database, resource catalog, or knowledge pack."
+    )
+    for metadata in records:
+        state = _planner_execution_state(metadata)
+        identities = _planner_resource_identities(metadata)
+        run_id = str(metadata.get("run_id") or "Run ID not recorded")
+        user_label = str(metadata.get("user_label") or run_id)
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(user_label)}**")
+            app_ui.render_epistemic_badge("simulated_model_estimate")
+            app_ui.render_status_badge(state["label"], state["tone"])
+            st.caption(
+                f"Run ID {run_id} · "
+                f"Saved {metadata.get('created_at') or 'timestamp not recorded'} · "
+                f"{state['recorded_outcomes']} recorded execution outcome(s) · "
+                "Not validated against measured data."
+            )
+            if identities:
+                identity = identities[0]
+                st.caption(
+                    f"PHREEQC {identity.get('phreeqc_version', 'version not recorded')} · "
+                    f"database {identity.get('database_resource_id', 'identity not recorded')} · "
+                    f"resource identity {friendly_status(identity.get('resource_identity_status'))}"
+                )
+            else:
+                st.warning("Exact managed scientific resource identity was not recorded for this run.")
+            with st.expander("Exact PHREEQC provenance and scenario statuses", expanded=False):
+                st.json(_planner_provenance_payload(metadata))
+    st.divider()
+    return True
+
+
 def render_results_index(store, context) -> None:
     app_ui.render_page_header("Results", "Review current and historical results without mixing their evidence types.")
+    _render_planner_simulations(store)
     project, _, _ = _record_names(store, context)
     if not project:
         _empty("Project required", "Select a project to inspect its result index.", "Projects",
@@ -1361,6 +1597,7 @@ def render_evidence_header(store, context) -> None:
 
 def render_history(store, context) -> None:
     app_ui.render_page_header("Run History", "Reopen a saved run without changing its original inputs or evidence.")
+    _render_planner_simulations(store)
     project, _, _ = _record_names(store, context)
     if not project:
         _empty("Project required", "Select a project to inspect run history.", "Projects",
@@ -1390,14 +1627,66 @@ def render_diagnostics(store, context) -> None:
         st.warning("PHREEQC is not configured; input preview remains available.")
     with st.expander("PHREEQC diagnostics", expanded=False):
         st.write(availability.message)
+        identity = availability.environment_identity
+        resource_identity = {
+            "phreeqc_version": os.environ.get("PHREEQC_VERSION") or "not recorded",
+            "runtime_resource_id": os.environ.get("PHREEQC_RUNTIME_ID") or "not recorded",
+            "database_resource_id": os.environ.get("PHREEQC_DATABASE_ID") or "not recorded",
+            "database_version": os.environ.get("PHREEQC_DATABASE_VERSION") or "not recorded",
+            "environment_identity_hash": identity.identity_hash if identity else "not available",
+            "executable_sha256": identity.executable.sha256 if identity else "not available",
+            "database_sha256": identity.database.sha256 if identity else "not available",
+        }
         st.json({"executable_configured": availability.executable_configured,
                  "executable_found": availability.executable_found,
                  "database_configured": availability.database_configured,
                  "database_found": availability.database_found,
-                 "smoke_run": "not performed"})
+                 "smoke_run": "not performed",
+                 **resource_identity})
         st.caption("Simulation availability is not experimental validation.")
+    with st.expander("USGS PHREEQC attribution and User Rights Notice", expanded=False):
+        st.markdown("**Provider:** U.S. Geological Survey (USGS) · **Software:** PHREEQC 3")
+        st.write("The upstream notice permits use, copying, modification, and distribution "
+                 "subject to its restrictions. It requires the notice/original distribution "
+                 "to remain available, modification disclosure when applicable, and appropriate "
+                 "acknowledgment of the authors and USGS. USGS provides no warranty or support.")
+        st.markdown(
+            "[Official PHREEQC release page](https://water.usgs.gov/water-resources/software/PHREEQC/) · "
+            "[Official User Rights Notice](https://water.usgs.gov/water-resources/software/PHREEQC/Phreeqc_UserRightsNotice.txt)"
+        )
+        notice_path = Path(__file__).resolve().parents[1] / "release" \
+            / "PHREEQC_USGS_RIGHTS_NOTICE.txt"
+        if notice_path.is_file() and not notice_path.is_symlink():
+            st.code(notice_path.read_text(encoding="utf-8"), language=None)
+        else:
+            st.caption("The complete notice is available in the canonical runtime image at "
+                       "`/opt/phreeqc/share/doc/phreeqc/USGS_USER_RIGHTS_NOTICE.txt`.")
     with st.expander("Storage and schema details", expanded=False):
         st.markdown(f"**Durable storage:** `{diag['storage_root']}`")
         st.write(f"Workspace schema: {diag['schema_version']}")
     with st.expander("Active durable context", expanded=False):
         st.json({key: value for key, value in diag.items() if key.startswith("active_")})
+    if store.identity.is_hosted:
+        with st.expander("Account data and deletion", expanded=False):
+            opaque_account_id = store.scope.session_namespace[:16]
+            st.write("AI conversations are session-only and are not persisted. Scientific "
+                     "projects are shared tenant records; removing one account does not delete "
+                     "other investigators' project data. The identity-provider account must be "
+                     "disabled/deleted by the deployment operator.")
+            st.caption(f"Opaque account-state ID: `{opaque_account_id}`")
+            expected = f"DELETE ACCOUNT {opaque_account_id}"
+            confirmation = st.text_input(
+                "Type the exact account-state deletion confirmation",
+                key="account_state_delete_confirmation",
+                help=expected,
+            )
+            if st.button(
+                "Delete my persisted account context",
+                key="account_state_delete",
+                disabled=confirmation != expected,
+            ):
+                try:
+                    store.delete_current_account_state(confirmation=confirmation)
+                    st.success("Persisted per-user context deleted. Sign out to clear this session.")
+                except workspace_store.WorkspaceStoreError as exc:
+                    st.error(str(exc))

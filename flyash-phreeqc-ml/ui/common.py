@@ -11,8 +11,30 @@ import streamlit as st  # noqa: E402
 import app_ui  # noqa: E402  (presentation-only UI helper layer)
 from flyash_phreeqc_ml import replicates  # noqa: E402
 from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
+from flyash_phreeqc_ml import upload_guard  # noqa: E402
 
 from ui.state import _NOT_VALID_YET, _VALID_NOW, _next_step_hint, _rel
+
+
+def _guard_uploaded_file(
+    upload, *, allowed_extensions,
+) -> upload_guard.ValidatedUpload | None:
+    """Apply the one upload security policy before any domain parser sees bytes."""
+    try:
+        return upload_guard.validate_upload(upload, allowed_extensions=allowed_extensions)
+    except upload_guard.UploadValidationError as exc:
+        st.error(f"Upload rejected ({exc.code}): {exc}")
+        return None
+
+
+def _guard_table_shape(table) -> bool:
+    """Enforce parser-output row/column limits before previewing or persisting it."""
+    try:
+        upload_guard.validate_table_shape(table)
+    except upload_guard.UploadValidationError as exc:
+        st.error(f"Parsed table rejected ({exc.code}): {exc}")
+        return False
+    return True
 
 def _png_provenance_caption(path: Path, kind: str) -> str:
     """Provenance line for a static PNG result figure: source path + generated time + type +

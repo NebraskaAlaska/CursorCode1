@@ -8,7 +8,6 @@ writes outside the safe ``outputs/simulations/`` workspace.
 from __future__ import annotations
 
 import subprocess
-import types
 from pathlib import Path
 
 import pandas as pd
@@ -227,17 +226,22 @@ def test_batch_does_not_touch_result_path_and_writes_only_to_workspace(monkeypat
 
     ws = tmp_path / "sims"
     monkeypatch.setattr(E, "default_workspace", lambda: ws)
-    monkeypatch.setattr(E.subprocess, "run",
-                        lambda cmd, **kw: (Path(cmd[2]).write_text("TITLE ok\n"),
-                                           types.SimpleNamespace(returncode=0, stdout="",
-                                                                 stderr=""))[1])
+    def successful_phreeqc(cmd, **kwargs):
+        Path(cmd[2]).write_text("TITLE ok\nEnd of Run\n")
+        return 0, "", "", False, None
+
+    monkeypatch.setattr(E, "_bounded_subprocess_run", successful_phreeqc)
     exe, db = _fake_exe_db(tmp_path)
     _run_batch(_previews(2), exe=exe, database=db)
 
     after = results_csv.stat().st_mtime if results_csv.exists() else None
     assert before == after                        # result-path CSV untouched
-    written = {p.name for p in ws.iterdir()}
-    assert written == {"SIM_001.pqi", "SIM_001.pqo", "SIM_002.pqi", "SIM_002.pqo"}
+    job_dirs = sorted(path for path in ws.iterdir() if path.is_dir())
+    assert len(job_dirs) == 2
+    written = {p.name for job_dir in job_dirs for p in job_dir.iterdir()}
+    assert written == {
+        E._JOB_MARKER, "SIM_001.pqi", "SIM_001.pqo", "SIM_002.pqi", "SIM_002.pqo",
+    }
 
 
 def test_simulation_files_are_gitignored_and_untracked():

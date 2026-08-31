@@ -1,25 +1,13 @@
-# Keep the build context small + safe. The image ships SOURCE only — no secrets, no raw
-# research data, no generated artifacts. (Build context is this directory, so the sibling
-# flyash-lab-data-pipeline is already out of scope.)
-
-# --- secrets (never ship a key / secret into the image) ---
-.env
-*.env
-.streamlit/secrets.toml
-**/secrets.toml
-*.pem
-*.key
-.mra_eval_key
-
-# --- VCS / tooling ---
+# Version-control and local tooling
 .git
-.gitignore
 .github
 .idea
 .vscode
 .DS_Store
-
-# --- Python envs + caches ---
+**/.DS_Store
+.pytest_cache
+.mypy_cache
+.ruff_cache
 .venv
 venv
 env
@@ -27,28 +15,57 @@ __pycache__
 **/__pycache__
 *.py[cod]
 *.egg-info
-.eggs
 build
 dist
-.pytest_cache
-.mypy_cache
-.ruff_cache
-
-# --- raw / confidential research data (NOT needed to run; keep it off a hosted instance) ---
-data/raw
-data/processed
-
-# --- generated artifacts (re-created at runtime; never part of the image) ---
-reports/figures
-outputs/figures
-outputs/tables
-outputs/simulations
-outputs/simulation_runs
-outputs/model_registry
-experiments/*/data
-experiments/*/outputs
-experiments/*/run_config.yaml
-
-# --- docs build / misc local cruft ---
-*.log
 node_modules
+
+# Secrets, credentials, authentication files, and private TLS material
+.env
+*.env
+.streamlit/secrets.toml
+**/secrets.toml
+*.pem
+*.key
+*.p12
+*.pfx
+deploy/auth
+deploy/tls
+
+# Every local/user workspace is excluded from the Docker context, even when
+# Git already ignores it. This prevents COPY instructions from baking local
+# records into an image.
+outputs
+experiments/*
+!experiments/README.md
+data/processed
+reports
+backups
+resources/installed
+resources/downloads
+resources/candidates
+resources/active
+databases
+models
+
+# Raw or confidential research data are excluded from every image target.
+# The approved blank header-only template lives under release/templates.
+data/raw
+
+# Binary scientific resources are acquired only by the checksum-pinned builder.
+*.dat
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.pt
+*.pth
+*.bin
+
+# Generated review material and logs never belong to an image.
+*.log
+screenshots
+WPI_Phase_4_Review

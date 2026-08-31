@@ -13,6 +13,7 @@ import app_ui
 from flyash_phreeqc_ml import workspace_store
 from flyash_phreeqc_ml.instruments import icp_processor, icp_review
 from flyash_phreeqc_ml.instruments.phase3_icp_export import safe_csv_bytes
+from ui.common import _guard_uploaded_file
 
 
 _SYNTHETIC_ROWS = [
@@ -258,7 +259,10 @@ def render_prepare(store, context) -> None:
             if source_mode == "Upload long-form CSV":
                 if uploaded is None:
                     raise icp_review.IcpReviewError("choose a CSV file first")
-                source_bytes = uploaded.getvalue()
+                validated = _guard_uploaded_file(uploaded, allowed_extensions={".csv"})
+                if validated is None:
+                    raise icp_review.IcpReviewError("the uploaded CSV did not pass validation")
+                source_bytes = validated.data
                 rows, headings = _parse_csv(source_bytes)
                 state.update({"rows": rows, "source_bytes": source_bytes,
                               "source_filename": uploaded.name,
@@ -492,8 +496,12 @@ def render_results(store, context) -> bool:
                 "Re-upload the exact source CSV to finalize",
                 type=["csv"], key=_key("final_source", project, material))
             if replacement is not None:
-                source_bytes = replacement.getvalue()
+                validated = _guard_uploaded_file(replacement, allowed_extensions={".csv"})
+                source_bytes = validated.data if validated is not None else None
                 try:
+                    if source_bytes is None:
+                        raise icp_review.IcpReviewError(
+                            "the re-uploaded CSV did not pass validation")
                     source_rows, _headings = _parse_csv(source_bytes)
                     icp_review.assert_icp_source_matches(
                         record, rows=source_rows, source_bytes=source_bytes)
@@ -562,7 +570,11 @@ def render_validation_gate(store, context) -> None:
                 if supplied is None:
                     st.warning("Validation reuse is blocked until the exact source CSV is supplied.")
                     continue
-                source_bytes = supplied.getvalue()
+                validated = _guard_uploaded_file(supplied, allowed_extensions={".csv"})
+                if validated is None:
+                    st.warning("Validation reuse is blocked because the supplied CSV was refused.")
+                    continue
+                source_bytes = validated.data
             try:
                 gated = _verified_validation_output(record, source_bytes=source_bytes)
             except icp_review.IcpReviewError as exc:

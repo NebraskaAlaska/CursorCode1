@@ -315,9 +315,10 @@ def parse_database(text: str) -> DatabaseParse | None:
         return DatabaseParse(name=m.group(1))
     low = s.lower()
     if "cemdata" in low:
-        return DatabaseParse(name="CEMDATA18",
-                             warnings=["CEMDATA18 is not redistributable — the server must provide "
-                                       "it (configure PHREEQC_DATABASE)."])
+        return DatabaseParse(name="CEMDATA18", warnings=[
+            "Explicit redistribution permission was not found in the reviewed official "
+            "evidence, so CEMDATA18 is external-only and must be supplied by a user or "
+            "administrator; it is never bundled (configure PHREEQC_DATABASE)."])
     if re.search(r"\bphreeqc\b.{0,24}\bdatabase\b", low) or \
             re.search(r"\bdatabase\b.{0,24}\bphreeqc\b", low):
         return DatabaseParse(name="phreeqc.dat")

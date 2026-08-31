@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "resource_id": "usgs-phreeqc-3.8.6-17100-source",
+  "resource_kind": "phreeqc_runtime_source",
+  "display_name": "USGS PHREEQC 3.8.6-17100 Linux source",
+  "provider": "U.S. Geological Survey",
+  "version": "3.8.6-17100",
+  "official_source_url": "https://water.usgs.gov/water-resources/software/PHREEQC/phreeqc-3.8.6-17100.tar.gz",
+  "archive_filename": "phreeqc-3.8.6-17100.tar.gz",
+  "archive_sha256": "b5c4a6dfea1a6bb6a3436857a50346bb943904a49582714494b4f1b1e54e64e1",
+  "database": {
+    "resource_id": "usgs.phreeqc.database.phreeqc",
+    "relative_source_path": "database/phreeqc.dat",
+    "runtime_path": "/opt/phreeqc/database/phreeqc.dat",
+    "sha256": "59373961d648dfbf68a40744060c1d64f57ecbec98f4f5fb89f3a1b4213ccd10",
+    "redistribution_state": "permitted_with_notice"
+  },
+  "rights": {
+    "notice_relative_path": "release/PHREEQC_USGS_RIGHTS_NOTICE.txt",
+    "notice_sha256": "f5c97c1c0fea8c27096d3e7b298a627264a71683dc2debb374d07baaea168b34",
+    "source_notice_relative_path": "doc/NOTICE",
+    "redistribution_state": "permitted_with_notice"
+  },
+  "build": {
+    "targets": ["linux/amd64", "linux/arm64"],
+    "toolchain": "Debian bookworm build-essential and GNU make",
+    "container_stage": "phreeqc-builder",
+    "runtime_manifest_path": "/opt/phreeqc/share/manifest/runtime-manifest.json",
+    "official_examples_path": "/opt/phreeqc/share/examples"
+  },
+  "scientific_status": "runtime identity only; simulation output is not experimental validation"
+}

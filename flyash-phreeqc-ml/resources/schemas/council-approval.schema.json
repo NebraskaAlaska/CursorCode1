@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/council-approval.schema.json",
+  "title": "WPI Council human approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "approved_by", "approved_at", "bindings", "approval_hash"],
+  "properties": {
+    "schema_version": {"const": "wpi-council-approval/v1"},
+    "kind": {"enum": ["task_branch", "pull_request", "merge", "deployment", "resource_promotion", "resource_rollback", "stale_lock_takeover"]},
+    "approved_by": {"type": "string", "pattern": "^human:.+"},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "bindings": {"type": "object", "additionalProperties": {"type": "string"}},
+    "approval_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

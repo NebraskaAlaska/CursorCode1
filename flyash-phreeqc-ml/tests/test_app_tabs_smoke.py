@@ -24,6 +24,10 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VIRTUAL_LAB_WORKSPACE_DIR", tmp_path / "workspace")
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
     monkeypatch.setattr(config, "PROCESSED_DIR", tmp_path / "processed")
+    # These shell tests intentionally exercise the honest unconfigured/preview-only state even
+    # when the suite itself runs inside the canonical PHREEQC release image.
+    monkeypatch.setattr(config, "PHREEQC_EXE_PATH", None)
+    monkeypatch.setattr(config, "PHREEQC_DATABASE_PATH", None)
     (tmp_path / "processed").mkdir()
 
 

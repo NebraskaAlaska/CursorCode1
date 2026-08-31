@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpi.example/schemas/official-database-registry.schema.json",
+  "title": "Pinned official USGS PHREEQC database registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "phreeqc_version", "source_archive_url", "source_archive_sha256", "official_release_page", "rights_notice", "rights_notice_sha256", "database_count", "databases"],
+  "properties": {
+    "schema": {"const": "wpi.virtual-lab.usgs-phreeqc-database-registry"},
+    "version": {"const": 1},
+    "phreeqc_version": {"type": "string", "minLength": 1},
+    "source_archive_url": {"type": "string", "pattern": "^https://"},
+    "source_archive_sha256": {"$ref": "#/$defs/sha256"},
+    "official_release_page": {"type": "string", "pattern": "^https://"},
+    "rights_notice": {"type": "string", "minLength": 1},
+    "rights_notice_sha256": {"$ref": "#/$defs/sha256"},
+    "database_count": {"type": "integer", "minimum": 1},
+    "databases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/databaseRecord"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stringList": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "databaseRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "resource_id", "resource_kind", "database_sha256", "byte_size", "database_family", "sections", "master_species_count", "solution_species_count", "phase_count", "master_species_names_sha256", "solution_species_names_sha256", "phase_names_sha256", "parsed_summary_sha256", "compatibility_status", "test_status", "standalone_test_status", "base_include_test_status", "requires_database_filename", "requires_database_family", "limitations"],
+      "properties": {
+        "filename": {"type": "string", "pattern": "^[^/\\\\]+\\.dat$"},
+        "resource_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$"},
+        "resource_kind": {"enum": ["phreeqc_official_database", "database_extension"]},
+        "database_sha256": {"$ref": "#/$defs/sha256"},
+        "byte_size": {"type": "integer", "minimum": 0},
+        "database_family": {"type": "string"},
+        "sections": {"$ref": "#/$defs/stringList"},
+        "master_species_count": {"type": "integer", "minimum": 0},
+        "solution_species_count": {"type": "integer", "minimum": 0},
+        "phase_count": {"type": "integer", "minimum": 0},
+        "master_species_names_sha256": {"$ref": "#/$defs/sha256"},
+        "solution_species_names_sha256": {"$ref": "#/$defs/sha256"},
+        "phase_names_sha256": {"$ref": "#/$defs/sha256"},
+        "parsed_summary_sha256": {"$ref": "#/$defs/sha256"},
+        "compatibility_status": {"enum": ["unknown", "compatible", "partial", "incompatible", "review_required"]},
+        "test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+        "standalone_test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+        "base_include_test_status": {"enum": ["not_tested", "not_applicable_requires_base", "passed", "failed", "partial"]},
+        "requires_database_filename": {"type": "string"},
+        "requires_database_family": {"type": "string"},
+        "limitations": {"$ref": "#/$defs/stringList"}
+      }
+    }
+  }
+}

@@ -40,7 +40,7 @@ MAX_TOKENS = 1500
 
 # Per-session consent (same spirit as the other AI features).
 SCENARIO_DATA_NOTICE = (
-    "This sends your experiment description (and desired outputs) to the Anthropic API to "
+    "This sends your experiment description (and desired outputs) to the configured AI provider to "
     "extract a structured scenario — data leaves this machine for this feature only. The "
     "extracted scenario is a suggestion you review and confirm; it never runs PHREEQC, "
     "overwrites measured data, or becomes verified data."

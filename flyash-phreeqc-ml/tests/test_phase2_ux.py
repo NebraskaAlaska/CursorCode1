@@ -19,6 +19,7 @@ from flyash_phreeqc_ml import config, workspace_store
 from flyash_phreeqc_ml.instruments import icp_processor
 from flyash_phreeqc_ml.instruments import virtual_lab_machine_runner as machine_runner
 from flyash_phreeqc_ml.instruments import virtual_lab_machines as machines
+from flyash_phreeqc_ml.simulation import phreeqc_executor, run_registry
 from flyash_phreeqc_ml.simulation.phreeqc_executor import PhreeqcAvailability
 from ui import product_shell
 
@@ -52,6 +53,7 @@ EXPECTED_CARD_KEYS = {
 def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VIRTUAL_LAB_WORKSPACE_DIR", tmp_path / "workspace")
     monkeypatch.setattr(config, "EXPERIMENT_RUNS_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(config, "SIMULATION_RUNS_DIR", tmp_path / "simulation_runs")
     monkeypatch.setattr(config, "PROCESSED_DIR", tmp_path / "processed")
     (tmp_path / "processed").mkdir()
 
@@ -167,6 +169,40 @@ def _context_with_run():
     )
     store.set_active_context(project.project_id, material.material_id, None)
     return store, project, material, run
+
+
+def _save_planner_simulation_run():
+    identity = {
+        "phreeqc_version": "3.8.6-17100",
+        "runtime_resource_id": "usgs-phreeqc-runtime-3.8.6-17100",
+        "executable_sha256": "a" * 64,
+        "database_resource_id": "usgs-phreeqc-dat-3.8.6-17100",
+        "database_version": "3.8.6-17100",
+        "database_sha256": "b" * 64,
+        "environment_identity_hash": "c" * 64,
+        "resource_catalog_hash": "d" * 64,
+        "knowledge_pack_hash": "e" * 64,
+        "resource_identity_status": "verified_active_catalog",
+    }
+    record = run_registry.SimulationRunRecord(
+        run_id="sim-20260829-010203-synthetic-ui-test",
+        created_at="2026-08-29T01:02:03+08:00",
+        user_label="SYNTHETIC TEST — bounded PHREEQC run",
+        scientific_resource_identities=[identity],
+        execution_status_summary={phreeqc_executor.STATUS_SUCCESS: 1},
+        outputs=[run_registry.SimulationOutputRecord(
+            scenario_id="SIM-001",
+            status=phreeqc_executor.STATUS_SUCCESS,
+            parse_status=phreeqc_executor.PARSE_PARSED,
+            executed_at="2026-08-29T01:02:02+08:00",
+            input_sha256="f" * 64,
+            runtime_seconds=0.25,
+            resource_identity=identity,
+        )],
+    )
+    registry = run_registry.SimulationRunRegistry()
+    registry.save_run(record, copy_inputs=False)
+    return registry.load_run(record.run_id)
 
 
 @pytest.mark.parametrize(
@@ -462,6 +498,61 @@ def test_result_rows_keep_epistemic_state_visible_and_provenance_one_click_deepe
     provenance = next(item for item in at.expander if item.label == "Show provenance")
     provenance_text = _block_text(provenance).lower()
     assert all(key in provenance_text for key in ("model", "environment", "evidence"))
+
+
+def test_planner_execution_state_never_turns_execution_into_validation():
+    mixed = product_shell._planner_execution_state({
+        "outputs": [
+            {"status": phreeqc_executor.STATUS_SUCCESS,
+             "parse_status": phreeqc_executor.PARSE_PARSED},
+            {"status": phreeqc_executor.STATUS_FAILED, "parse_status": None},
+        ],
+    })
+    assert mixed["label"] == "Mixed PHREEQC execution outcomes"
+    assert mixed["status_counts"] == {
+        phreeqc_executor.STATUS_SUCCESS: 1,
+        phreeqc_executor.STATUS_FAILED: 1,
+    }
+    assert "valid" not in mixed["label"].lower()
+
+    parsing_incomplete = product_shell._planner_execution_state({
+        "outputs": [{"status": phreeqc_executor.STATUS_SUCCESS, "parse_status": None}],
+    })
+    assert parsing_incomplete["tone"] == "warning"
+    assert "parsing" in parsing_incomplete["label"].lower()
+
+
+@pytest.mark.parametrize("page", ["Results", "Run History"])
+def test_results_and_history_surface_saved_planner_run_with_exact_provenance(page):
+    metadata = _save_planner_simulation_run()
+    payload = product_shell._planner_provenance_payload(metadata)
+    identity = payload["scientific_resource_identities"][0]
+    assert identity["executable_sha256"] == "a" * 64
+    assert identity["database_sha256"] == "b" * 64
+    assert identity["resource_catalog_hash"] == "d" * 64
+    assert identity["knowledge_pack_hash"] == "e" * 64
+    assert payload["scenario_outcomes"][0]["input_sha256"] == "f" * 64
+
+    at = _goto(AppTest.from_file(APP, default_timeout=150).run(), page)
+    _assert_clean(at)
+    visible = _visible_main_text(at)
+    assert "SYNTHETIC TEST — bounded PHREEQC run" in visible
+    assert "Simulated model estimate" in visible
+    assert "Execution succeeded for all recorded scenarios" in visible
+    assert "Not validated against measured data" in visible
+
+    provenance = next(
+        item for item in at.expander
+        if item.label == "Exact PHREEQC provenance and scenario statuses"
+    )
+    provenance_text = _block_text(provenance)
+    for exact_hash in ("a" * 64, "b" * 64, "d" * 64, "e" * 64, "f" * 64):
+        assert exact_hash in provenance_text
+    for field in (
+        "executable_sha256", "database_sha256", "resource_catalog_hash",
+        "knowledge_pack_hash", "input_sha256", "execution_status_summary",
+    ):
+        assert field in provenance_text
 
 
 def test_icp_machine_results_surface_qc_counts_and_retain_the_complete_raw_envelope():

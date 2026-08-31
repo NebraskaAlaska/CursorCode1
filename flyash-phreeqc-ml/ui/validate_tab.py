@@ -21,6 +21,7 @@ from flyash_phreeqc_ml import units  # noqa: E402  (single conversion authority)
 from flyash_phreeqc_ml.ai import literature as ai_literature  # noqa: E402  (sourced lit values)
 from flyash_phreeqc_ml.experiments import validate_experimental_df  # noqa: E402
 from flyash_phreeqc_ml.instruments import icp_processor as icp_qc  # noqa: E402
+from flyash_phreeqc_ml.security.identity import current_identity  # noqa: E402
 from flyash_phreeqc_ml.viz import measured_overview  # noqa: E402
 from flyash_phreeqc_ml.simulation import phreeqc_executor  # noqa: E402
 
@@ -816,6 +817,12 @@ def _render_mass_balance(selected_run: str) -> None:
 
 def _render_validate_tab(selected_run: str | None, dev_mode: bool) -> None:
     """Validate tab: measured-data overview, data validation, and calculation audit."""
+    if current_identity().is_hosted:
+        st.warning(
+            "The legacy Validate surface is unavailable in hosted mode because it reads "
+            "shared processed/report paths. Use the tenant-scoped durable ICP validation "
+            "workflow above; no legacy file or pipeline action was opened.")
+        return
     app_ui.render_page_header(
         "Validate — check the data and the calculations",
         "Review the measured-data overview, the data-quality validation, and verify every "

@@ -33,11 +33,21 @@ the **Validate** and **Compare Results** tabs.
   status (`phreeqc_missing` / `failed` / `timeout`), never an exception.
 - **Clearly labelled.** Every result carries: *"Generated from PHREEQC execution of the reviewed
   simulation input. Not validated against measured data."*
+- **Closed input.** Ordinary project execution rejects `INCLUDE` and `INCLUDE$`; reviewed input is
+  self-contained and cannot select an arbitrary external file. Database-extension testing uses a
+  separate Steward-owned contract described in [`resource_steward.md`](resource_steward.md).
+- **Bounded process tree.** On POSIX, PHREEQC starts in its own process group. Timeout and normal
+  completion terminate that exact group, wait for the direct child, and close captured pipes.
+  Containers must provide an init/subreaper (`init: true` in Compose or `docker run --init`) so an
+  exited grandchild adopted by PID 1 is reaped. Windows retains its exact `taskkill /T /F` tree
+  contract. These are runtime requirements, not optional test accommodations.
 
 ## Configuring PHREEQC
 
-The PHREEQC binary and the thermodynamic database are **user-supplied and never committed** (the
-CEMDATA18 database is not redistributable). Set two environment variables:
+The PHREEQC binary/database may be supplied by the pinned container or an approved external
+installation. CEMDATA18 is `external_only`: reviewed official evidence did not establish explicit
+redistribution permission, so it is never bundled, mirrored, or committed; a user/admin must import
+an officially obtained copy after rights confirmation and hashing. Set two environment variables:
 
 ```bash
 export PHREEQC_EXE=phreeqc                          # the PHREEQC CLI binary (or put it on PATH)

@@ -1,32 +1,59 @@
-# Convenience for local Docker testing + simple self-hosting.
-#   ANTHROPIC_API_KEY is read from your shell or a gitignored `.env` file — NEVER hard-code it.
-#
-#   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env   # .env is gitignored + dockerignored
-#   docker compose up --build
-#   open http://localhost:8501
-#
-# See docs/deployment.md for hosted deployment (Render / Fly.io / Cloud Run / …).
+# Backward-compatible local entry point. New automation should name
+# docker-compose.local.yml explicitly.
+name: wpi-virtual-lab-local
+
 services:
-  mra:
+  app:
+    image: ${WPI_IMAGE:-wpi-virtual-lab:phase4-rc}
     build:
       context: .
-      # args:
-      #   PHREEQC_VERSION: "3.8.6-17100"   # override to match a different PHREEQC version
+      target: release
+      args:
+        APP_VERSION: ${WPI_APP_VERSION:-0.1.0-phase4-rc}
+        VCS_REF: ${WPI_VCS_REF:-uncommitted}
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     ports:
-      - "8501:8501"
+      - "127.0.0.1:${WPI_PORT:-8501}:8501"
     environment:
-      # Injected from the environment / .env — the key value never lives in this file or the image.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Optional: an explicit model + PHREEQC timeout.
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
-      PHREEQC_TIMEOUT_S: "120"
-      # The image's built-in PHREEQC (phreeqc.dat) is used by default. To use CEMDATA18 for
-      # cementitious / fly-ash accuracy, mount it (below) and point PHREEQC_DATABASE at it:
-      # PHREEQC_DATABASE: /databases/CEMDATA18.dat
-    # volumes:
-    #   - ./databases:/databases:ro     # mount your (non-redistributable) CEMDATA18 .dat here
-    #   - mra_runs:/app/experiments     # persist user-created runs across restarts
+      VLAB_DEPLOYMENT_MODE: local
+      VLAB_IMPORT_ROOT: /app/imports
+      VLAB_AI_PROVIDER: ${VLAB_AI_PROVIDER:-disabled}
+      VLAB_AI_MODEL: ${VLAB_AI_MODEL:-}
+      VLAB_AI_BASE_URL: ${VLAB_AI_BASE_URL:-}
+      VLAB_AI_LOCATION: ${VLAB_AI_LOCATION:-disabled}
+      VLAB_AI_ALLOWED_HOSTS: ${VLAB_AI_ALLOWED_HOSTS:-}
+      VLAB_AI_ADMIN_MANAGED: ${VLAB_AI_ADMIN_MANAGED:-false}
+      VLAB_AI_API_KEY: ${VLAB_AI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${VLAB_AI_API_KEY:-}
+      WPI_RESOURCE_ROOT: /var/lib/wpi/resources
+      PHREEQC_TIMEOUT_S: ${PHREEQC_TIMEOUT_S:-120}
+      PHREEQC_CONTAINER_IMAGE_DIGEST: ${WPI_IMAGE_DIGEST:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - wpi_outputs:/app/outputs
+      - wpi_experiments:/app/experiments
+      - wpi_processed:/app/data/processed
+      - wpi_imports:/app/imports
+      - wpi_resources:/var/lib/wpi/resources
     restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request as u; u.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
 
-# volumes:
-#   mra_runs:
+volumes:
+  wpi_outputs:
+  wpi_experiments:
+  wpi_processed:
+  wpi_imports:
+  wpi_resources:

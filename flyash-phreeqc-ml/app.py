@@ -41,6 +41,7 @@ from ui import (  # noqa: E402
 from ui.state import MODEL_NAME  # noqa: E402
 
 from flyash_phreeqc_ml import run_manager  # noqa: E402
+from flyash_phreeqc_ml.security import identity as security_identity  # noqa: E402
 
 
 
@@ -401,9 +402,40 @@ from flyash_phreeqc_ml import run_manager  # noqa: E402
 # those pages; they are not duplicated as a second top-level navigation.
 # --------------------------------------------------------------------------- #
 st.set_page_config(page_title="WPI Virtual LAB", layout="wide", page_icon="▦")
-app_ui.inject_global_css()
+try:
+    IDENTITY = security_identity.resolve_streamlit_identity(st)
+except security_identity.AuthenticationRequiredError:
+    # Logout/expiry must not leave the previous user's AI conversation, upload,
+    # provider choice, or scientific form state available to a later login in the
+    # same browser session.
+    if security_identity.deployment_mode().value == "hosted":
+        st.session_state.clear()
+    st.title("WPI Virtual LAB")
+    st.info("This hosted scientific workspace requires an invited account.")
+    if hasattr(st, "login") and st.button("Sign in", type="primary"):
+        st.login()
+    st.stop()
+except security_identity.AuthorizationError:
+    st.session_state.clear()
+    st.title("WPI Virtual LAB")
+    st.error("This authenticated account is not authorized for the hosted beta.")
+    if hasattr(st, "logout") and st.button("Sign out"):
+        st.logout()
+    st.stop()
+except security_identity.IdentityError:
+    st.session_state.clear()
+    st.title("WPI Virtual LAB")
+    st.error("Hosted identity configuration is invalid. Access remains closed until an "
+             "administrator fixes it.")
+    st.stop()
 
-STORE = product_shell.get_store()
+# Authentication and authorization are resolved before any tenant-aware store
+# exists. OIDC tokens/claims are not copied into session state or diagnostics.
+if IDENTITY.is_hosted:
+    security_identity.bind_session_state(st.session_state, IDENTITY)
+security_identity.set_current_identity(IDENTITY)
+app_ui.inject_global_css()
+STORE = product_shell.get_store(IDENTITY)
 PAGE, CONTEXT = product_shell.render_sidebar(STORE)
 DEV_MODE = bool(st.session_state.get("dev_mode", False))
 LEGACY_RUN = st.session_state.get("selected_run")
@@ -514,6 +546,6 @@ elif PAGE == "Settings & Diagnostics":
     with settings_overview:
         st.write("Open Application settings to configure tools, or Engine library to inspect capabilities.")
     with settings_tab:
-        settings.render(LEGACY_RUN)
+        settings.render(LEGACY_RUN, identity=IDENTITY)
     with engines_tab:
         engine_library.render(LEGACY_RUN)

@@ -35,8 +35,30 @@ def _batch(tmp_path, n=2):
         pqi.write_text("SOLUTION 1\nEND\n")
         ex = E.ExecutionResult(sid, E.STATUS_SUCCESS, input_path=str(pqi),
                                output_path=str(tmp_path / f"{sid}.pqo"), runtime_seconds=0.1,
+                               timestamp="2026-06-16T00:00:00",
+                               input_hash=str(i) * 64,
                                phreeqc_executable="/usr/bin/phreeqc",
-                               database_path="/db/cemdata.dat")
+                               database_path="/db/cemdata.dat",
+                               phreeqc_version="3.8.6-17100",
+                               executable_sha256="a" * 64,
+                               database_resource_id="usgs-phreeqc-dat",
+                               database_version="3.8.6-17100",
+                               database_sha256="b" * 64,
+                               environment_identity_hash="c" * 64,
+                               resource_manifest_version="1",
+                               runtime_resource_id="phreeqc.runtime",
+                               runtime_installation_id="phreeqc.runtime@3.8.6+aaa",
+                               database_installation_id="cemdata@18.11+bbb",
+                               runtime_manifest_sha256="d" * 64,
+                               resource_catalog_hash="e" * 64,
+                               resource_catalog_generation=7,
+                               resource_bootstrap_result_sha256="f" * 64,
+                               knowledge_pack_hash="1" * 64,
+                               source_manifest_sha256="2" * 64,
+                               app_version="4.0.0",
+                               app_vcs_ref="abc123",
+                               resource_identity_status="verified_active_catalog",
+                               cleanup_token="internal-cleanup-capability")
         pa = E.ParsedSimulation(sid, E.PARSE_PARSED, pH=12.0 + i / 10, pe=8.0,
                                 element_totals_mM={"Ca": 1.0, "Si": 2.0},
                                 saturation_indices=[{"phase": "Calcite", "SI": -0.3}])
@@ -107,7 +129,8 @@ def test_metadata_has_required_provenance_fields(tmp_path):
                 "desired_outputs_text", "parser_source", "scenario_json",
                 "material_profile_summary", "material_profile_verification_status",
                 "phreeqc_executable_path", "phreeqc_database_path", "phreeqc_input_paths",
-                "phreeqc_output_paths", "execution_status_summary", "plot_axis",
+                "phreeqc_output_paths", "scientific_resource_identities",
+                "execution_status_summary", "plot_axis",
                 "scenarios", "outputs"):
         assert key in meta, key
     assert "not validated" in meta["label_note"].lower()
@@ -115,6 +138,26 @@ def test_metadata_has_required_provenance_fields(tmp_path):
     assert meta["execution_status_summary"] == {E.STATUS_SUCCESS: 2}
     assert meta["plot_axis"] == "leachant_concentration_M"
     assert {o["scenario_id"] for o in meta["outputs"]} == {"SIM-001", "SIM-002"}
+    identity = meta["scientific_resource_identities"][0]
+    assert identity["phreeqc_version"] == "3.8.6-17100"
+    assert identity["executable_sha256"] == "a" * 64
+    assert identity["database_sha256"] == "b" * 64
+    assert identity["runtime_resource_id"] == "phreeqc.runtime"
+    assert identity["runtime_installation_id"] == "phreeqc.runtime@3.8.6+aaa"
+    assert identity["database_installation_id"] == "cemdata@18.11+bbb"
+    assert identity["runtime_manifest_sha256"] == "d" * 64
+    assert identity["resource_catalog_hash"] == "e" * 64
+    assert identity["resource_catalog_generation"] == 7
+    assert identity["resource_bootstrap_result_sha256"] == "f" * 64
+    assert identity["knowledge_pack_hash"] == "1" * 64
+    assert identity["source_manifest_sha256"] == "2" * 64
+    assert identity["app_version"] == "4.0.0"
+    assert identity["app_vcs_ref"] == "abc123"
+    assert identity["resource_identity_status"] == "verified_active_catalog"
+    assert "cleanup_token" not in identity
+    assert all(o["resource_identity"] == identity for o in meta["outputs"])
+    assert {o["input_sha256"] for o in meta["outputs"]} == {"1" * 64, "2" * 64}
+    assert {o["executed_at"] for o in meta["outputs"]} == {"2026-06-16T00:00:00"}
 
 
 def test_parsed_results_csv_written(tmp_path):

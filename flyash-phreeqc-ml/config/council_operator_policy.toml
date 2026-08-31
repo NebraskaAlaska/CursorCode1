@@ -1,0 +1,92 @@
+[project]
+slug = "wpi-virtual-lab"
+allowed_repository = "https://github.com/NebraskaAlaska/CursorCode1.git"
+public_repository = true
+role_sequence = ["planner", "coder", "tester", "reviewer"]
+
+[git]
+allowed_base_branches = ["codex/virtual-lab-finalization-personal"]
+task_branch_prefix = "council/wpi/"
+forbidden_branches = ["main", "master", "codex/virtual-lab-finalization-personal"]
+
+[tests]
+default_commands = [
+  ["python3", "-m", "compileall", "-q", "app.py", "app_ui.py", "flyash_phreeqc_ml", "scripts", "ui", "tests"],
+  ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+]
+allowed_command_prefixes = [
+  ["python3", "-m", "compileall"],
+  ["python3", "-m", "pytest"],
+  ["python", "-m", "compileall"],
+  ["python", "-m", "pytest"],
+]
+
+[limits]
+max_correction_rounds = 2
+max_task_duration_seconds = 28800
+max_patch_bytes = 1048576
+max_changed_files = 24
+max_role_invocations = 16
+max_log_bytes = 1048576
+lease_seconds = 900
+allow_policy_expiry_takeover = false
+
+[security]
+scientific_risk_floor = "moderate"
+forbidden_paths = [
+  ".git/**",
+  ".github/workflows/**",
+  ".env",
+  ".env.*",
+  "**/.env",
+  "**/.env.*",
+  "data/raw/**",
+  "experiments/**/data/**",
+  "experiments/**/outputs/**",
+  "outputs/**",
+  "models/**",
+  "databases/**",
+  "resources/installed/**",
+  "resources/downloads/**",
+  "resources/candidates/**",
+  "resources/active/**",
+  "config/council_operator_policy.toml",
+]
+
+[approvals]
+required = [
+  "task_branch",
+  "pull_request",
+  "merge",
+  "deployment",
+  "resource_promotion",
+  "resource_rollback",
+]
+
+[resource_steward]
+automatic_actions = [
+  "check",
+  "show",
+  "download-candidate",
+  "verify-candidate",
+  "build-candidate",
+  "test-candidate",
+  "compare",
+  "export-report",
+]
+human_actions = ["promote", "rollback"]
+
+[obsidian]
+handoff_note = "WPI Project/99 - Handoff Log.md"
+
+[council_contracts.required_sha256]
+"AGENTS.md" = "6e61b663eaefacf5786d5e51f7f3f990e2aaf30869028e710a02c983879b7a97"
+"START_HERE.md" = "eb046885b2ee4254838a8aed60865203ac53f349480c9081b55f1c61f4f814df"
+"prompts/START_PLANNER.md" = "4dac693826913498d319798632c92963b16f39ff7e8cc77eb04ba8dc6376568b"
+"prompts/START_CODER.md" = "a759b2f9bc45e61cedb2d7210e7fd1f865030e9ca21c9a4f8a7a15f2b52b7ef6"
+"prompts/START_TESTER.md" = "98ba52bf26ac36ac48c8171fcd251e738c39a6c7f41c4065d3226b3b31757ffd"
+"prompts/START_REVIEWER.md" = "5e06485a9206a0a3f7d6546da6d3488e41a767ba0b06215db66123539f0fa2b5"
+"tools/council_route.py" = "aaaaab8d358c3eeef63592fb9adea7fa1a87f8413cc08732e3984d73cdf8fa1d"
+"tools/council_stage_launcher.py" = "2c1a826a24f2a74ec018f8b431670d13e391c692ec4b324672aab0d00964fe0c"
+"tools/council_patch_gate.py" = "aa61920436e9311a6af963ff52e3ec834059595972a915e79e51eb4f19192902"
+"tools/coder_export_bundle.py" = "cce68a354d0063ac6a234d8611d0505e2f4170defb589d66849dc5c0c93b3d1e"

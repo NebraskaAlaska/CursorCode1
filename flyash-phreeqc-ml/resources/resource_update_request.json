@@ -1,0 +1,23 @@
+{
+  "action": "check",
+  "constraints": {
+    "allow_database_switch": false,
+    "allow_deploy": false,
+    "allow_live_checkout_modification": false,
+    "allow_main_modification": false,
+    "requires_human_promotion": true,
+    "sandbox_only": true
+  },
+  "notes": "Template only. Replace deterministic request identity, resource, and timestamp before submission.",
+  "request_id": "request-000000000000000000000000",
+  "requested_at": "1970-01-01T00:00:00Z",
+  "requested_by": {
+    "actor_id": "phase-5-council-operator",
+    "actor_role": "council_operator",
+    "actor_type": "council_operator"
+  },
+  "resource_id": "wpi.phreeqc.runtime",
+  "resource_kind": "phreeqc_runtime",
+  "schema": "wpi.virtual-lab.resource-update-request",
+  "version": 1
+}

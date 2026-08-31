@@ -1,0 +1,91 @@
+name: Build unpromoted release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_version:
+        description: Candidate version label (not a promotion)
+        required: true
+        default: 0.1.0-phase4-rc
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: 3.12.10
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Install pinned vulnerability-audit tool
+        working-directory: flyash-phreeqc-ml
+        run: python3 -m pip install --disable-pip-version-check pip-audit==2.10.1
+      - name: Validate source distribution
+        working-directory: flyash-phreeqc-ml
+        run: |
+          python3 scripts/validate_dependency_lock.py
+          python3 scripts/audit_dependencies.py
+          python3 scripts/release_scan.py --tracked --docker-context
+      - name: Verify each release architecture before OCI assembly
+        working-directory: flyash-phreeqc-ml
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            suffix="${platform#linux/}"
+            docker buildx build \
+              --pull \
+              --platform "$platform" \
+              --target test \
+              --load \
+              --tag "wpi-virtual-lab:preflight-$suffix" \
+              .
+            docker run --rm --init \
+              --platform "$platform" \
+              --env PHREEQC_INTEGRATION_REQUIRED=1 \
+              --entrypoint python \
+              "wpi-virtual-lab:preflight-$suffix" \
+              -m pytest -q -p no:cacheprovider -o addopts='' \
+              tests/test_phreeqc_runtime_phase4.py \
+              tests/test_phreeqc_executor.py \
+              tests/test_phreeqc_runner.py \
+              tests/test_phreeqc_run_contract.py \
+              tests/test_resource_steward_phase4.py
+          done
+      - name: Build multi-platform OCI candidate without publishing
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: flyash-phreeqc-ml
+          file: flyash-phreeqc-ml/Dockerfile
+          target: release
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=oci,dest=/tmp/wpi-virtual-lab-candidate.tar
+          build-args: |
+            APP_VERSION=${{ inputs.candidate_version }}
+            VCS_REF=${{ github.sha }}
+      - name: Generate evidence-preserving manifest
+        working-directory: flyash-phreeqc-ml
+        run: |
+          python3 scripts/generate_release_manifest.py \
+            --output /tmp/release-manifest.json \
+            --image-reference "wpi-virtual-lab:${{ inputs.candidate_version }}" \
+            --image-digest "${{ steps.build.outputs.digest }}" \
+            --test-evidence "source-scan:${{ github.sha }}" \
+            --test-evidence "dependency-vulnerability-audit:pip-audit-2.10.1:${{ github.sha }}" \
+            --test-evidence "per-architecture-phreeqc-integration:linux-amd64-linux-arm64:${{ github.sha }}" \
+            --test-evidence "multi-platform-build:${{ steps.build.outputs.digest }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wpi-virtual-lab-${{ inputs.candidate_version }}-unpromoted
+          path: |
+            /tmp/wpi-virtual-lab-candidate.tar
+            /tmp/release-manifest.json
+          retention-days: 14
+          if-no-files-found: error

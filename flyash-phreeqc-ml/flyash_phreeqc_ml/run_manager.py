@@ -44,6 +44,8 @@ from pathlib import Path
 import pandas as pd
 
 from . import config, units
+from .security.identity import DeploymentMode, ROLE_MEMBER, current_identity
+from .storage_scope import StorageScope, StorageScopeError
 
 # --------------------------------------------------------------------------- #
 # Vocabulary
@@ -227,25 +229,80 @@ def safe_run_name(name: str) -> str:
     return slug
 
 
-def runs_root() -> Path:
-    return config.EXPERIMENT_RUNS_DIR
+def runs_root(identity=None) -> Path:
+    """Identity-scoped experiment root (historical path unchanged in local mode)."""
+    principal = identity or current_identity()
+    try:
+        return StorageScope.for_identity(config.EXPERIMENT_RUNS_DIR, principal).tenant_root
+    except StorageScopeError as exc:
+        raise RunManagerError(str(exc)) from exc
+
+
+def _require_write() -> None:
+    current_identity().require_role(ROLE_MEMBER)
+
+
+def _require_local_pipeline() -> None:
+    """The historical shared pipeline is never a hosted tenant data sink/source."""
+    _require_write()
+    if current_identity().deployment_mode is DeploymentMode.HOSTED:
+        raise RunManagerError(
+            "the shared legacy pipeline bridge is unavailable in hosted mode")
+
+
+def _scoped_run_component(run_name: str) -> str:
+    """Reject path-like identifiers before applying the legacy display-name slug."""
+    raw = str(run_name or "").strip()
+    if len(raw.encode("utf-8")) > 512:
+        raise RunManagerError("run name exceeds the supported length")
+    if "/" in raw or "\\" in raw or any(
+            ord(char) < 32 or ord(char) == 127 for char in raw):
+        raise RunManagerError("run name is not a safe scoped identifier")
+    slug = safe_run_name(raw)
+    if len(slug) > 160:
+        raise RunManagerError("run name exceeds the supported length")
+    return slug
+
+
+def _scoped_path(run_name: str, *parts: str) -> Path:
+    root = runs_root()
+    if root.exists() and root.is_symlink():
+        raise RunManagerError("experiment root must not be a symlink")
+    safe_name = _scoped_run_component(run_name)
+    candidate = root / safe_name
+    for part in parts:
+        value = str(part)
+        if not value or value in {".", ".."} or Path(value).name != value \
+                or "/" in value or "\\" in value:
+            raise RunManagerError("unsafe run path component")
+        candidate = candidate / value
+    try:
+        candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except ValueError as exc:
+        raise RunManagerError("run path escapes the scoped experiment root") from exc
+    current = root
+    for part in (safe_name, *parts):
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise RunManagerError("symlink-backed run paths are not permitted")
+    return candidate
 
 
 def run_dir(run_name: str) -> Path:
     """Folder for a run (by raw or already-safe name)."""
-    return runs_root() / safe_run_name(run_name)
+    return _scoped_path(run_name)
 
 
 def run_config_path(run_name: str) -> Path:
-    return run_dir(run_name) / RUN_CONFIG_FILENAME
+    return _scoped_path(run_name, RUN_CONFIG_FILENAME)
 
 
 def run_data_dir(run_name: str) -> Path:
-    return run_dir(run_name) / "data"
+    return _scoped_path(run_name, "data")
 
 
 def run_outputs_dir(run_name: str) -> Path:
-    return run_dir(run_name) / "outputs"
+    return _scoped_path(run_name, "outputs")
 
 
 def generated_simulations_dir(run_name: str) -> Path:
@@ -254,28 +311,32 @@ def generated_simulations_dir(run_name: str) -> Path:
     Real generated runs go under ``experiments/<run>/outputs/generated/``, never
     ``data/raw/`` (which is for hand-built, committed inputs).
     """
-    path = run_outputs_dir(run_name) / "generated"
+    _require_write()
+    path = _scoped_path(run_name, "outputs", "generated")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def surrogate_dir(run_name: str) -> Path:
     """Where this run's surrogate design/dataset/models live (gitignored)."""
-    path = run_outputs_dir(run_name) / "surrogate"
+    _require_write()
+    path = _scoped_path(run_name, "outputs", "surrogate")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def residual_model_dir(run_name: str) -> Path:
     """Where this run's trained residual-correction models + cards live (gitignored)."""
-    path = run_outputs_dir(run_name) / "residual_model"
+    _require_write()
+    path = _scoped_path(run_name, "outputs", "residual_model")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def incompleteness_model_dir(run_name: str) -> Path:
     """Where this run's trained model-incompleteness GPs + cards live (gitignored)."""
-    path = run_outputs_dir(run_name) / "incompleteness_model"
+    _require_write()
+    path = _scoped_path(run_name, "outputs", "incompleteness_model")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -287,7 +348,8 @@ def model_registry_dir(run_name: str) -> Path:
     mechanical-property surrogate models and their training datasets — never measured data and
     never a committed artifact.
     """
-    path = run_outputs_dir(run_name) / "model_registry"
+    _require_write()
+    path = _scoped_path(run_name, "outputs", "model_registry")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -335,6 +397,7 @@ def create_run(
     run directory. Raises :class:`RunManagerError` on an unknown run_type or if the
     run already exists (unless ``exist_ok``).
     """
+    _require_write()
     _validate_run_type(run_type)
     spec = RUN_TYPE_SPECS[run_type]
     if data_source is None:
@@ -345,10 +408,15 @@ def create_run(
         )
 
     directory = run_dir(run_name)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(exist_ok=exist_ok)
+    except FileExistsError as exc:
+        raise RunManagerError(f"run already exists: {directory}") from exc
     if run_exists(run_name) and not exist_ok:
         raise RunManagerError(f"run already exists: {directory}")
 
-    run_data_dir(run_name).mkdir(parents=True, exist_ok=True)
+    run_data_dir(run_name).mkdir(exist_ok=True)
     run_outputs_dir(run_name).mkdir(parents=True, exist_ok=True)
 
     if created_at is None:
@@ -380,7 +448,9 @@ def list_runs() -> list[str]:
         return []
     names = [
         p.name for p in root.iterdir()
-        if p.is_dir() and (p / RUN_CONFIG_FILENAME).exists()
+        if p.is_dir() and not p.is_symlink()
+        and (p / RUN_CONFIG_FILENAME).is_file()
+        and not (p / RUN_CONFIG_FILENAME).is_symlink()
     ]
     return sorted(names)
 
@@ -409,7 +479,7 @@ def data_file_path(run_name: str) -> Path:
     """Path to the run's data CSV, chosen by its run_type (no type restriction)."""
     cfg = load_run_config(run_name)
     spec = RUN_TYPE_SPECS[cfg["run_type"]]
-    return run_data_dir(run_name) / spec.data_filename
+    return _scoped_path(run_name, "data", spec.data_filename)
 
 
 def lab_release_path(run_name: str) -> Path:
@@ -419,19 +489,19 @@ def lab_release_path(run_name: str) -> Path:
     never be written here.
     """
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_data_dir(run_name) / "experimental_release.csv"
+    return _scoped_path(run_name, "data", "experimental_release.csv")
 
 
 def literature_path(run_name: str) -> Path:
     """Path to a literature run's ``literature_benchmark.csv`` (literature only)."""
     require_run_type(run_name, ["literature_benchmark"])
-    return run_data_dir(run_name) / "literature_benchmark.csv"
+    return _scoped_path(run_name, "data", "literature_benchmark.csv")
 
 
 def demo_path(run_name: str) -> Path:
     """Path to a synthetic_demo run's ``demo_data.csv`` (synthetic only)."""
     require_run_type(run_name, ["synthetic_demo"])
-    return run_data_dir(run_name) / "demo_data.csv"
+    return _scoped_path(run_name, "data", "demo_data.csv")
 
 
 # --------------------------------------------------------------------------- #
@@ -449,6 +519,7 @@ def read_data_file(run_name: str) -> pd.DataFrame:
 
 def _append_row(path: Path, row: dict, columns: list[str]) -> Path:
     """Append one aligned row to a CSV, writing the header on first write."""
+    _require_write()
     aligned = {col: ("" if row.get(col) is None else row.get(col)) for col in columns}
     frame = pd.DataFrame([aligned], columns=columns)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,6 +547,7 @@ def append_lab_row(run_name: str, row: dict) -> Path:
     Blank chemistry fields are allowed. Raises :class:`RunTypeError` for non-lab
     runs.
     """
+    _require_write()
     path = lab_release_path(run_name)
     aligned = {col: ("" if row.get(col) is None else row.get(col))
                for col in config.EXPERIMENTAL_RELEASE_COLUMNS}
@@ -498,12 +570,14 @@ def append_lab_row(run_name: str, row: dict) -> Path:
 
 def append_literature_row(run_name: str, row: dict) -> Path:
     """Append a row to a literature run's benchmark file (literature only)."""
+    _require_write()
     path = literature_path(run_name)
     return _append_row(path, row, LITERATURE_BENCHMARK_COLUMNS)
 
 
 def append_demo_row(run_name: str, row: dict) -> Path:
     """Append a synthetic_demo row, forcing ``source_type=synthetic_demo``."""
+    _require_write()
     path = demo_path(run_name)
     stamped = dict(row)
     stamped["source_type"] = SYNTHETIC_SOURCE_TAG
@@ -549,6 +623,7 @@ def save_lab_dataframe(run_name: str, df: pd.DataFrame, mode: str = "replace",
     name / sheet / column mapping it knows (the app does); omit it (the test does) and
     a still-valid import event is logged.
     """
+    _require_write()
     if mode not in ("replace", "append"):
         raise ValueError(f"mode must be 'replace' or 'append', got {mode!r}")
     path = lab_release_path(run_name)  # enforces the lab-only guardrail
@@ -584,6 +659,7 @@ def save_literature_dataframe(run_name: str, df: pd.DataFrame) -> Path:
     Reindexes to the literature schema (extra columns kept after the canonical
     ones) so an uploaded file always lands with the expected headers first.
     """
+    _require_write()
     path = literature_path(run_name)
     extra = [c for c in df.columns if c not in LITERATURE_BENCHMARK_COLUMNS]
     ordered = LITERATURE_BENCHMARK_COLUMNS + extra
@@ -605,6 +681,7 @@ def save_data_file(run_name: str, df: pd.DataFrame) -> Path:
     Touches only this run's file under ``experiments/<run>/data/`` — never another
     run and never ``data/raw/experimental_icp``.
     """
+    _require_write()
     path = data_file_path(run_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
@@ -631,6 +708,7 @@ def delete_data_rows(run_name: str, row_indices) -> int:
     duplicate indices are ignored. Returns the number of rows actually deleted.
     Works for any run type (lab / literature / synthetic / plastic).
     """
+    _require_write()
     path = data_file_path(run_name)
     if not path.exists():
         return 0
@@ -651,6 +729,7 @@ def remove_blank_data_rows(run_name: str) -> int:
     preserved (kept rows are written back); if there are no blank rows the file is
     left untouched.
     """
+    _require_write()
     path = data_file_path(run_name)
     if not path.exists():
         return 0
@@ -685,7 +764,7 @@ MAPPING_COLUMNS = ["sample_id", "phreeqc_record_key"]
 def mapping_path(run_name: str) -> Path:
     """Path to a lab-type run's ``sample_phreeqc_map.csv`` (lab-like runs only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_data_dir(run_name) / config.SAMPLE_PHREEQC_MAP_CSV
+    return _scoped_path(run_name, "data", config.SAMPLE_PHREEQC_MAP_CSV)
 
 
 def read_mapping(run_name: str) -> pd.DataFrame:
@@ -734,6 +813,7 @@ def add_mapping(run_name: str, sample_id: str, phreeqc_record_key: str) -> pd.Da
     If ``sample_id`` is already mapped, its row is replaced (one link per sample).
     Returns the full mapping frame after the write.
     """
+    _require_write()
     sid = str(sample_id).strip()
     key = str(phreeqc_record_key).strip()
     if not sid:
@@ -755,6 +835,7 @@ def add_mapping(run_name: str, sample_id: str, phreeqc_record_key: str) -> pd.Da
 
 def delete_mapping_rows(run_name: str, row_indices) -> int:
     """Delete mapping rows by 0-based position. Returns the number removed."""
+    _require_write()
     path = mapping_path(run_name)
     if not path.exists():
         return 0
@@ -783,6 +864,7 @@ def export_mapping_to_pipeline(run_name: str) -> Path:
     Writes to ``data/raw/experimental_icp/sample_phreeqc_map.csv`` so step 05 picks
     it up automatically. Raises if the run has no mapping yet.
     """
+    _require_local_pipeline()
     src = mapping_path(run_name)  # enforces lab-like run_type
     if not src.exists():
         raise RunManagerError(
@@ -809,7 +891,7 @@ REPLICATE_SOLUTION_FILENAME = "replicate_solution_map.csv"
 def condition_mapping_path(run_name: str) -> Path:
     """Path to a lab-like run's condition→PHREEQC map (lab-like runs only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_data_dir(run_name) / CONDITION_MAPPING_FILENAME
+    return _scoped_path(run_name, "data", CONDITION_MAPPING_FILENAME)
 
 
 def read_condition_mapping(run_name: str) -> pd.DataFrame:
@@ -841,6 +923,7 @@ def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key:
     they never reach the per-sample map the comparison step reads, so the pipeline is
     unaffected.
     """
+    _require_write()
     ck = str(condition_key).strip()
     key = str(phreeqc_record_key).strip()
     if not ck:
@@ -867,6 +950,7 @@ def add_condition_mapping(run_name: str, condition_key: str, phreeqc_record_key:
 
 def delete_condition_mapping_rows(run_name: str, row_indices) -> int:
     """Delete condition-mapping rows by 0-based position. Returns the number removed."""
+    _require_write()
     path = condition_mapping_path(run_name)
     if not path.exists():
         return 0
@@ -896,7 +980,7 @@ def has_condition_mapping(run_name: str) -> bool:
 def read_replicate_solution_map(run_name: str) -> pd.DataFrame:
     """Read the optional replicate_id→solution_number map (empty frame if none)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    path = run_data_dir(run_name) / REPLICATE_SOLUTION_FILENAME
+    path = _scoped_path(run_name, "data", REPLICATE_SOLUTION_FILENAME)
     if path.exists():
         return pd.read_csv(path)
     return pd.DataFrame(columns=REPLICATE_SOLUTION_COLUMNS)
@@ -904,6 +988,7 @@ def read_replicate_solution_map(run_name: str) -> pd.DataFrame:
 
 def add_replicate_solution(run_name: str, replicate_id: str, solution_number: str) -> pd.DataFrame:
     """Upsert one ``replicate_id -> solution_number`` link (advanced, optional)."""
+    _require_write()
     rid = str(replicate_id).strip().upper()
     sol = str(solution_number).strip()
     if not rid or not sol:
@@ -915,7 +1000,7 @@ def add_replicate_solution(run_name: str, replicate_id: str, solution_number: st
     new = pd.DataFrame([{"replicate_id": rid, "solution_number": sol}],
                        columns=REPLICATE_SOLUTION_COLUMNS)
     out = pd.concat([df, new], ignore_index=True)[REPLICATE_SOLUTION_COLUMNS]
-    path = run_data_dir(run_name) / REPLICATE_SOLUTION_FILENAME
+    path = _scoped_path(run_name, "data", REPLICATE_SOLUTION_FILENAME)
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
     return out
@@ -930,6 +1015,7 @@ def apply_condition_mapping(run_name: str, *, use_replicate_solution: bool = Fal
     ``sample_phreeqc_map.csv`` so :func:`export_mapping_to_pipeline` + step 05 work
     unchanged. Raises if the run has no condition mapping yet.
     """
+    _require_write()
     from . import replicates  # local import keeps module import order simple
 
     if not has_condition_mapping(run_name):
@@ -979,19 +1065,19 @@ _COMPARISON_SOURCE_LABELS = {
 def comparison_path(run_name: str) -> Path:
     """Path to a lab-like run's per-run comparison CSV (lab-like runs only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_outputs_dir(run_name) / COMPARISON_FILENAME
+    return _scoped_path(run_name, "outputs", COMPARISON_FILENAME)
 
 
 def comparison_figures_dir(run_name: str) -> Path:
     """Directory for a lab-like run's per-run comparison figures (lab-like only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_outputs_dir(run_name) / COMPARISON_FIGURES_DIRNAME
+    return _scoped_path(run_name, "outputs", COMPARISON_FIGURES_DIRNAME)
 
 
 def comparison_meta_path(run_name: str) -> Path:
     """Path to a lab-like run's comparison provenance stamp (lab-like runs only)."""
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_outputs_dir(run_name) / COMPARISON_META_FILENAME
+    return _scoped_path(run_name, "outputs", COMPARISON_META_FILENAME)
 
 
 def bias_table_path(run_name: str) -> Path:
@@ -1001,7 +1087,7 @@ def bias_table_path(run_name: str) -> Path:
     provenance stamp because both derive from the same three inputs.
     """
     require_run_type(run_name, LAB_LIKE_RUN_TYPES)
-    return run_outputs_dir(run_name) / BIAS_TABLE_FILENAME
+    return _scoped_path(run_name, "outputs", BIAS_TABLE_FILENAME)
 
 
 def has_comparison(run_name: str) -> bool:
@@ -1038,6 +1124,7 @@ def write_comparison_meta(run_name: str, *, timestamp: str | None = None) -> Pat
     ``data/processed/phreeqc_results.csv``. :func:`comparison_is_current` re-checks
     these to decide whether the stored results still match the live inputs.
     """
+    _require_local_pipeline()
     cfg = require_run_type(run_name, LAB_LIKE_RUN_TYPES)
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
@@ -1076,6 +1163,8 @@ def comparison_is_current(run_name: str) -> tuple[bool, list[str]]:
     still matches what was recorded. Otherwise ``stale_reasons`` explains why (no
     results yet, no stamp, or which input changed/appeared/disappeared).
     """
+    if current_identity().deployment_mode is DeploymentMode.HOSTED:
+        return False, ["The shared legacy comparison pipeline is unavailable in hosted mode."]
     if not comparison_path(run_name).exists():
         return False, ["No comparison has been generated for this run yet."]
     meta = read_comparison_meta(run_name)
@@ -1110,6 +1199,7 @@ def export_lab_run_to_pipeline(run_name: str) -> Path:
     Raises :class:`RunTypeError` for non-lab runs and :class:`RunManagerError` if
     the run has no data file yet.
     """
+    _require_local_pipeline()
     src = lab_release_path(run_name)  # also enforces run_type
     if not src.exists():
         raise RunManagerError(

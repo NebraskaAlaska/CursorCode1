@@ -1,0 +1,31 @@
+{
+  "schema": "wpi.virtual-lab.phreeqc-release-notes",
+  "version": 1,
+  "artifact_id": "usgs.phreeqc.release-notes",
+  "artifact_version": "3.8.6-17100",
+  "repository_path": "release/PHREEQC_RELEASE_NOTES_3.8.6-17100.json",
+  "provider": "U.S. Geological Survey",
+  "official_release_page": "https://water.usgs.gov/water-resources/software/PHREEQC/",
+  "source_archive_url": "https://water.usgs.gov/water-resources/software/PHREEQC/phreeqc-3.8.6-17100.tar.gz",
+  "archive_filename": "phreeqc-3.8.6-17100.tar.gz",
+  "reviewed_on": "2026-08-29",
+  "release_metadata": [
+    "Official PHREEQC Version 3 download metadata identifies release 3.8.6-17100.",
+    "The official Linux distribution listing records source and configure files, database files, examples, and PDF documentation."
+  ],
+  "limitations": [
+    "Release metadata describes a software distribution; it is not a scientific result or experimental validation.",
+    "The reviewed official download page does not publish a version-specific change list, so this artifact does not infer undocumented changes."
+  ],
+  "citation": {
+    "title": "PHREEQC Version 3 Downloads",
+    "authors": [
+      "U.S. Geological Survey"
+    ],
+    "year": null,
+    "doi": "",
+    "url": "https://water.usgs.gov/water-resources/software/PHREEQC/",
+    "source_location": "Batch Versions; Linux (any processor)",
+    "extraction_confidence": 1.0
+  }
+}

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 
 from ..simulation import scenario_schema as S
+from ..resources.knowledge import scientific_resource_facts
 from . import agent_actions as A
 from . import domains
 
@@ -178,6 +179,13 @@ def build_user_prompt(state, user_message: str) -> str:
     domain_label = domains.label(state.domain)
     engine = state.engine or ("PHREEQC" if domains.is_executable(state.domain)
                               else "none (planning-only)")
+    resource_facts = scientific_resource_facts()
+    # Persist exactly which public, versioned facts were supplied. This is an intentional audit
+    # side effect; no provider response, user data, credential, or private path is recorded.
+    try:
+        state.resource_knowledge_provenance = resource_facts
+    except (AttributeError, TypeError):
+        pass
 
     lines = [
         "CURRENT DETERMINISTIC STATE (computed by the app — do not contradict it):",
@@ -203,6 +211,34 @@ def build_user_prompt(state, user_message: str) -> str:
         f"results available: {state.has_results}",
         "",
     ]
+    lines.append("VERSIONED SCIENTIFIC RESOURCE KNOWLEDGE (local, deterministic):")
+    if resource_facts.get("available"):
+        lines.append(
+            f"- catalog generation: {resource_facts['catalog_generation']}; "
+            f"catalog SHA-256: {resource_facts['catalog_hash']}")
+        lines.append(
+            f"- catalog projection: {resource_facts.get('catalog_projection', 'not recorded')}")
+        lines.append(f"- knowledge-pack SHA-256: {resource_facts['pack_hash']}")
+        for fact in resource_facts.get("facts", ()):
+            sources = ", ".join(fact.get("source_installation_ids", ())) or "none"
+            artifacts = ", ".join(
+                f"{item.get('artifact_id', '')}@{item.get('artifact_version', '')} "
+                f"sha256={item.get('sha256', '')}"
+                for item in fact.get("source_artifacts", ())
+            ) or "none"
+            lines.append(
+                f"- [{fact.get('fact_id', '')}] fact_type={fact.get('fact_type', '')}: "
+                f"{fact.get('statement', '')} (installation IDs: {sources}; "
+                f"source artifacts: {artifacts})")
+        lines.append(
+            "Treat only entries typed active_runtime_fact or active_database_fact as current "
+            "installation facts; keep documentation_statement and project_policy distinct. "
+            "Preserve the catalog, pack, fact, and installation identities when citing them.")
+    else:
+        lines.append(
+            f"- unavailable ({resource_facts.get('reason', 'knowledge_pack_unavailable')}).")
+        lines.append(f"- {resource_facts.get('instruction', '')}")
+    lines.append("")
     if state.warnings:
         lines.append("Standing scientific caveats (code-generated — never weaken these):")
         for w in state.warnings[:8]:

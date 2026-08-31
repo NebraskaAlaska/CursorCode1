@@ -38,7 +38,7 @@ MAX_TOKENS = 1500
 # Per-session consent (same spirit as the other AI features).
 COUNCIL_DATA_NOTICE = (
     "The council sends the current structured experiment state (not measured data, not files, "
-    "not secrets) to the Anthropic API to produce an advisory review. It never runs anything and "
+    "not secrets) to the configured AI provider to produce an advisory review. It never runs anything and "
     "never decides the action — the orchestrator and the confirmation gate still control that.")
 
 DETERMINISTIC_NOTE = "AI council unavailable; using deterministic review."

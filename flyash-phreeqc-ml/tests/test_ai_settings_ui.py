@@ -23,6 +23,7 @@ import pytest
 
 from flyash_phreeqc_ml.agent import agent_orchestrator
 from flyash_phreeqc_ml.ai import config as ai_config
+from ui import settings as settings_ui
 
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
@@ -35,8 +36,15 @@ SECRET = "sk-ant-TESTKEY-not-real-do-not-leak-0001"
 @pytest.fixture(autouse=True)
 def _ai_env(monkeypatch):
     """Start every test env-only with no Streamlit secrets and no runtime overrides."""
-    for name in (ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV):
+    for name in (
+        ai_config.API_KEY_ENV, ai_config.MODEL_ENV, ai_config.PROVIDER_ENV,
+        ai_config.AI_PROVIDER_ENV, ai_config.AI_MODEL_ENV, ai_config.AI_BASE_URL_ENV,
+        ai_config.AI_LOCATION_ENV, ai_config.AI_ALLOWED_HOSTS_ENV,
+        ai_config.AI_ADMIN_MANAGED_ENV, ai_config.AI_API_KEY_ENV,
+        ai_config.OPENAI_API_KEY_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ai_config.DEPLOYMENT_MODE_ENV, "local")
     ai_config.clear_runtime_overrides()
     monkeypatch.setattr(ai_config, "_secrets_get", lambda name: None)
     monkeypatch.setattr(ai_config, "sdk_available", lambda: True)   # SDK genuinely installed
@@ -79,6 +87,28 @@ def _spy(captured):
         return types.SimpleNamespace(state=state, assistant_message="ok", action=None,
                                      council=None, executed=False, awaiting_confirmation=False)
     return respond
+
+
+def test_ollama_model_suggestions_do_not_reuse_anthropic_session_model():
+    options = settings_ui._model_suggestions(
+        ai_config.PROVIDER_OLLAMA,
+        ai_config.PROVIDER_ANTHROPIC,
+        ai_config.DEFAULT_MODEL,
+    )
+
+    assert options == list(ai_config.OLLAMA_SUGGESTED_MODELS)
+    assert options and all(not model.startswith("claude-") for model in options)
+
+
+def test_existing_ollama_model_remains_first_suggestion():
+    options = settings_ui._model_suggestions(
+        ai_config.PROVIDER_OLLAMA,
+        ai_config.PROVIDER_OLLAMA,
+        "reviewed-local-model:1",
+    )
+
+    assert options[0] == "reviewed-local-model:1"
+    assert set(ai_config.OLLAMA_SUGGESTED_MODELS).issubset(options)
 
 
 # --------------------------------------------------------------------------- #
