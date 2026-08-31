@@ -30,11 +30,17 @@ def _refs(remote: Path) -> str:
 
 
 def test_phase5_ci_runs_every_r1_functional_contract_and_preserves_both_release_gates():
-    workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
+    workflow_path = Path(
+        os.environ.get(
+            "WPI_PHASE5_CI_WORKFLOW",
+            Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml",
+        )
     )
+    workflow = workflow_path.read_text(encoding="utf-8")
     for required in (
         "python -m venv /tmp/wpi-phase5-ci-venv",
+        "WPI_PHASE5_CI_WORKFLOW=/tmp/wpi-phase5-ci.yml",
+        'src="$GITHUB_WORKSPACE/.github/workflows/ci.yml",dst=/tmp/wpi-phase5-ci.yml,readonly',
         "tests/test_council_operator_installation_phase5_r1.py",
         "tests/test_council_operator_runtime_phase5_r1.py",
         "tests/test_council_operator_stale_lock_r1.py",

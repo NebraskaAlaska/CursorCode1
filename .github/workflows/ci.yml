@@ -103,7 +103,13 @@ jobs:
       - name: Build test image without cache
         run: docker build --pull --no-cache --target test -t wpi-virtual-lab:test .
       - name: Run full suite in exact test image
-        run: docker run --rm --init -e PHREEQC_INTEGRATION_REQUIRED=1 --entrypoint python wpi-virtual-lab:test -m pytest -q -p no:cacheprovider -o addopts=''
+        run: |
+          docker run --rm --init \
+            -e PHREEQC_INTEGRATION_REQUIRED=1 \
+            -e WPI_PHASE5_CI_WORKFLOW=/tmp/wpi-phase5-ci.yml \
+            --mount type=bind,src="$GITHUB_WORKSPACE/.github/workflows/ci.yml",dst=/tmp/wpi-phase5-ci.yml,readonly \
+            --entrypoint python wpi-virtual-lab:test \
+            -m pytest -q -p no:cacheprovider -o addopts=''
       - name: Bootstrap pinned resources and offline knowledge fail-closed
         run: |
           docker volume create wpi-ci-resources >/dev/null
