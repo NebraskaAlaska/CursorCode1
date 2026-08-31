@@ -195,9 +195,45 @@ def _environment(
     home.mkdir(exist_ok=True)
     shims = target / "shims"
     shims.mkdir(exist_ok=True)
+    system_tools = target / "system-tools"
+    system_tools.mkdir(exist_ok=True)
+
+    # Keep the fixture PATH closed over the exact POSIX tools used by the
+    # bootstrap.  In particular, do not inherit a runner-provided python3.12
+    # or Docker executable from /usr/bin, /usr/local/bin, or a hosted-tool
+    # cache.  Symlinking this explicit allowlist keeps the fixture portable
+    # across macOS and Linux while still exercising the real shell scripts.
+    for command in (
+        "awk",
+        "cat",
+        "chmod",
+        "cmp",
+        "cp",
+        "dirname",
+        "env",
+        "id",
+        "ln",
+        "mkdir",
+        "mv",
+        "readlink",
+        "rm",
+        "sed",
+        "stat",
+    ):
+        executable = shutil.which(command)
+        assert executable is not None, f"required fixture tool is unavailable: {command}"
+        (system_tools / command).symlink_to(executable)
     _write_shim(
         shims / "uname",
-        "#!/bin/sh\ncase \"${1:-}\" in -s) echo Darwin ;; -m) echo arm64 ;; *) exit 2 ;; esac\n",
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  -s) echo Darwin ;;\n"
+        "  -m) echo arm64 ;;\n"
+        "  -r) echo 23.0.0 ;;\n"
+        "  -rs|-sr) echo 'Darwin 23.0.0' ;;\n"
+        "  -a) echo 'Darwin synthetic-host 23.0.0 Darwin Kernel Version 23.0.0: arm64' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
     )
     system_python_marker = target / "system-python39-was-selected"
     _write_shim(
@@ -229,7 +265,7 @@ def _environment(
             "XDG_CONFIG_HOME": str(home / ".config"),
             "XDG_DATA_HOME": str(home / ".local" / "share"),
             "XDG_BIN_HOME": str(home / ".local" / "bin"),
-            "PATH": f"{shims}{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "PATH": f"{shims}{os.pathsep}{system_tools}",
             "LANG": "C",
         }
     )
