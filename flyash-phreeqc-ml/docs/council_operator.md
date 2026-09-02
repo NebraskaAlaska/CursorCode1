@@ -31,6 +31,68 @@ resolver emits one installation instruction for creating the project's
 the system Python and never uses a user-site install inside a virtual
 environment.
 
+The first physical Phase 5-R1 Hermes installation attempt demonstrated that a
+valid accepted Python 3.12 virtual environment can exist without importable
+`pip`. The approved checkout and Council contract, all ten required Hermes
+profiles, Docker, and the dependency-lock declaration passed, and the project
+interpreter was Python 3.12.14 while the system `python3` remained Python
+3.9.6. Installation then stopped at `No module named pip`. No worker doctor,
+Council role, model invocation, or task submission occurred.
+
+The R1 resolver selected exact Python 3.12 correctly, but the installer
+assumed that an accepted pre-existing environment also contained pip. Its
+functional Python 3.12 virtual-environment matrix did not include an explicit
+`venv --without-pip` case. R1 also installed `requirements-dev.txt` before the
+editable build without explicitly requesting the `setuptools==83.0.0` required
+by both `pyproject.toml` and `constraints-py312.txt`; the exact CI image had
+established that build requirement separately. R2 corrects these two aligned
+bootstrap assumptions without changing dependency authority.
+
+This correction changes only local operator bootstrap and build-toolchain
+validation. Remote CAS locking, exact stale-state approval, owned worker
+process groups and `caffeinate`, disposable role workspaces, non-mutating
+remote push preflight, task-branch-only automatic push, human approval
+separation, Resource Steward promotion/rollback authority, and all PHREEQC,
+ICP, XRD, ML, evidence, and validation boundaries are unchanged.
+
+For a new installation, the corrected installer gives the exact selected
+operator interpreter to the single reusable
+`scripts/bootstrap_council_pip.py` helper. The helper first
+rechecks exact Python 3.12 and then tests `python -m pip --version`. A working
+`pip` is preserved without an upgrade. If and only if `pip` is missing, that
+same interpreter runs its standard-library `ensurepip --default-pip`; no other
+Python, `sudo`, `--user`, activation, environment recreation, downloaded
+`get-pip.py`, `curl` bootstrap, or remote executable bootstrap is permitted.
+The helper then proves that `python -m pip` works and that the pip module and
+distribution belong to the selected environment, not the system Python or
+user site. Its bounded result records the interpreter, prefix, pip version and
+locations, and whether bootstrap occurred. Missing or failed `ensurepip` stops
+with one deterministic corrective instruction. A present but broken or
+externally resolved pip fails closed and is not reclassified as missing to
+trigger ensurepip.
+
+Before the editable installation, the installer explicitly establishes the
+build requirement declared by `pyproject.toml` using the same exact
+constraints authority as the runtime and development dependencies. Its
+dependency operation is equivalent to:
+
+```bash
+python -m pip install \
+  --constraint constraints-py312.txt \
+  setuptools==83.0.0 \
+  --requirement requirements-dev.txt
+python -m pip install \
+  --no-build-isolation \
+  --no-deps \
+  --editable /absolute/path/to/flyash-phreeqc-ml
+```
+
+Validation requires Python 3.12, `setuptools==83.0.0`, every runtime pin, the
+pytest development pin, the editable package resolving to the intended
+checkout, required imports, and `pip check`. `--no-build-isolation` and the
+tracked exact pins remain mandatory; neither an ambient nor an unconstrained
+setuptools satisfies the contract.
+
 When the selected interpreter is already a virtual environment, the package
 is installed there. When it is a base interpreter, the installer creates a
 dedicated environment under the user-local operator installation root. It
@@ -43,6 +105,18 @@ fails closed instead of being replaced silently.
 Config, runtime-record, and launcher directory chains must stay under the
 configured user home and be real, current-user-owned, and not group- or
 world-writable; shared writable or symlinked installation parents are refused.
+
+Safe empty directories are not an incompatible installation. A prior stopped
+attempt may leave an empty config parent, an empty install root, or an existing
+`~/.local/bin`; the corrected installer validates and reuses that shape without
+requiring deletion. Existing config, runtime records, installed resolvers,
+launchers, symlinks, or environments still receive the stricter compatibility
+checks. For a new installation, config, runtime record, installed resolver,
+and stable launcher publication occur only after pip bootstrap, dependency and
+build-tool installation, editable installation, and every installed-runtime
+validation succeed. Bootstrap or installation failure removes temporary files
+and any newly created incomplete dedicated environment, and publishes none of
+those operator-state artifacts.
 
 Use a private `control_remote` for private state metadata. The operator does not create that repository or infer its visibility. Private/confidential classification is enabled only when a separate remote is configured and `control_remote_private = true` is explicitly attested after verifying its visibility. With an unattested, public, or shared control remote, only public or sanitized requests are accepted and secret/research-content scans still run.
 
@@ -220,6 +294,22 @@ The Resource Steward adapter delegates to the existing Phase 4 deterministic CLI
 - Network failure: no state is inferred from local intent. Re-read the remote state ref and code branch before retrying.
 - Remote permission failure: inspect the bounded `doctor` failure class. Readability alone is insufficient; both the ordinary task-branch namespace and control state-ref namespace must pass the non-mutating push dry run before model stages can begin.
 - Worker stop refusal: retain the metadata and inspect it. A malformed record, reused PID, unrelated process identity, or legacy PID-only file is deliberately never treated as authority to send a signal. Remote lease recovery remains a separate operator action.
+- Installer reports missing `pip`: use the corrected installer with the same
+  selected Python 3.12. Do not run `get-pip.py`, curl executable bootstrap
+  content, activate another environment, or fall back to system Python. A
+  missing or failed standard-library `ensurepip` is a fail-closed host
+  prerequisite, not permission to weaken the bootstrap contract.
+- A stopped installer left only empty user-local parents: leave those safe
+  directories in place and rerun the corrected installer. Do not delete them.
+  A config, runtime record, installed resolver, launcher, symlink, or dedicated
+  environment is different state and must pass the documented compatibility
+  checks rather than being overwritten.
 - Handoff conflict: re-read the Obsidian note, calculate its current SHA-256, and explicitly retry `sync-handoff`; synchronization only appends sanitized summaries.
 
-See [`hermes_operator_installation.md`](hermes_operator_installation.md) for the corrected worker bootstrap and [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) for the controlled physical acceptance procedure. The latter has not yet been run on live Hermes.
+See [`hermes_operator_installation.md`](hermes_operator_installation.md) for
+the corrected worker bootstrap and
+[`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) for the
+controlled physical acceptance procedure. The first physical attempt stopped
+safely inside installation before worker doctor, model invocation, or task
+submission. Acceptance remains incomplete; the R2 repository correction does
+not resume it.

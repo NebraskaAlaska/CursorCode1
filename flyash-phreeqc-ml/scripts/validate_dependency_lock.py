@@ -137,7 +137,7 @@ def main() -> int:
                     errors.append(f"installed: {name} is {found}, expected {version}")
         if not errors:
             check = subprocess.run(
-                [sys.executable, "-m", "pip", "check"], cwd=ROOT, check=False
+                [sys.executable, "-I", "-m", "pip", "check"], cwd=ROOT, check=False
             )
             if check.returncode:
                 errors.append("installed: pip check failed")

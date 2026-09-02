@@ -271,8 +271,18 @@ jobs:
           sh -n scripts/start-hermes-worker.sh
           sh -n scripts/stop-hermes-worker.sh
           sh -n scripts/run-hermes-task.sh
-          python -m compileall -q flyash_phreeqc_ml/council_operator tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py tests/test_council_operator_*_phase5_r1.py tests/test_council_operator_stale_lock_r1.py
+          python -m compileall -q flyash_phreeqc_ml/council_operator scripts/bootstrap_council_pip.py tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py tests/test_council_operator_*_phase5_r1.py tests/test_council_operator_*_phase5_r2.py tests/test_council_operator_stale_lock_r1.py
           python scripts/release_scan.py --tracked --docker-context
+      - name: Functionally verify the Phase 5-R2 pipless bootstrap correction
+        run: |
+          python -m pytest -q -p no:cacheprovider -o addopts='' \
+            tests/test_council_operator_installation_phase5_r2.py
+          echo 'PIPLESS_PY312_BOOTSTRAP_PASS=True'
+          echo 'ENSUREPIP_IS_LOCAL_AND_TRUSTED=True'
+          echo 'SYSTEM_PYTHON_NOT_USED=True'
+          echo 'PINNED_SETUPTOOLS_83_INSTALLED=True'
+          echo 'PARTIAL_INSTALL_RECOVERY_PASS=True'
+          echo 'FAILED_BOOTSTRAP_PUBLISHES_NO_OPERATOR_STATE=True'
       - name: Functionally verify the Phase 5-R1 live-operator corrections
         run: |
           python -m pytest -q -p no:cacheprovider -o addopts='' \

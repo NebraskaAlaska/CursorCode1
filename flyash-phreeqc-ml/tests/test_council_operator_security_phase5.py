@@ -234,9 +234,18 @@ def test_git_client_is_present_only_in_the_exact_test_image_stage():
     assert "apt-get install -y --no-install-recommends git" not in release_stage
     assert "COPY --chown=root:root config ./config" in runtime
     installer = (Path(__file__).resolve().parents[1] / "scripts" / "install-council-operator.sh").read_text(encoding="utf-8")
+    pip_bootstrap = (Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_council_pip.py").read_text(encoding="utf-8")
     assert "pip install --user" not in installer
-    assert '"$operator_python" -m pip install' in installer
+    assert "selected_operator_python -m pip install --disable-pip-version-check" in installer
+    assert 'selected_operator_python "$pip_bootstrap_helper"' in installer
+    assert 'selected_operator_python "$pip_bootstrap_helper" --verify-only' in installer
+    assert "setuptools==83.0.0" in installer
     assert '--no-build-isolation --no-deps --editable "$project_dir"' in installer
+    assert '"-m", "ensurepip", "--default-pip"' in pip_bootstrap
+    assert "ensurepip.__file__" in pip_bootstrap
+    assert 'sysconfig.get_path("stdlib")' in pip_bootstrap
+    assert "get-pip.py" not in pip_bootstrap
+    assert "curl" not in pip_bootstrap
 
 
 def _vault(tmp_path):

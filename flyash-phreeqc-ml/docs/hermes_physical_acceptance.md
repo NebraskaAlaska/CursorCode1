@@ -1,9 +1,30 @@
 # Physical Hermes acceptance runbook
 
-Status: **not run**. Phase 5-R1 changed and tested the repository-side
-installation and lifecycle contracts only. Use this runbook later, from the
-physical Hermes and Personal computers, only after a human explicitly starts
-live acceptance.
+Status: **started, stopped safely during installation, and not accepted**.
+The first physical attempt used approved branch
+`codex/virtual-lab-finalization-personal` at
+`c5688fd36df8061b4bc8975cf9fc3decb5a408e5`. Supplied Hermes evidence records
+the project virtual environment as Python 3.12.14, system `python3` as 3.9.6,
+Docker available, and the Council contract, all ten required profiles, and the
+dependency-lock declaration passing. Installation then failed because the
+selected Python 3.12 environment had no `pip`.
+
+That attempt stopped before config/runtime/resolver/launcher publication,
+worker doctor, model invocation, or task submission. Accordingly `worker
+doctor passed`, `live four-role task passed`, and `task branch approved` all
+remain false; merge and deployment also remain false. The controlling markers
+remain:
+
+```text
+LIVE_HERMES_ACCEPTANCE_RUN=False
+LIVE_MODEL_INVOKED=False
+LIVE_TASK_SUBMITTED=False
+```
+
+Phase 5-R2 corrects the repository-side bootstrap and build-toolchain
+contracts only. Use this runbook
+from the physical Hermes and Personal computers only after a human explicitly
+authorizes resumption.
 
 This is a documentation-only acceptance. It must not change the live Council,
 `.obsidian`, scientific code or data, repository visibility, branch
@@ -20,7 +41,7 @@ installation shortcut. Set these values without hard-coding a username:
 export WPI_CHECKOUT='/absolute/path/to/the/current/VirtualLAB-Codex'
 export WPI_PROJECT="$WPI_CHECKOUT/flyash-phreeqc-ml"
 export WPI_APPROVED_BRANCH='codex/virtual-lab-finalization-personal'
-export WPI_APPROVED_SHA='<exact Phase 5-R1 SHA from the final handoff>'
+export WPI_APPROVED_SHA='<exact Phase 5-R2 SHA from the final handoff>'
 export WPI_REMOTE_REF="refs/remotes/origin/$WPI_APPROVED_BRANCH"
 cd "$WPI_CHECKOUT"
 ```
@@ -69,6 +90,12 @@ If the project does not have that environment, set `WPI_COUNCIL_PYTHON` to an
 existing absolute Python 3.12 executable. Do not use or alter system Python
 3.9, and do not activate an environment manually.
 
+The project Python may be a valid 3.12 virtual environment without pip. Do not
+bootstrap it by hand, use `get-pip.py`, curl executable Python content, or fall
+back to system Python. The corrected installer tests pip and, only when it is
+missing, invokes that same interpreter's standard-library
+`ensurepip --default-pip` before continuing.
+
 ## 3. Install without touching Council
 
 From the approved project checkout, run the corrected installer:
@@ -78,16 +105,55 @@ cd "$WPI_PROJECT"
 ./scripts/install-council-operator.sh
 ```
 
-Record the installer's reported interpreter path, 3.12 version, executable
-SHA-256, and stable launcher path. Verify the untracked configuration and
-runtime record permissions:
+Record the installer's bounded pip result, including whether pip was preserved
+or bootstrapped and its environment-local identity. Also record the reported
+interpreter path, 3.12 version, executable SHA-256, and stable launcher, then
+verify the exact `setuptools==83.0.0` build tool below. The installer must
+retain `--no-build-isolation --no-deps` for the editable installation.
+
+If the stopped attempt left an empty config parent, empty install root, or an
+existing `~/.local/bin`, do not delete those safe directories. The corrected
+installer accepts that recoverable shape. Stop instead of overwriting any
+incompatible config, runtime record, installed resolver, launcher, symlink, or
+dedicated operator environment.
+
+Verify the untracked configuration and runtime record permissions, then use
+the runtime record's exact interpreter for installed-toolchain checks:
 
 ```bash
 export WPI_COUNCIL_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/wpi-virtual-lab/council.toml"
 export WPI_RUNTIME_RECORD="${WPI_COUNCIL_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wpi-council}/operator-python.runtime"
 test "$(stat -f '%Lp' "$WPI_COUNCIL_CONFIG")" = '600'
 test "$(stat -f '%Lp' "$WPI_RUNTIME_RECORD")" = '600'
+export WPI_OPERATOR_PYTHON="$(sed -n '2p' "$WPI_RUNTIME_RECORD")"
+test -x "$WPI_OPERATOR_PYTHON"
+"$WPI_OPERATOR_PYTHON" -m pip --version
+"$WPI_OPERATOR_PYTHON" -c 'from importlib import metadata
+from pathlib import Path
+import pip, site, sys
+prefix = Path(sys.prefix).resolve()
+module = Path(pip.__file__).resolve()
+distribution = Path(metadata.distribution("pip").locate_file("")).resolve()
+user_site = Path(site.getusersitepackages()).resolve()
+assert module.is_relative_to(prefix)
+assert distribution.is_relative_to(prefix)
+assert not module.is_relative_to(user_site)
+assert metadata.version("setuptools") == "83.0.0"'
+"$WPI_OPERATOR_PYTHON" ./scripts/validate_dependency_lock.py --installed
+"$WPI_OPERATOR_PYTHON" -c 'from pathlib import Path
+import flyash_phreeqc_ml, sys
+expected = Path(sys.argv[1]).resolve() / "flyash_phreeqc_ml"
+observed = Path(flyash_phreeqc_ml.__file__).resolve().parent
+assert observed == expected' "$WPI_PROJECT"
+"$WPI_OPERATOR_PYTHON" -m pip check
 ```
+
+If pip bootstrap, dependency installation, setuptools verification, editable
+installation, or final pin/import validation fails, require all of the
+following to remain absent for a new installation: `council.toml`,
+`operator-python.runtime`, the installed resolver, and both the internal and
+stable launcher. Preserve the failure output and safe empty parents; do not
+construct any missing state manually.
 
 Complete `council.toml` with the current checkout, code remote, separately
 verified control remote and privacy attestation, stable worker ID, disposable
@@ -146,9 +212,9 @@ documentation-only request:
 export WPI_CHECKOUT='/absolute/path/to/the/current/VirtualLAB-Codex'
 export WPI_PROJECT="$WPI_CHECKOUT/flyash-phreeqc-ml"
 export WPI_APPROVED_BRANCH='codex/virtual-lab-finalization-personal'
-export WPI_APPROVED_SHA='<exact Phase 5-R1 SHA from the final handoff>'
+export WPI_APPROVED_SHA='<exact Phase 5-R2 SHA from the final handoff>'
 export WPI_RUNTIME_RECORD="${WPI_COUNCIL_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wpi-council}/operator-python.runtime"
-export WPI_TASK_ID='phase5-r1-hermes-docs-acceptance-01'
+export WPI_TASK_ID='phase5-r2-hermes-docs-acceptance-01'
 cd "$WPI_PROJECT"
 wpi-council doctor
 wpi-council create-request "/tmp/$WPI_TASK_ID.md" \
@@ -178,7 +244,7 @@ exercises ownership metadata, process-group handling, and macOS sleep
 prevention:
 
 ```bash
-export WPI_TASK_ID='phase5-r1-hermes-docs-acceptance-01'
+export WPI_TASK_ID='phase5-r2-hermes-docs-acceptance-01'
 cd "$WPI_PROJECT"
 ./scripts/start-hermes-worker.sh "$WPI_TASK_ID"
 ```
@@ -313,4 +379,6 @@ Keep these decisions as separate facts:
   validation, or resource promotion occurred.
 
 Until every applicable check above is performed and recorded from the physical
-machines, live Hermes acceptance remains false.
+machines, live Hermes acceptance remains false. The safely stopped R1
+installation attempt and the Personal-computer R2 correction are not a live
+model/task acceptance result and do not authorize automatic resumption.

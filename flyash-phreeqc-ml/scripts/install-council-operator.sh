@@ -5,6 +5,7 @@ umask 077
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 resolver="$script_dir/resolve-council-python.sh"
+pip_bootstrap_helper="$script_dir/bootstrap_council_pip.py"
 user_home=${HOME:?HOME must identify the current user}
 config_dir=${XDG_CONFIG_HOME:-"$user_home/.config"}/wpi-virtual-lab
 config_path=${WPI_COUNCIL_CONFIG:-"$config_dir/council.toml"}
@@ -96,6 +97,18 @@ safe_runtime_record_for_bootstrap() {
   test "$(file_mode "$runtime_record")" = 600 || return 1
 }
 
+directory_is_empty() {
+  empty_directory=$1
+  for existing_entry in \
+    "$empty_directory"/* \
+    "$empty_directory"/.[!.]* \
+    "$empty_directory"/..?*; do
+    if test -e "$existing_entry" || test -L "$existing_entry"; then
+      return 1
+    fi
+  done
+}
+
 check_user_local_directories() {
   create_missing=$1
   shift
@@ -160,6 +173,7 @@ require_safe_absolute_path "$config_parent" "Operator config directory"
 require_safe_absolute_path "$install_root" "Operator installation root"
 require_safe_absolute_path "$public_bin_dir" "Operator launcher directory"
 test -x "$resolver" || fail "The shared Council Python resolver is unavailable."
+test -f "$pip_bootstrap_helper" && test ! -L "$pip_bootstrap_helper" || fail "The trusted Council pip bootstrap helper is unavailable."
 
 test "$(uname -s)" = Darwin || fail "This bootstrap package currently supports macOS workers."
 architecture=$(uname -m)
@@ -256,6 +270,12 @@ fi
 # a project .venv).  An explicit interpreter override is an operator request and
 # therefore must still identify that same recorded runtime.
 operator_venv="$install_root/venv"
+created_operator_venv=false
+cleanup_new_operator_environment() {
+  if test "$created_operator_venv" = true; then
+    rm -rf "$operator_venv"
+  fi
+}
 recorded_install=false
 if test -e "$runtime_record" || test -L "$runtime_record"; then
   if recorded_python=$(
@@ -283,14 +303,11 @@ else
   else
     operator_python="$operator_venv/bin/python"
   fi
-  for partial_install in "$installed_resolver" "$launcher_path" "$install_root/venv"; do
-    if test -e "$partial_install" || test -L "$partial_install"; then
-      fail "Existing operator installation is incomplete or incompatible; it was preserved."
-    fi
-  done
+  if test -e "$install_root" || test -L "$install_root"; then
+    test -d "$install_root" && test ! -L "$install_root" || fail "Existing operator installation is incomplete or incompatible; it was preserved."
+    directory_is_empty "$install_root" || fail "Existing operator installation is incomplete or incompatible; it was preserved."
+  fi
 fi
-
-check_user_local_directories true "$config_parent" "$install_root" "$public_bin_dir"
 
 # A verified virtual environment is installed in place. A base interpreter is
 # used only to create a dedicated user-local environment; the base environment
@@ -300,7 +317,9 @@ if test "$recorded_install" = false && test "$bootstrap_is_venv" = false; then
     test -d "$operator_venv" && test ! -L "$operator_venv" || fail "Existing operator environment is incompatible; it was preserved."
     test -x "$operator_venv/bin/python" || fail "Existing operator environment is incompatible; it was preserved."
   else
-    mkdir -p "$install_root"
+    check_user_local_directories true "$install_root"
+    created_operator_venv=true
+    trap cleanup_new_operator_environment 0 1 2 3 15
     "$bootstrap_python" -m venv "$operator_venv"
   fi
   operator_python=$(env WPI_COUNCIL_PYTHON="$operator_venv/bin/python" "$resolver" --project-root "$project_dir")
@@ -311,8 +330,8 @@ if test "$recorded_install" = false && test "$bootstrap_is_venv" = false; then
 fi
 
 valid_installed_runtime() {
-  "$operator_python" "$project_dir/scripts/validate_dependency_lock.py" --installed >/dev/null 2>&1 || return 1
-  "$operator_python" -c 'from pathlib import Path
+  selected_operator_python "$project_dir/scripts/validate_dependency_lock.py" --installed >/dev/null 2>&1 || return 1
+  selected_operator_python -c 'from pathlib import Path
 import sys
 import anthropic
 import joblib
@@ -332,18 +351,82 @@ observed = Path(flyash_phreeqc_ml.__file__).resolve().parent
 raise SystemExit(0 if observed == expected and callable(main) else 1)' "$project_dir" >/dev/null 2>&1
 }
 
+selected_operator_python() {
+  env \
+    -u PIP_CONSTRAINT \
+    -u PIP_EDITABLE \
+    -u PIP_LOG \
+    -u PIP_PREFIX \
+    -u PIP_REPORT \
+    -u PIP_REQUIREMENT \
+    -u PIP_ROOT \
+    -u PIP_TARGET \
+    -u PIP_USER \
+    -u PYTHONUSERBASE \
+    -u VIRTUAL_ENV \
+    PIP_CONFIG_FILE=/dev/null \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHOME= \
+    PYTHONNOUSERSITE=1 \
+    PYTHONPATH= \
+    "$operator_python" -I "$@"
+}
+
+verified_setuptools_identity() {
+  selected_operator_python -c 'from importlib import metadata
+import json
+from pathlib import Path
+import setuptools
+import setuptools.build_meta
+import sys
+import tomllib
+
+declaration = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["build-system"]["requires"]
+if declaration != ["setuptools==83.0.0"]:
+    raise SystemExit(1)
+expected = declaration[0].split("==", 1)[1]
+prefix = Path(sys.prefix).resolve()
+distribution = metadata.distribution("setuptools")
+distribution_root = Path(distribution.locate_file("")).resolve()
+module_path = Path(setuptools.__file__).resolve()
+if distribution.version != expected:
+    raise SystemExit(1)
+if distribution_root != prefix and prefix not in distribution_root.parents:
+    raise SystemExit(1)
+if module_path != prefix and prefix not in module_path.parents:
+    raise SystemExit(1)
+print(json.dumps({
+    "distribution_root": str(distribution_root),
+    "module": str(module_path),
+    "version": distribution.version,
+}, sort_keys=True, separators=(",", ":")))' "$project_dir/pyproject.toml"
+}
+
+pip_bootstrap_evidence=
+setuptools_identity=
 if test "$recorded_install" = true; then
+  if pip_bootstrap_evidence=$(selected_operator_python "$pip_bootstrap_helper" --verify-only 2>/dev/null); then
+    :
+  else
+    fail "Existing operator installation is incompatible; it was preserved."
+  fi
+  setuptools_identity=$(verified_setuptools_identity) || fail "Existing operator installation is incompatible; it was preserved."
   valid_installed_runtime || fail "Existing operator installation is incompatible; it was preserved."
   echo "Existing valid operator Python installation preserved: $operator_python"
 else
-  if ! "$operator_python" "$project_dir/scripts/validate_dependency_lock.py" --installed >/dev/null 2>&1; then
-    "$operator_python" -m pip install --disable-pip-version-check \
-      --constraint "$project_dir/constraints-py312.txt" \
-      --requirement "$project_dir/requirements-dev.txt"
+  if pip_bootstrap_evidence=$(selected_operator_python "$pip_bootstrap_helper"); then
+    :
+  else
+    exit 1
   fi
-  "$operator_python" -m pip install --disable-pip-version-check \
+  selected_operator_python -m pip install --disable-pip-version-check \
+    --constraint "$project_dir/constraints-py312.txt" \
+    setuptools==83.0.0 \
+    --requirement "$project_dir/requirements-dev.txt"
+  setuptools_identity=$(verified_setuptools_identity) || fail "The exact setuptools==83.0.0 build requirement is unavailable in the selected operator environment."
+  selected_operator_python -m pip install --disable-pip-version-check \
     --no-build-isolation --no-deps --editable "$project_dir"
-  "$operator_python" "$project_dir/scripts/validate_dependency_lock.py" --installed
+  selected_operator_python "$project_dir/scripts/validate_dependency_lock.py" --installed
   valid_installed_runtime || fail "Required operator imports or pinned dependencies could not be verified."
 fi
 
@@ -359,6 +442,13 @@ operator_sha256=$(
 case "$operator_version" in 3.12.*) ;; *) fail "Installed operator Python is not exactly Python 3.12." ;; esac
 case "$operator_sha256" in *[!0-9a-f]*|'') fail "Installed operator Python identity is invalid." ;; esac
 test "${#operator_sha256}" -eq 64 || fail "Installed operator Python identity is invalid."
+
+if test "$created_operator_venv" = true; then
+  created_operator_venv=false
+  trap - 0 1 2 3 15
+fi
+
+check_user_local_directories true "$config_parent" "$install_root" "$public_bin_dir"
 
 mkdir -p "$config_parent"
 if test "$config_exists" = true; then
@@ -441,5 +531,11 @@ fi
 echo "Recorded operator Python 3.12: $operator_python"
 echo "Recorded operator Python version: $operator_version"
 echo "Recorded operator Python SHA-256: $operator_sha256"
+if test -n "$pip_bootstrap_evidence"; then
+  echo "Verified operator pip bootstrap: $pip_bootstrap_evidence"
+fi
+if test -n "$setuptools_identity"; then
+  echo "Verified operator build toolchain: $setuptools_identity"
+fi
 echo "Stable launcher: $public_launcher"
 echo "Installed WPI Council operator for macOS $architecture without modifying Council control files."

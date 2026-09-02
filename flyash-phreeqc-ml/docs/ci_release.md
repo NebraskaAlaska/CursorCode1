@@ -41,18 +41,62 @@ The same workflow also contains `Phase 5 Council operator contracts` and the
 final `Phase 5 required release gate`. The operator job functionally exercises
 the Python 3.12 bootstrap in temporary environments, rejection of incompatible
 Python, the stable launcher from a clean shell, exact trusted-test interpreter
-rewriting and installed dependency revalidation, exact-state stale-approval consumption/replay rejection, safe worker
-process-group supervision and PID-reuse refusal, and non-mutating code/control
-remote permission probes against local bare repositories. These checks are in
-addition to the existing request, lock/CAS, disposable-workspace, Council
-adapter/gate, privacy, approval, correction-loop, Resource Steward refusal,
-successful-task, and two-clone journeys; shell syntax checks alone are not
-acceptance evidence.
+rewriting and installed dependency revalidation, exact-state stale-approval
+consumption/replay rejection, safe worker process-group supervision and
+PID-reuse refusal, and non-mutating code/control remote permission probes
+against local bare repositories. These checks are in addition to the existing
+request, lock/CAS, disposable-workspace, Council adapter/gate, privacy,
+approval, correction-loop, Resource Steward refusal, successful-task, and
+two-clone journeys; shell syntax checks alone are not acceptance evidence.
+
+Phase 5-R2 adds a functional pipless-interpreter correction to that same job.
+Exact Phase 5-R1 run `33406298103` remains the green historical baseline; its
+installer fixture used a pip-equipped Python 3.12 environment and therefore
+did not expose the physical pipless-venv case. R2 adds that missing case rather
+than reinterpreting the earlier result.
+`tests/test_council_operator_installation_phase5_r2.py` creates a genuine
+Python 3.12 virtual environment with `venv --without-pip`, proves pip is
+initially unavailable, and runs the trusted bootstrap and installer path. The
+test requires same-interpreter standard-library `ensurepip`, verifies the pip
+module and distribution are under that exact environment prefix, and proves a
+simulated system Python 3.9 cannot satisfy or perform bootstrap. A separate
+present-pip case requires `bootstrapped: false` and preserves usable pip
+without invoking ensurepip unnecessarily. Source-text inspection is not a
+substitute for these executions.
+
+The R2 matrix also explicitly installs and verifies constrained
+`setuptools==83.0.0`, retains `--no-build-isolation --no-deps` for the editable
+package, rejects another setuptools version, verifies all runtime and pytest
+pins, editable checkout identity, imports, and `pip check`, and exercises the
+real stopped-attempt directory shape: safe empty config/install parents plus
+an existing user-local bin directory. Failure injection at ensurepip,
+dependency installation, setuptools verification, editable installation, and
+installed-pin validation must leave config, runtime record, installed
+resolver, and internal/stable launchers unpublished and remove temporary
+files.
+
+After the functional pytest step succeeds, CI emits these bounded proof
+markers:
+
+```text
+PIPLESS_PY312_BOOTSTRAP_PASS=True
+ENSUREPIP_IS_LOCAL_AND_TRUSTED=True
+SYSTEM_PYTHON_NOT_USED=True
+PINNED_SETUPTOOLS_83_INSTALLED=True
+PARTIAL_INSTALL_RECOVERY_PASS=True
+FAILED_BOOTSTRAP_PUBLISHES_NO_OPERATOR_STATE=True
+```
+
+The first physical Hermes acceptance attempt is separate evidence: it reached
+installation with Python 3.12.14 but no pip and stopped before worker doctor,
+model invocation, or task submission. Neither the new functional CI fixture
+nor that safely stopped installation is a completed live Hermes acceptance.
 
 The Phase 5 release gate runs with `always()` and requires both the Phase 4
 aggregate release gate and Phase 5 operator job to be `success`. A green Phase
 5 gate therefore preserves the scientific/resource/runtime boundary rather
 than replacing it. CI and local simulations do not prove that a live Hermes
-installation or four-role task has run; physical evidence is recorded only by
-the separate [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md)
-procedure.
+four-role task has run; physical evidence is recorded only by the separate
+[`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) procedure.
+The R2 additions do not remove, skip, or weaken any required Phase 4 job,
+architecture slice, exact-image check, or either aggregate release gate.

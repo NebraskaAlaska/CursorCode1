@@ -51,6 +51,7 @@ def _copy_project(target: Path) -> Path:
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     for name in (
+        "bootstrap_council_pip.py",
         "install-council-operator.sh",
         "resolve-council-python.sh",
         "check-council-operator.sh",
@@ -97,6 +98,12 @@ def _make_pinned_venv_at(project: Path, venv: Path) -> Path:
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        [str(python), "-I", "-m", "ensurepip", "--default-pip"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     parent_site = subprocess.check_output(
         [sys.executable, "-c", "import site; print(site.getsitepackages()[0])"],
         text=True,
@@ -105,6 +112,20 @@ def _make_pinned_venv_at(project: Path, venv: Path) -> Path:
         [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
         text=True,
     ).strip()
+    parent_setuptools = next(Path(parent_site).glob("setuptools-83.0.0.dist-info"), None)
+    assert parent_setuptools is not None, "the verified test environment must provide setuptools 83.0.0"
+    for name in (
+        "_distutils_hack",
+        "distutils-precedence.pth",
+        "setuptools",
+        parent_setuptools.name,
+    ):
+        source = Path(parent_site) / name
+        target = Path(child_site) / name
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
     (Path(child_site) / "approved-pinned-test-environment.pth").write_text(
         parent_site + "\n" + str(project) + "\n", encoding="utf-8"
     )
