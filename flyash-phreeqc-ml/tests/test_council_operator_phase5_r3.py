@@ -43,6 +43,166 @@ RUNBOOK = PROJECT / "docs" / "hermes_physical_acceptance.md"
 SENTINEL_PATH = "flyash-phreeqc-ml/docs/hermes_acceptance_sentinel.md"
 TESTER_PATH = "flyash-phreeqc-ml/tests/test_hermes_acceptance_sentinel.py"
 R3_TASK_ID = "phase5-r3-hermes-docs-acceptance-01"
+R3_TITLE = "Add the sanitized Hermes acceptance sentinel and test"
+R3_GOAL = (
+    "Create the approved documentation sentinel and its deterministic acceptance "
+    "test at the two explicitly allowed repository paths."
+)
+R3_BACKGROUND = (
+    "Sanitized public physical Council-path acceptance using no scientific content."
+)
+R3_ACCEPTANCE = (
+    "Coder changes only the approved documentation path.",
+    "Tester changes only the approved test path.",
+    "The sentinel contains exactly: This is a documentation-only Council "
+    "operator-path acceptance sentinel.",
+    "The deterministic test verifies that exact sentinel content.",
+    "All corrected immutable trusted tests pass.",
+    "The trusted host may separately generate its standard council-results "
+    "manifest; no model role writes that namespace.",
+)
+
+
+def _marked_bash(text: str, marker: str) -> str:
+    match = re.search(
+        rf"<!-- {re.escape(marker)}_BEGIN -->\s*```bash\s*(.*?)\s*```\s*"
+        rf"<!-- {re.escape(marker)}_END -->",
+        text,
+        re.DOTALL,
+    )
+    assert match
+    return match.group(1)
+
+
+def _computer_sections(text: str, owner: str) -> str:
+    sections = re.findall(
+        rf"^## {re.escape(owner)} COMPUTER[^\n]*\n(.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert sections
+    return "\n".join(sections)
+
+
+def _controller_commands(text: str) -> list[tuple[str, ...]]:
+    commands: list[tuple[str, ...]] = []
+    for block in re.findall(r"```bash\s*(.*?)\s*```", text, re.DOTALL):
+        for line in block.replace("\\\n", " ").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("council_personal ", "wpi-council ")):
+                commands.append(tuple(shlex.split(stripped)))
+    return commands
+
+
+def _assert_r3_r1_runbook_contract(text: str) -> None:
+    preflight = _marked_bash(text, "R3_PERSONAL_PREFLIGHT")
+    assert (
+        'export WPI_PERSONAL_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/'
+        'wpi-virtual-lab/council-personal.toml"'
+    ) in preflight
+    assert 'export WPI_PERSONAL_PYTHON="$WPI_PROJECT/.venv/bin/python"' in preflight
+    assert 'test -f "$WPI_PERSONAL_CONFIG"' in preflight
+    assert "test \"$WPI_PERSONAL_CONFIG_MODE\" = '600'" in preflight
+    assert 'test -x "$WPI_PERSONAL_PYTHON"' in preflight
+    assert "sys.version_info[:2] == (3, 12)" in preflight
+    assert 'config["operator"]["repository_path"]' in preflight
+    assert 'expected = Path(sys.argv[2]).resolve()' in preflight
+    assert '"$WPI_PERSONAL_CONFIG" "$WPI_CHECKOUT"' in preflight
+
+    wrapper = re.search(r"council_personal\(\)\s*\{(.*?)\n\}", preflight, re.DOTALL)
+    assert wrapper
+    wrapper_text = wrapper.group(1)
+    assert wrapper_text.index('cd "$WPI_PROJECT"') < wrapper_text.index(
+        '"$WPI_PERSONAL_PYTHON"'
+    )
+    assert "-m flyash_phreeqc_ml.council_operator.cli" in wrapper_text
+    assert '--config "$WPI_PERSONAL_CONFIG"' in wrapper_text
+    assert wrapper_text.index("-m flyash_phreeqc_ml.council_operator.cli") < (
+        wrapper_text.index('--config "$WPI_PERSONAL_CONFIG"')
+    ) < wrapper_text.index('"$@"')
+
+    personal = _computer_sections(text, "PERSONAL")
+    personal_commands = _controller_commands(personal)
+    assert all(command[0] != "wpi-council" for command in personal_commands)
+    personal_pairs = {(command[0], command[1]) for command in personal_commands}
+    assert {
+        ("council_personal", "doctor"),
+        ("council_personal", "create-request"),
+        ("council_personal", "submit"),
+        ("council_personal", "status"),
+        ("council_personal", "watch"),
+        ("council_personal", "review"),
+        ("council_personal", "approve-task-branch"),
+        ("council_personal", "reject"),
+    }.issubset(personal_pairs)
+    assert personal.index("council_personal doctor") < personal.index(
+        "council_personal create-request"
+    )
+    assert f"export WPI_TASK_ID='{R3_TASK_ID}'" in personal
+    assert "worker_ready=false" in personal
+    assert "live Council root" in text
+    assert "Hermes executable" in text
+
+    hermes = _computer_sections(text, "HERMES")
+    hermes_commands = _controller_commands(hermes)
+    assert any(command[:3] == ("wpi-council", "doctor", "--worker") for command in hermes_commands)
+    assert any(command[:2] == ("wpi-council", "release") for command in hermes_commands)
+    assert "council_personal" not in hermes
+    assert "council-personal.toml" not in hermes
+    assert "WPI_PERSONAL_CONFIG" not in hermes
+
+
+def _personal_guard_script() -> str:
+    preflight = _marked_bash(RUNBOOK.read_text(encoding="utf-8"), "R3_PERSONAL_PREFLIGHT")
+    return preflight[
+        preflight.index('test -f "$WPI_PERSONAL_CONFIG"') :
+        preflight.index("\ncouncil_personal()")
+    ]
+
+
+def _run_personal_guard(
+    tmp_path: Path,
+    *,
+    config_present: bool = True,
+    config_mode: int = 0o600,
+    python_present: bool = True,
+    python_312: bool = True,
+    repository_is_project: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    checkout = tmp_path / "VirtualLAB-Codex"
+    project = checkout / "flyash-phreeqc-ml"
+    python = project / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    if python_present:
+        if python_312:
+            python.symlink_to(Path(sys.executable).resolve())
+        else:
+            python.write_text("#!/bin/sh\nprintf 'wrong\\n'\n", encoding="utf-8")
+            python.chmod(0o755)
+
+    config = tmp_path / "config" / "wpi-virtual-lab" / "council-personal.toml"
+    if config_present:
+        config.parent.mkdir(parents=True)
+        repository = project if repository_is_project else checkout
+        config.write_text(
+            f'[operator]\nrepository_path = "{repository}"\n', encoding="utf-8"
+        )
+        config.chmod(config_mode)
+
+    environment = {
+        **os.environ,
+        "WPI_CHECKOUT": str(checkout),
+        "WPI_PROJECT": str(project),
+        "WPI_PERSONAL_CONFIG": str(config),
+        "WPI_PERSONAL_PYTHON": str(python),
+    }
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", _personal_guard_script()],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+    )
 
 
 def _real_policy(remote: Path, head_branch: str = "base") -> ProjectPolicy:
@@ -412,8 +572,8 @@ def test_rendered_request_states_git_root_role_and_trusted_host_contracts(tmp_pa
     assert all(shlex.join(command) in rendered for command in request.required_test_commands)
 
 
-def _runbook_request(tmp_path: Path, remote: Path, head: str):
-    text = RUNBOOK.read_text(encoding="utf-8")
+def _runbook_request(tmp_path: Path, remote: Path, head: str, *, text: str | None = None):
+    text = text if text is not None else RUNBOOK.read_text(encoding="utf-8")
     match = re.search(
         r"<!-- R3_CREATE_REQUEST_BEGIN -->\s*```bash\s*(.*?)\s*```\s*<!-- R3_CREATE_REQUEST_END -->",
         text,
@@ -422,7 +582,7 @@ def _runbook_request(tmp_path: Path, remote: Path, head: str):
     assert match
     command = match.group(1).replace("\\\n", " ").replace("$WPI_TASK_ID", R3_TASK_ID)
     words = shlex.split(command)
-    assert words[:2] == ["wpi-council", "create-request"]
+    assert words[:2] == ["council_personal", "create-request"]
     arguments = build_parser().parse_args(words[1:])
     arguments.output = str(tmp_path / f"{R3_TASK_ID}.md")
     policy = _real_policy(remote)
@@ -441,9 +601,20 @@ def test_exact_r3_runbook_request_is_valid_and_has_two_role_paths(tmp_path):
     remote, _live, head = create_code_remote(tmp_path / "repo")
     request, command_text = _runbook_request(tmp_path, remote, head)
     assert request.task_id == R3_TASK_ID
+    assert request.title == R3_TITLE
+    assert request.goal == R3_GOAL
+    assert request.background == R3_BACKGROUND
     assert request.allowed_paths == (SENTINEL_PATH, TESTER_PATH)
+    assert request.acceptance_criteria == R3_ACCEPTANCE
     assert request.max_changed_files == 2
     assert request.required_test_commands == ProjectPolicy.load(POLICY_PATH).default_test_commands
+    assert request.relevant_documentation == (
+        "flyash-phreeqc-ml/docs/council_operator.md",
+    )
+    assert request.scientific_risk == "moderate"
+    assert request.security_privacy == "sanitized"
+    assert request.requested_backend == "hermes"
+    assert request.requester_identity == "human:maintainer"
     searchable = " ".join(
         (request.goal, request.background, *request.acceptance_criteria)
     ).lower()
@@ -454,6 +625,89 @@ def test_exact_r3_runbook_request_is_valid_and_has_two_role_paths(tmp_path):
         "The sentinel contains exactly: This is a documentation-only Council "
         "operator-path acceptance sentinel."
     ) in request.acceptance_criteria
+
+
+def test_r3_r1_runbook_uses_explicit_personal_controller_and_separate_hermes_launcher():
+    _assert_r3_r1_runbook_contract(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def test_personal_preflight_accepts_mode_0600_python_312_and_git_root_repository(tmp_path):
+    result = _run_personal_guard(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_fragment"),
+    [
+        ({"config_present": False}, ""),
+        ({"config_mode": 0o644}, ""),
+        ({"python_present": False}, ""),
+        ({"python_312": False}, ""),
+        (
+            {"repository_is_project": True},
+            "Personal repository_path must resolve to WPI_CHECKOUT",
+        ),
+    ],
+    ids=(
+        "missing-config",
+        "wrong-config-permissions",
+        "missing-project-python",
+        "wrong-python-version",
+        "application-subtree-is-not-git-root",
+    ),
+)
+def test_personal_preflight_failures_stop_before_controller(
+    tmp_path, fixture, expected_fragment
+):
+    result = _run_personal_guard(tmp_path, **fixture)
+    assert result.returncode != 0
+    assert expected_fragment in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("original", "mutated"),
+    [
+        ("council_personal doctor", "wpi-council doctor"),
+        ("council_personal create-request", "wpi-council create-request"),
+    ],
+    ids=("bare-personal-doctor", "bare-personal-create-request"),
+)
+def test_bare_personal_launcher_regressions_fail_the_runbook_contract(original, mutated):
+    text = RUNBOOK.read_text(encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_r3_r1_runbook_contract(text.replace(original, mutated, 1))
+
+
+def test_hermes_worker_cannot_be_rewritten_to_use_the_personal_controller():
+    text = RUNBOOK.read_text(encoding="utf-8")
+    mutated = text.replace(
+        "wpi-council doctor --worker",
+        'council_personal --config "$WPI_PERSONAL_CONFIG" doctor --worker',
+        1,
+    )
+    with pytest.raises(AssertionError):
+        _assert_r3_r1_runbook_contract(mutated)
+
+
+@pytest.mark.parametrize(
+    ("original", "mutated"),
+    [
+        ("--max-changed-files 2", "--max-changed-files 3"),
+        (R3_TASK_ID, "phase5-r3-hermes-docs-acceptance-02"),
+    ],
+    ids=("request-payload", "task-id"),
+)
+def test_r3_request_or_task_id_regressions_fail_validation(
+    tmp_path, original, mutated
+):
+    remote, _live, head = create_code_remote(tmp_path / "repo")
+    text = RUNBOOK.read_text(encoding="utf-8").replace(original, mutated)
+    if original == R3_TASK_ID:
+        with pytest.raises(AssertionError):
+            _assert_r3_r1_runbook_contract(text)
+    else:
+        request, _command_text = _runbook_request(tmp_path, remote, head, text=text)
+        assert request.max_changed_files != 2
 
 
 def test_nested_release_scanner_is_invoked_and_success_permits_push(tmp_path, monkeypatch):

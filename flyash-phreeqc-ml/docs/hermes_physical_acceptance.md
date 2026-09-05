@@ -72,7 +72,28 @@ The new task provides two role-writable paths: one documentation path for
 Coder and one deterministic test path for Tester. The trusted result manifest
 is the separately allowed host-generated `+1` path.
 
-## 1. Pin the approved checkout on Hermes
+## Computer-specific topology
+
+### PERSONAL COMPUTER
+
+`WPI_CHECKOUT` is the Git root and `WPI_PROJECT` is its nested
+`flyash-phreeqc-ml/` application subtree. Use the existing
+`$WPI_PROJECT/.venv/bin/python` and the existing mode-`0600`, XDG-aware
+`council-personal.toml`. Personal invokes the tracked CLI module explicitly
+from `WPI_PROJECT`; it does not require an installed `wpi-council` launcher,
+a live Council root, or a Hermes executable. Ordinary Personal doctor must
+report `worker_ready=false` before request creation.
+
+### HERMES COMPUTER
+
+The established stable installed `wpi-council` launcher remains the Hermes
+entry point. Its worker configuration is the XDG-aware `council.toml`; the
+live Council root and exact Hermes executable are required, and worker doctor
+must report `worker_ready=true`. Do not copy the Hermes configuration shape to
+Personal or assume that the two computers have identical installation
+topology.
+
+## HERMES COMPUTER — 1. Pin the approved checkout
 
 Locate the existing Hermes checkout. Do not create another checkout as an
 installation shortcut and do not switch, reset, clean, merge, or rebase it to
@@ -82,7 +103,7 @@ make these assertions pass:
 export WPI_CHECKOUT='/absolute/path/to/the/current/VirtualLAB-Codex'
 export WPI_PROJECT="$WPI_CHECKOUT/flyash-phreeqc-ml"
 export WPI_APPROVED_BRANCH='codex/virtual-lab-finalization-personal'
-export WPI_APPROVED_SHA='<exact Phase 5-R3 SHA from the final handoff>'
+export WPI_APPROVED_SHA='<exact Phase 5-R3-R1 SHA from the final handoff>'
 export WPI_REMOTE_REF="refs/remotes/origin/$WPI_APPROVED_BRANCH"
 cd "$WPI_CHECKOUT"
 test -d .git
@@ -97,7 +118,7 @@ test "$(git rev-list --left-right --count "HEAD...$WPI_REMOTE_REF" | tr '\t' ' '
 
 If any assertion fails, stop.
 
-## 2. Identify the existing runtime without changing Council
+## HERMES COMPUTER — 2. Identify the existing runtime without changing Council
 
 The Council root must be the live installation, never the Obsidian reference
 directory:
@@ -119,7 +140,7 @@ If the project environment is not the approved Python 3.12 runtime, point
 alter system Python, activate another environment, replace a venv, or use
 downloaded bootstrap content.
 
-## 3. Install or verify the R3 project-side operator
+## HERMES COMPUTER — 3. Install or verify the R3 project-side operator
 
 From the application subtree:
 
@@ -158,7 +179,7 @@ command -v wpi-council
 wpi-council --help
 ```
 
-## 4. Establish only the worker-doctor checkpoint
+## HERMES COMPUTER — 4. Establish only the worker-doctor checkpoint
 
 ```bash
 wpi-council doctor --worker
@@ -179,17 +200,68 @@ merge performed = false
 publication action performed = false
 ```
 
-## 5. Create and submit the new immutable request from Personal
+## PERSONAL COMPUTER — 5. Create and submit the new immutable request
 
-On Personal, repeat the exact checkout and ordinary doctor assertions. Use the
-new task ID once only:
+Use the existing Personal checkout, project Python, and controller config.
+These checks are fail-closed: a missing config, any mode other than `0600`, a
+missing project Python, a Python other than 3.12, or a configured
+`repository_path` that resolves anywhere except `WPI_CHECKOUT` stops the
+runbook before doctor or request creation. Do not install another launcher,
+create another config, alter the existing config, or fall back to
+`council.toml`.
 
+<!-- R3_PERSONAL_PREFLIGHT_BEGIN -->
 ```bash
 export WPI_CHECKOUT='/absolute/path/to/the/current/VirtualLAB-Codex'
 export WPI_PROJECT="$WPI_CHECKOUT/flyash-phreeqc-ml"
+export WPI_APPROVED_BRANCH='codex/virtual-lab-finalization-personal'
+export WPI_APPROVED_SHA='<exact Phase 5-R3-R1 SHA from the final handoff>'
+export WPI_REMOTE_REF="refs/remotes/origin/$WPI_APPROVED_BRANCH"
+export WPI_PERSONAL_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/wpi-virtual-lab/council-personal.toml"
+export WPI_PERSONAL_PYTHON="$WPI_PROJECT/.venv/bin/python"
 export WPI_TASK_ID='phase5-r3-hermes-docs-acceptance-01'
-cd "$WPI_CHECKOUT"
-wpi-council doctor
+
+test "$(git -C "$WPI_CHECKOUT" rev-parse --show-toplevel)" = "$(cd "$WPI_CHECKOUT" && pwd -P)"
+test -d "$WPI_PROJECT"
+test "$(git -C "$WPI_CHECKOUT" branch --show-current)" = "$WPI_APPROVED_BRANCH"
+test -z "$(git -C "$WPI_CHECKOUT" status --porcelain --untracked-files=all)"
+git -C "$WPI_CHECKOUT" fetch origin "refs/heads/$WPI_APPROVED_BRANCH:refs/remotes/origin/$WPI_APPROVED_BRANCH"
+test "$(git -C "$WPI_CHECKOUT" rev-parse HEAD)" = "$WPI_APPROVED_SHA"
+test "$(git -C "$WPI_CHECKOUT" rev-parse "$WPI_REMOTE_REF")" = "$WPI_APPROVED_SHA"
+test "$(git -C "$WPI_CHECKOUT" rev-list --left-right --count "HEAD...$WPI_REMOTE_REF" | tr '\t' ' ')" = '0 0'
+test -f "$WPI_PERSONAL_CONFIG"
+test ! -L "$WPI_PERSONAL_CONFIG"
+if stat -f '%Lp' "$WPI_PERSONAL_CONFIG" >/dev/null 2>&1; then
+  WPI_PERSONAL_CONFIG_MODE="$(stat -f '%Lp' "$WPI_PERSONAL_CONFIG")"
+else
+  WPI_PERSONAL_CONFIG_MODE="$(stat -c '%a' "$WPI_PERSONAL_CONFIG")"
+fi
+test "$WPI_PERSONAL_CONFIG_MODE" = '600'
+unset WPI_PERSONAL_CONFIG_MODE
+test -x "$WPI_PERSONAL_PYTHON"
+test "$("$WPI_PERSONAL_PYTHON" -c 'import sys; print("3.12" if sys.version_info[:2] == (3, 12) else "wrong")')" = '3.12'
+"$WPI_PERSONAL_PYTHON" -c 'import sys, tomllib; from pathlib import Path; config = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); actual = Path(config["operator"]["repository_path"]).expanduser().resolve(); expected = Path(sys.argv[2]).resolve(); raise SystemExit(0 if actual == expected else "Personal repository_path must resolve to WPI_CHECKOUT")' "$WPI_PERSONAL_CONFIG" "$WPI_CHECKOUT"
+
+council_personal() {
+  (
+    cd "$WPI_PROJECT"
+    "$WPI_PERSONAL_PYTHON" \
+      -m flyash_phreeqc_ml.council_operator.cli \
+      --config "$WPI_PERSONAL_CONFIG" \
+      "$@"
+  )
+}
+```
+<!-- R3_PERSONAL_PREFLIGHT_END -->
+
+Run the ordinary Personal doctor and require the saved JSON to report
+`worker_ready=false`, successful code/control reads and dry-run push
+authorization, and a non-mutating permission preflight before creating the
+request:
+
+```bash
+council_personal doctor > "/tmp/$WPI_TASK_ID-personal-doctor.json"
+"$WPI_PERSONAL_PYTHON" -c 'import json, sys; report = json.load(open(sys.argv[1], encoding="utf-8")); assert report["worker_ready"] is False; assert report["code_remote_readable"] is True; assert report["code_remote_push_authorized"] is True; assert report["control_remote_readable"] is True; assert report["control_remote_push_authorized"] is True; assert report["remote_permission_preflight_non_mutating"] is True' "/tmp/$WPI_TASK_ID-personal-doctor.json"
 ```
 
 The following executable example is covered by the R3 policy-validation test.
@@ -198,7 +270,7 @@ defaults and execute from the Git root.
 
 <!-- R3_CREATE_REQUEST_BEGIN -->
 ```bash
-wpi-council create-request "/tmp/$WPI_TASK_ID.md" \
+council_personal create-request "/tmp/$WPI_TASK_ID.md" \
   --task-id "$WPI_TASK_ID" \
   --title 'Add the sanitized Hermes acceptance sentinel and test' \
   --goal 'Create the approved documentation sentinel and its deterministic acceptance test at the two explicitly allowed repository paths.' \
@@ -225,15 +297,15 @@ wpi-council create-request "/tmp/$WPI_TASK_ID.md" \
 Then submit and inspect only the new request:
 
 ```bash
-wpi-council submit "/tmp/$WPI_TASK_ID.md"
-wpi-council status "$WPI_TASK_ID"
+council_personal submit "/tmp/$WPI_TASK_ID.md"
+council_personal status "$WPI_TASK_ID"
 ```
 
 If this task ID already exists, stop and prepare a separately reviewed new ID.
 Never overwrite an existing state ref, and do not reuse or edit the failed R2
 task.
 
-## 6. Claim and execute only after separate physical authorization
+## HERMES COMPUTER — 6. Claim and execute only after separate physical authorization
 
 This document describes the future operator steps; Phase 5-R3 repository work
 does not authorize running them. On Hermes, after an explicit human resumption:
@@ -249,26 +321,26 @@ and invokes the unchanged Planner, Coder, Tester, and Reviewer sequence. Do not
 edit worker metadata, signal a worker manually, change the live Council, or
 write model output into `council-results/**`.
 
-## 7. Monitor and verify from the Git root
+## PERSONAL COMPUTER — 7. Monitor and verify from the Git root
 
 From Personal:
 
 ```bash
-wpi-council watch "$WPI_TASK_ID" --max-seconds 28800
-wpi-council review "$WPI_TASK_ID" --output "/tmp/$WPI_TASK_ID-review.json"
-wpi-council status "$WPI_TASK_ID" > "/tmp/$WPI_TASK_ID-status.json"
+council_personal watch "$WPI_TASK_ID" --max-seconds 28800
+council_personal review "$WPI_TASK_ID" --output "/tmp/$WPI_TASK_ID-review.json"
+council_personal status "$WPI_TASK_ID" > "/tmp/$WPI_TASK_ID-status.json"
 ```
 
-Use the recorded operator Python to require `awaiting_human_review`, four
-bounded invocation identities, and an approved Reviewer verdict. This is model
-and operator evidence, not scientific validation.
+Use the explicit Personal project Python to require `awaiting_human_review`,
+four bounded invocation identities, and an approved Reviewer verdict. This is
+model and operator evidence, not scientific validation.
 
 Verify the task branch and inspect the exact Git-root-relative paths from
 `$WPI_CHECKOUT`, never from `$WPI_PROJECT`:
 
 ```bash
 export WPI_TASK_BRANCH="council/wpi/$WPI_TASK_ID"
-export WPI_TASK_COMMIT="$("$WPI_OPERATOR_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["final_task_commit"])' "/tmp/$WPI_TASK_ID-status.json")"
+export WPI_TASK_COMMIT="$("$WPI_PERSONAL_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["final_task_commit"])' "/tmp/$WPI_TASK_ID-status.json")"
 cd "$WPI_CHECKOUT"
 test "$(git ls-remote --heads origin "refs/heads/$WPI_TASK_BRANCH" | cut -f1)" = "$WPI_TASK_COMMIT"
 git fetch origin "refs/heads/$WPI_TASK_BRANCH:refs/remotes/origin/$WPI_TASK_BRANCH"
@@ -286,8 +358,10 @@ that narrow content contract and contain no private, live, or scientific data.
 Reject any third role-authored path and any role-authored
 `council-results/**` path.
 
-On Hermes, use the safe stop entry point after normal completion and release
-the completed lease through the pinned operator:
+## HERMES COMPUTER — Release the completed worker lease
+
+Use the safe stop entry point after normal completion and release the completed
+lease through the established stable launcher:
 
 ```bash
 cd "$WPI_PROJECT"
@@ -295,18 +369,18 @@ cd "$WPI_PROJECT"
 wpi-council release "$WPI_TASK_ID"
 ```
 
-## 8. Decide only the task branch
+## PERSONAL COMPUTER — 8. Decide only the task branch
 
 After human review, choose exactly one:
 
 ```bash
-wpi-council approve-task-branch "$WPI_TASK_ID" --approved-by 'human:<name>'
+council_personal approve-task-branch "$WPI_TASK_ID" --approved-by 'human:<name>'
 ```
 
 or:
 
 ```bash
-wpi-council reject "$WPI_TASK_ID" --actor 'human:<name>' --reason '<bounded reviewed reason>'
+council_personal reject "$WPI_TASK_ID" --actor 'human:<name>' --reason '<bounded reviewed reason>'
 ```
 
 Do not issue any other approval or publication command. Task-branch approval
@@ -326,6 +400,8 @@ content into Git.
 - The physical R2 Planner task failed twice with the same deliberate BLOCKED
   result and remains immutable.
 - Phase 5-R3 corrects the project-side Git-root integration contracts.
+- Phase 5-R3-R1 corrects the Personal runbook to use the existing explicit
+  project Python and `council-personal.toml`; it does not alter the R3 request.
 - Live R3 Planner/Coder/Tester/Reviewer acceptance has **not** run.
 - No R3 task has been submitted and no R3 model has been invoked.
 - No task branch has been approved, merged, or published by this work.
