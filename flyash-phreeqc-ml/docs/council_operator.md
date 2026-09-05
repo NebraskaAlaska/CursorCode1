@@ -16,9 +16,43 @@ The code repository is public. Every task branch is publicly readable. Submit on
 
 The external Council remains authoritative for routing, stage launching, role outboxes, coder/tester gates, and isolation. The project adapter calls those verified tools; it does not copy their logic into this repository.
 
+## Git-root path contract
+
+The configured `repository_path` and every disposable trusted workspace are
+the Git repository root (`VirtualLAB-Codex/`), because `.git` is the trusted
+authority used by `SandboxManager`. The application subtree is the single
+Git-root-relative path `flyash-phreeqc-ml/`; it is not an alternative request
+root.
+
+- `TaskRequest.allowed_paths` and `TaskRequest.forbidden_paths` are always
+  Git-root-relative.
+- Coder and Tester patches are interpreted against the Git-root workspace and
+  must both remain within the immutable request allowlist.
+- Every immutable trusted command runs with the Git-root workspace as `cwd`.
+- `council-results/<task-id>.json` is generated only by the trusted host after
+  automatic gates. It is the operator's separately allowed result path and is
+  never writable by Planner, Coder, Tester, or Reviewer.
+
+There is no dual-root interpretation. Application files in requests and
+operator documentation therefore begin with `flyash-phreeqc-ml/`.
+
 ## Configuration
 
-Tracked policy is [`config/council_operator_policy.toml`](../config/council_operator_policy.toml). It binds the repository, permitted base branch, `council/wpi/` branch namespace, test-command prefixes, correction and resource limits, forbidden paths, approval classes, and exact Council contract hashes.
+Tracked policy is [`config/council_operator_policy.toml`](../config/council_operator_policy.toml). It binds the repository, the Git-root-relative application subtree, permitted base branch, `council/wpi/` branch namespace, test-command prefixes, correction and resource limits, forbidden paths, approval classes, and exact Council contract hashes.
+
+The default compile and pytest commands explicitly target the nested
+application from the Git root. Before running `compileall`, the trusted host
+requires every explicit target to exist; Python's otherwise-zero `Can't list`
+behavior cannot become green evidence. Requested and effective argv remain in
+bounded evidence, and only a requested `python` or `python3` executable is
+replaced by the recorded exact operator Python 3.12.
+
+The nested Git-root forms of raw data, experiment data/output, generated
+outputs, models, databases, installed/download/candidate/active resource state,
+and the tracked operator policy are forbidden. Root-level generic protections
+remain where useful, as do `.git/**` and `.github/workflows/**`. Rootless or
+encompassing globs fail closed when they could intersect protected state;
+ordinary rooted source and test paths remain available.
 
 Copy [`config/council_operator.example.toml`](../config/council_operator.example.toml) to `~/.config/wpi-virtual-lab/council.toml`. This local file is untracked and contains machine paths and remote URLs but must not contain credentials. Supported runtime overrides include `WPI_AI_COUNCIL_ROOT`, `WPI_HERMES_EXECUTABLE`, `WPI_OBSIDIAN_VAULT`, `WPI_COUNCIL_POLICY`, `WPI_COUNCIL_REPOSITORY`, `WPI_COUNCIL_CODE_REPO`, `WPI_COUNCIL_CONTROL_REPO`, `WPI_COUNCIL_CONTROL_REPO_PRIVATE`, `WPI_COUNCIL_WORKER_ID`, `WPI_COUNCIL_SANDBOX_ROOT`, and `WPI_COUNCIL_STATE_CACHE_ROOT`; the bootstrap additionally accepts the absolute `WPI_COUNCIL_PYTHON`. Authentication comes from the user's existing Git credential helper or SSH configuration.
 
@@ -133,7 +167,7 @@ wpi-council create-request REQUEST.md \
   --title "Clarify one public document" \
   --goal "Make the requested documentation-only correction" \
   --background "Public and sanitized maintenance request" \
-  --allowed-path 'docs/**' \
+  --allowed-path 'flyash-phreeqc-ml/docs/**' \
   --acceptance "Focused tests and the complete suite pass" \
   --requester 'human:maintainer' \
   --backend hermes
@@ -162,9 +196,24 @@ The sandbox manager refuses a dirty live checkout, wrong branch, wrong repositor
 
 Failed attempts are retained as immutable evidence; attempt identifiers cannot be reused. Cleanup is not automatic. The trusted host alone applies gate-approved patches, creates a bounded commit, and pushes a new task branch. It never switches, stashes, resets, or writes the live checkout.
 
+For this public repository the trusted host must map the declared application
+subtree into the disposable Git-root workspace and find the tracked
+`flyash-phreeqc-ml/scripts/release_scan.py`. The scanner must be a regular,
+non-symlink file present at the request base. It runs with bounded output and
+the credential-free environment before commit or push. Missing, unsafe,
+timed-out, or refusing scanners fail closed; the operator never silently skips
+this control and never pushes after its failure.
+
 ## Backends and correction loop
 
 `hermes` invokes the verified Council stage launcher, which selects the configured Planner/Coder profile for the deterministic route level and the separate Tester/Reviewer profiles. Worker preflight requires all ten launcher-selected profiles and hashes each profile's `config.yaml`, `SOUL.md`, and `state.db` without recording their contents. Invocation artifacts retain profile/config identities as hashes.
+
+The router receives a deterministic conservative estimate rather than the
+request's hard cap. Unique exact allowlist paths count as one file each, with a
+minimum of one and an upper bound of `max_changed_files`; any glob or other
+unbounded allowlist surface uses the hard cap. The estimate is retained in
+bounded attempt evidence. `max_changed_files` remains the independent final
+workspace enforcement limit.
 
 `command` is a future approved-CLI adapter. Every stage is an argument array and the resolved executable is bound to an exact SHA-256. It uses the same Council outboxes and deterministic ingestion/gates. No Codex CLI contract is invented.
 
@@ -309,7 +358,10 @@ The Resource Steward adapter delegates to the existing Phase 4 deterministic CLI
 See [`hermes_operator_installation.md`](hermes_operator_installation.md) for
 the corrected worker bootstrap and
 [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) for the
-controlled physical acceptance procedure. The first physical attempt stopped
-safely inside installation before worker doctor, model invocation, or task
-submission. Acceptance remains incomplete; the R2 repository correction does
-not resume it.
+controlled physical acceptance procedure. The R1 installation attempt stopped
+safely before worker doctor because its selected Python 3.12 lacked pip. R2
+fixed that boundary and reached worker doctor plus two real Planner attempts,
+but both deliberately returned `BLOCKED`; no later role or task branch ran.
+That failed task remains immutable. R3 aligns the project-side Git-root
+contract and defines a new two-path acceptance request, but does not submit it,
+invoke a model, or resume physical acceptance.

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -45,7 +46,12 @@ from .contracts import (
 )
 from .obsidian import append_handoff
 from .remote_preflight import RemotePreflightError, probe_operator_remotes
-from .runtime import RuntimeIdentityError, current_python_identity, effective_test_command
+from .runtime import (
+    RuntimeIdentityError,
+    current_python_identity,
+    effective_test_command,
+    missing_compileall_targets,
+)
 from .sandbox import SandboxError, SandboxManager, bounded_process, run_git, safe_git_environment, tree_hash
 from .store import GitRefStateStore, StateStoreError, TaskStateController
 
@@ -66,9 +72,26 @@ class CouncilOperator:
             raise OperatorError(str(exc)) from exc
         self.config = config
         self.policy = policy
+        self.application_subtree = self._resolve_application_subtree()
         self.store = GitRefStateStore(config.control_remote, config.state_cache_root, policy.project_slug)
         self.state = TaskStateController(self.store, policy)
         self.sandboxes = SandboxManager(config.repository_path, config.sandbox_root, config.code_remote)
+
+    def _resolve_application_subtree(self) -> Path:
+        """Bind the loaded package layout to one Git-root-relative subtree."""
+
+        declared = Path(self.policy.application_subtree)
+        package_root = Path(__file__).resolve().parents[2]
+        try:
+            observed = package_root.relative_to(self.config.repository_path.resolve())
+        except ValueError:
+            # Tests and immutable images may import the package outside the
+            # synthetic configured checkout. The tracked policy remains the
+            # explicit layout authority in that packaging shape.
+            return declared
+        if observed.as_posix() != self.policy.application_subtree:
+            raise OperatorError("loaded operator package does not match the configured Git-root application subtree")
+        return observed
 
     @classmethod
     def load(cls, config_path: Path, policy_path: Path) -> "CouncilOperator":
@@ -289,7 +312,20 @@ class CouncilOperator:
             except RuntimeIdentityError as exc:
                 raise OperatorError(str(exc)) from exc
             remaining = int(request.max_duration_seconds - (time.monotonic() - started))
-            if remaining < 1:
+            missing_targets = missing_compileall_targets(command, result.workspace)
+            if missing_targets:
+                record = {
+                    "arguments": list(command),
+                    "requested_arguments": list(command),
+                    "effective_arguments": list(effective),
+                    "exit_code": 2,
+                    "timed_out": False,
+                    "truncated": False,
+                    "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                    "preflight_error": "compileall target contract is missing or unsafe",
+                }
+            elif remaining < 1:
                 record = {
                     "arguments": list(command),
                     "requested_arguments": list(command),
@@ -579,6 +615,44 @@ class CouncilOperator:
             raise OperatorError("resume requires an owned attempt boundary; expire and explicitly reclaim a stale active task")
         return self.run(task_id, fake_scenario=fake_scenario)
 
+    def _run_required_release_scan(self, request: TaskRequest, workspace: Path) -> dict[str, Any]:
+        relative = self.application_subtree / "scripts" / "release_scan.py"
+        relative_text = relative.as_posix()
+        scan_script = workspace / relative
+        try:
+            expected = workspace.resolve() / relative
+            resolved = scan_script.resolve(strict=True)
+            info = scan_script.lstat()
+        except OSError as exc:
+            raise OperatorError("required public-release scanner is missing or unsafe") from exc
+        if resolved != expected or scan_script.is_symlink() or not stat.S_ISREG(info.st_mode):
+            raise OperatorError("required public-release scanner is missing or unsafe")
+        base_entry = run_git(
+            workspace,
+            "cat-file",
+            "-e",
+            f"{request.base_commit}:{relative_text}",
+            check=False,
+        )
+        if base_entry.returncode:
+            raise OperatorError("required public-release scanner is not tracked at the request base")
+        scan = bounded_process(
+            [self.python_runtime.executable, str(scan_script), "--working-tree"],
+            cwd=workspace,
+            timeout_seconds=120,
+            max_output_bytes=self.policy.max_log_bytes,
+            environment=safe_git_environment(),
+        )
+        if scan["exit_code"] != 0 or scan["timed_out"]:
+            raise OperatorError("public-release secret/data scan rejected the task branch")
+        return {
+            key: scan[key]
+            for key in (
+                "arguments", "exit_code", "timed_out", "truncated",
+                "stdout_sha256", "stderr_sha256",
+            )
+        }
+
     def _commit_and_push(self, request: TaskRequest, workspace: Path, result: Any, backend_name: str) -> dict[str, Any]:
         branch = f"{self.policy.task_branch_prefix}{request.task_id}"
         if branch in self.policy.forbidden_branches or branch.startswith(("main", "master")):
@@ -636,17 +710,7 @@ class CouncilOperator:
         diff = run_git(workspace, "diff", "--cached", "--binary", "--no-renames", request.base_commit, "--").stdout
         if len(diff) > request.max_patch_bytes + len(canonical_json(manifest)):
             raise OperatorError("final workspace exceeds the patch-size limit")
-        scan_script = workspace / "scripts" / "release_scan.py"
-        if scan_script.is_file():
-            scan = bounded_process(
-                [sys.executable, str(scan_script), "--working-tree"],
-                cwd=workspace,
-                timeout_seconds=120,
-                max_output_bytes=self.policy.max_log_bytes,
-                environment=safe_git_environment(),
-            )
-            if scan["exit_code"] != 0:
-                raise OperatorError("public-release secret/data scan rejected the task branch")
+        self._run_required_release_scan(request, workspace)
         run_git(workspace, "diff", "--cached", "--check")
         run_git(workspace, "commit", "-m", f"Council task {request.task_id}: {request.title[:60]}")
         final_commit = run_git(workspace, "rev-parse", "HEAD").stdout.decode().strip()

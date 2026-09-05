@@ -424,6 +424,7 @@ class TaskRequest:
 @dataclass(frozen=True)
 class ProjectPolicy:
     project_slug: str
+    application_subtree: str
     allowed_repository: str
     public_repository: bool
     allowed_base_branches: tuple[str, ...]
@@ -465,6 +466,9 @@ class ProjectPolicy:
         steward, obsidian, council = value["resource_steward"], value["obsidian"], value["council_contracts"]
         instance = cls(
             project_slug=str(project["slug"]),
+            application_subtree=validate_relative_path(
+                str(project["application_subtree"]), allow_glob=False
+            ),
             allowed_repository=str(project["allowed_repository"]),
             public_repository=project["public_repository"],
             allowed_base_branches=tuple(git["allowed_base_branches"]),
@@ -495,6 +499,8 @@ class ProjectPolicy:
     def validate(self) -> None:
         if not TASK_ID_RE.fullmatch(self.project_slug):
             raise ContractError("unsafe project slug")
+        if self.application_subtree in {".", ""}:
+            raise ContractError("application subtree must be Git-root-relative")
         if type(self.public_repository) is not bool:
             raise ContractError("public_repository must be a boolean")
         if self.role_sequence != ("planner", "coder", "tester", "reviewer"):
@@ -570,6 +576,11 @@ def _patterns_intersect(left: str, right: str) -> bool:
         return True
     left_prefix = re.split(r"[*?\[]", left, maxsplit=1)[0].rstrip("/")
     right_prefix = re.split(r"[*?\[]", right, maxsplit=1)[0].rstrip("/")
+    # A rootless glob such as ``**`` can encompass every forbidden subtree.
+    # Fail closed rather than pretending that the absence of a literal prefix
+    # proves disjointness. Rooted source/test globs retain their precise prefix.
+    if not left_prefix and any(character in left for character in "*?["):
+        return True
     return bool(left_prefix and right_prefix) and (
         left_prefix == right_prefix
         or left_prefix.startswith(right_prefix + "/")

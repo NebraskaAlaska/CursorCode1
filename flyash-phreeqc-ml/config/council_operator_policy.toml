@@ -1,5 +1,6 @@
 [project]
 slug = "wpi-virtual-lab"
+application_subtree = "flyash-phreeqc-ml"
 allowed_repository = "https://github.com/NebraskaAlaska/CursorCode1.git"
 public_repository = true
 role_sequence = ["planner", "coder", "tester", "reviewer"]
@@ -11,8 +12,8 @@ forbidden_branches = ["main", "master", "codex/virtual-lab-finalization-personal
 
 [tests]
 default_commands = [
-  ["python3", "-m", "compileall", "-q", "app.py", "app_ui.py", "flyash_phreeqc_ml", "scripts", "ui", "tests"],
-  ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+  ["python3", "-m", "compileall", "-q", "flyash-phreeqc-ml/app.py", "flyash-phreeqc-ml/app_ui.py", "flyash-phreeqc-ml/flyash_phreeqc_ml", "flyash-phreeqc-ml/scripts", "flyash-phreeqc-ml/ui", "flyash-phreeqc-ml/tests"],
+  ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "flyash-phreeqc-ml/tests"],
 ]
 allowed_command_prefixes = [
   ["python3", "-m", "compileall"],
@@ -40,6 +41,18 @@ forbidden_paths = [
   ".env.*",
   "**/.env",
   "**/.env.*",
+  "council-results/**",
+  "flyash-phreeqc-ml/data/raw/**",
+  "flyash-phreeqc-ml/experiments/**/data/**",
+  "flyash-phreeqc-ml/experiments/**/outputs/**",
+  "flyash-phreeqc-ml/outputs/**",
+  "flyash-phreeqc-ml/models/**",
+  "flyash-phreeqc-ml/databases/**",
+  "flyash-phreeqc-ml/resources/installed/**",
+  "flyash-phreeqc-ml/resources/downloads/**",
+  "flyash-phreeqc-ml/resources/candidates/**",
+  "flyash-phreeqc-ml/resources/active/**",
+  "flyash-phreeqc-ml/config/council_operator_policy.toml",
   "data/raw/**",
   "experiments/**/data/**",
   "experiments/**/outputs/**",

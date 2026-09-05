@@ -160,3 +160,58 @@ def effective_test_command(
     if arguments[0] in {"python", "python3"}:
         return (identity.executable, *arguments[1:])
     return arguments
+
+
+_COMPILEALL_VALUE_OPTIONS = {
+    "-r", "-d", "-s", "-p", "-x", "-i", "-j", "--workers",
+    "--invalidation-mode", "-o", "-e",
+}
+
+
+def missing_compileall_targets(requested: Iterable[str], workspace: Path) -> tuple[str, ...]:
+    """Return missing explicit compile targets for a trusted command.
+
+    ``compileall`` reports missing operands with ``Can't list`` but exits zero.
+    The trusted operator therefore requires at least one explicit existing
+    target before accepting a compile command as verification evidence.
+    """
+
+    arguments = tuple(requested)
+    if len(arguments) < 3 or arguments[1:3] != ("-m", "compileall"):
+        return ()
+    targets: list[str] = []
+    index = 3
+    while index < len(arguments):
+        item = arguments[index]
+        if item in _COMPILEALL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if item.startswith("--workers=") or item.startswith("--invalidation-mode="):
+            index += 1
+            continue
+        if item.startswith("-o") and item != "-o":
+            index += 1
+            continue
+        if item.startswith("-"):
+            index += 1
+            continue
+        targets.append(item)
+        index += 1
+    if not targets:
+        return ("<no-explicit-target>",)
+    missing: list[str] = []
+    root = workspace.resolve()
+    for target in targets:
+        candidate = Path(target)
+        if candidate.is_absolute():
+            missing.append(target)
+            continue
+        resolved = (root / candidate).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            missing.append(target)
+            continue
+        if not resolved.exists():
+            missing.append(target)
+    return tuple(missing)

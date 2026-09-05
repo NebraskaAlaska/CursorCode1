@@ -5,16 +5,23 @@ or modify Hermes, Council controls, role profiles, outboxes, model
 configuration, credentials, the live Council tree, or the Obsidian reference
 snapshot.
 
-The first physical Hermes acceptance attempt began from approved branch
+The R1 physical installation attempt began from approved branch
 `codex/virtual-lab-finalization-personal` at
 `c5688fd36df8061b4bc8975cf9fc3decb5a408e5`, but stopped safely during
 operator installation. The selected project virtual environment was valid
 Python 3.12.14 and the system `python3` was 3.9.6. Docker, the exact Council
 contract, all ten profiles, and the dependency-lock declaration passed before
 `python -m pip` failed with `No module named pip`. Worker doctor, Council
-roles, model invocation, and task submission were not reached. Physical
-acceptance therefore remains incomplete and false; this R2 correction does
-not resume it.
+roles, model invocation, and task submission were not reached in that R1
+attempt.
+
+R2 corrected the bootstrap and reached a real physical Planner task after
+worker doctor passed. The immutable task
+`phase5-r2-hermes-docs-acceptance-01` ran two Planner attempts, both of which
+deliberately returned `BLOCKED`; Coder, Tester, and Reviewer never ran and no
+task branch was pushed. Phase 5-R3 corrects the resulting project-side
+Git-root integration defects. R3 physical acceptance has not been run or
+submitted by this repository work.
 
 ## Prerequisites
 
@@ -112,6 +119,12 @@ directory chains are rejected before installation state is written.
 
 ## Bootstrap
 
+The configured `repository_path` must be the checkout's Git root containing
+`.git`; it must not be the nested application directory. All TaskRequest paths
+and role patches are interpreted from that Git root, while installation scripts
+remain under its `flyash-phreeqc-ml/` application subtree. Immutable trusted
+tests also run from the Git root.
+
 From the checked-out `flyash-phreeqc-ml` directory on the Hermes computer,
 identify the live Council root and, if needed, the exact Python explicitly:
 
@@ -191,9 +204,10 @@ dry-run push authorization, authentication failure, network failure, and
 branch/ref-policy refusal. Read access alone is not sufficient, and no model
 stage can start unless both code-branch and control-state write preflights pass.
 
-A green doctor establishes only `worker doctor passed`. It does not establish
+A green doctor establishes only `worker doctor passed`. The R2 doctor did pass,
+but both subsequent Planner attempts blocked. Doctor success does not establish
 that a live Planner/Coder/Tester/Reviewer task passed, that a task branch was
-approved, or that any merge or deployment occurred.
+approved, or that any later publication action occurred.
 
 ## Foreground and background execution
 
@@ -243,9 +257,12 @@ worker-lifecycle, stale-approval replay, and two-clone journeys are simulation
 evidence. They are not a live Hermes acceptance claim.
 
 Follow [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) only
-when a human explicitly resumes physical acceptance. The first attempt stopped
-inside installation before worker doctor or model/task execution. The runbook
-separately records `worker doctor passed`, `live four-role task passed`, and
-`task branch approved`; none implies merge or deployment. Phase 5-R2 work is
-performed only on the Personal computer and leaves live Hermes, the live
-Council, and the Obsidian `AI Council` snapshot untouched.
+when a human explicitly resumes R3 physical acceptance. Preserve the failed R2
+task and its two blocked Planner attempts as immutable evidence. The corrected
+R3 task provides separate Git-root-relative Coder and Tester paths, retains the
+non-empty Tester-patch rule, and reserves `council-results/**` for the trusted
+host. The runbook separately records `worker doctor passed`, `live four-role
+task passed`, and `task branch approved`; none authorizes a merge or
+publication action. R3 repository work is performed only on the Personal
+computer and leaves live Hermes, the live Council, private failed-task state,
+and the Obsidian `AI Council` snapshot untouched.

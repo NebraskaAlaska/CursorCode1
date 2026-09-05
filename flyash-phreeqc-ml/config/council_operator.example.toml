@@ -8,6 +8,7 @@
 # WPI_COUNCIL_CONTROL_REPO_PRIVATE=true after verifying remote visibility.
 
 [operator]
+# Must be the Git root containing .git, not the flyash-phreeqc-ml subtree.
 repository_path = "/absolute/path/to/VirtualLAB-Codex"
 code_remote = "https://github.com/NebraskaAlaska/CursorCode1.git"
 control_remote = "https://github.com/your-private-control-repository.git"

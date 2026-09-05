@@ -271,7 +271,7 @@ jobs:
           sh -n scripts/start-hermes-worker.sh
           sh -n scripts/stop-hermes-worker.sh
           sh -n scripts/run-hermes-task.sh
-          python -m compileall -q flyash_phreeqc_ml/council_operator scripts/bootstrap_council_pip.py tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py tests/test_council_operator_*_phase5_r1.py tests/test_council_operator_*_phase5_r2.py tests/test_council_operator_stale_lock_r1.py
+          python -m compileall -q flyash_phreeqc_ml/council_operator scripts/bootstrap_council_pip.py tests/council_operator_helpers.py tests/test_council_operator_*_phase5.py tests/test_council_operator_*_phase5_r1.py tests/test_council_operator_*_phase5_r2.py tests/test_council_operator_phase5_r3.py tests/test_council_operator_stale_lock_r1.py
           python scripts/release_scan.py --tracked --docker-context
       - name: Functionally verify the Phase 5-R2 pipless bootstrap correction
         run: |
@@ -290,6 +290,18 @@ jobs:
             tests/test_council_operator_runtime_phase5_r1.py \
             tests/test_council_operator_stale_lock_r1.py \
             tests/test_council_operator_worker_supervisor_phase5_r1.py
+      - name: Functionally verify the Phase 5-R3 Git-root integration contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -o addopts='' \
+            tests/test_council_operator_phase5_r3.py
+          echo 'GIT_ROOT_PATH_CONTRACT_PASS=True'
+          echo 'NONVACUOUS_DEFAULT_TESTS_PASS=True'
+          echo 'NESTED_FORBIDDEN_PATHS_PASS=True'
+          echo 'NESTED_RELEASE_SCAN_REQUIRED=True'
+          echo 'ROUTER_ESTIMATE_NOT_MAX_CAP=True'
+          echo 'PLANNER_RENDER_ROOT_CONTRACT_PASS=True'
+          echo 'R3_ACCEPTANCE_REQUEST_VALID=True'
+          echo 'TESTER_HAS_SAFE_NONEMPTY_PATH=True'
       - name: Run request, lock, sandbox, adapter, privacy, approval, and two-clone journeys
         run: |
           python -m pytest -q -p no:cacheprovider -o addopts='' \

@@ -30,8 +30,15 @@ def create_code_remote(root: Path, *, branch: str = "base") -> tuple[Path, Path,
     subprocess.run(["git", "-C", str(live), "config", "user.name", "Test"], check=True)
     subprocess.run(["git", "-C", str(live), "config", "user.email", "test@invalid.local"], check=True)
     (live / "README.md").write_text("# Synthetic test repository\n", encoding="utf-8")
+    (live / ".gitignore").write_text("__pycache__/\n*.py[cod]\n", encoding="utf-8")
     (live / "docs").mkdir()
     (live / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    scanner = live / "flyash-phreeqc-ml" / "scripts" / "release_scan.py"
+    scanner.parent.mkdir(parents=True)
+    scanner.write_text(
+        "#!/usr/bin/env python3\nprint('synthetic release scan passed')\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "-C", str(live), "add", "."], check=True)
     subprocess.run(["git", "-C", str(live), "commit", "-m", "base"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(live), "remote", "add", "origin", str(remote)], check=True)

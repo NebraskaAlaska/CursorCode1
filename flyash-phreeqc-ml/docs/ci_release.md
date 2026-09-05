@@ -92,11 +92,60 @@ installation with Python 3.12.14 but no pip and stopped before worker doctor,
 model invocation, or task submission. Neither the new functional CI fixture
 nor that safely stopped installation is a completed live Hermes acceptance.
 
+## Phase 5-R3 Git-root integration gate
+
+R2 project-side CI run `33626721683` was green. The later physical task
+`phase5-r2-hermes-docs-acceptance-01` passed worker doctor and invoked the real
+Planner twice, but both immutable attempts deliberately returned `BLOCKED`.
+Coder, Tester, and Reviewer did not run, no task branch was pushed, and no
+publication action followed. That physical failure is not rewritten as a CI
+failure or success.
+
+Phase 5-R3 adds `tests/test_council_operator_phase5_r3.py` to the required
+operator job. It functionally verifies the one-root contract, non-vacuous
+Git-root compile and pytest defaults, nested forbidden paths and conservative
+glob intersection, required nested release scanner and no-push failures,
+bounded routing estimates distinct from the changed-file cap, complete Planner
+rendering, policy validation of the exact two-path physical request, and final
+workspace acceptance of exactly two role-authored paths plus the trusted host
+manifest.
+
+The R3 step emits these markers only after that functional module passes:
+
+```text
+GIT_ROOT_PATH_CONTRACT_PASS=True
+NONVACUOUS_DEFAULT_TESTS_PASS=True
+NESTED_FORBIDDEN_PATHS_PASS=True
+NESTED_RELEASE_SCAN_REQUIRED=True
+ROUTER_ESTIMATE_NOT_MAX_CAP=True
+PLANNER_RENDER_ROOT_CONTRACT_PASS=True
+R3_ACCEPTANCE_REQUEST_VALID=True
+TESTER_HAS_SAFE_NONEMPTY_PATH=True
+```
+
+These are deterministic project-side proofs. They do not mean the new physical
+task ran, any R3 model was invoked, or dual-computer acceptance passed.
+
+The measured Personal pre-push R3 validation matrix was:
+
+- focused R3 contracts: 40 passed;
+- all Phase 5 operator tests: 202 passed;
+- R2 pipless bootstrap regression: 12 passed;
+- Phase 4 scientific/resource/AI slice: 247 passed, 8 skipped;
+- corrected Git-root default pytest command: 1,979 passed, 9 skipped;
+- dependency lock: 10 runtime and 1 development pins; `pip check` passed;
+- release scan: 468 working-tree paths with Docker-context checks;
+- Streamlit loopback health: `ok`.
+
+Exact-image and architecture results are recorded in the external review bundle
+after the final source snapshot is built and tested. Remote exact-SHA results
+remain separate post-push evidence.
+
 The Phase 5 release gate runs with `always()` and requires both the Phase 4
 aggregate release gate and Phase 5 operator job to be `success`. A green Phase
 5 gate therefore preserves the scientific/resource/runtime boundary rather
 than replacing it. CI and local simulations do not prove that a live Hermes
 four-role task has run; physical evidence is recorded only by the separate
 [`hermes_physical_acceptance.md`](hermes_physical_acceptance.md) procedure.
-The R2 additions do not remove, skip, or weaken any required Phase 4 job,
+The R2/R3 additions do not remove, skip, or weaken any required Phase 4 job,
 architecture slice, exact-image check, or either aggregate release gate.
