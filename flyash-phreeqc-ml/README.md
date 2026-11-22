@@ -1,5 +1,7 @@
 # flyash-phreeqc-ml — Materials Research Assistant
 
+Read the [leaching validation summary](docs/research/leaching-progress.md) and [project progress report](docs/research/project-progress.md) for published-data comparisons, tested capabilities and open research questions.
+
 A working **research prototype**: a **chatbot-style materials research assistant**. Describe a
 materials experiment in plain language; the assistant asks for the missing details, identifies the
 right modelling pathway, **runs available simulations after you confirm**, and helps **compare
